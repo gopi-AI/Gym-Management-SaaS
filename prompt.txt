@@ -1,0 +1,1265 @@
+Act as a Principal Software Architect, Distributed Systems Engineer,
+SaaS Platform Architect, Database Architect, and Hardware Integration
+Architect.
+
+Design a production-grade, highly scalable, secure, observable,
+multi-tenant Gym Management SaaS platform modeled after modern fitness
+operating networks such as GymForce Pro.
+
+The goal is NOT to design a generic CRUD application.
+
+Design a system suitable for thousands of gym organizations, multiple
+branches per organization, millions of members, high-volume biometric
+access events, financial transactions, asynchronous notifications,
+offline operation, third-party integrations, and future mobile clients.
+
+Use concrete architecture, domain boundaries, database schemas,
+API contracts, state machines, sequence diagrams, concurrency controls,
+failure handling, infrastructure topology, and implementation examples.
+
+Every major architectural decision must include:
+- Why it exists
+- Where it executes
+- Data ownership
+- Failure modes
+- Scaling implications
+- Security implications
+- Operational implications
+
+Clearly distinguish:
+OBSERVED / INFERRED / RECOMMENDED architecture where assumptions about
+the reference application are involved.
+
+============================================================
+1. TARGET TECHNOLOGY STACK
+============================================================
+
+Use the following as the recommended implementation baseline:
+
+Frontend:
+- Next.js
+- App Router
+- React Server Components
+- TypeScript
+- TanStack Query or equivalent server-state library
+- Zod or equivalent validation
+
+Core Backend:
+- Node.js
+- NestJS
+- TypeScript
+- REST as the primary API
+- GraphQL only where justified by a concrete aggregation/query use case
+- OpenAPI
+
+Database:
+- PostgreSQL
+- Redis
+- S3-compatible object storage
+
+Asynchronous Processing:
+- A durable cross-language messaging/event mechanism
+- Node.js workers
+- Python workers
+
+Python:
+- Python 3.x
+- FastAPI for independently exposed specialized APIs
+- Celery only if its broker topology is explicitly compatible with the
+  selected messaging architecture
+- Pandas/Polars for data processing where justified
+- scikit-learn/ML tooling only for future analytics/ML workloads
+
+Hardware:
+- C#/.NET preferred for the local edge agent
+- C++ only where vendor SDK/device requirements justify it
+
+Infrastructure:
+- Docker
+- AWS ECS/Fargate, EKS, or Google Cloud Run/Kubernetes
+- Terraform
+- CI/CD
+- OpenTelemetry
+
+Do not use microservices merely because multiple languages exist.
+Start from a modular monolith plus workers and define explicit extraction
+boundaries for future services.
+
+============================================================
+2. EXECUTION TOPOLOGY
+============================================================
+
+Explicitly define these execution zones:
+
+A. Browser / Client
+B. Next.js Presentation/BFF Layer
+C. NestJS Persistent Application Layer
+D. Python Specialized Worker Layer
+E. Database/Cache/Event Infrastructure
+F. On-Premise Edge Layer
+G. External Provider Layer
+
+Define exactly which operations belong to each.
+
+Example:
+
+Browser
+→ Next.js
+→ NestJS
+→ PostgreSQL
+
+For asynchronous operations:
+
+NestJS
+→ PostgreSQL transaction
+→ Outbox
+→ Message Broker
+→ Node/Python worker
+
+For hardware:
+
+Biometric Device
+→ Local C# Edge Agent
+→ Local SQLite
+→ Local Access Decision
+→ Relay/Turnstile
+→ Cloud Synchronization
+
+Do NOT make access control depend on a synchronous cloud round trip.
+
+============================================================
+3. MULTI-TENANCY
+============================================================
+
+Model:
+
+Platform
+ └── Organization/Tenant
+      ├── Branch
+      ├── Users
+      ├── Staff
+      ├── Members
+      ├── Trainers
+      ├── Membership Plans
+      ├── Services
+      ├── Batches
+      ├── Inventory
+      └── Financial Records
+
+Use organization_id for tenant isolation and branch_id where required.
+
+Design:
+- tenant resolution
+- branch resolution
+- authorization context
+- tenant-safe repositories
+- tenant-aware cache keys
+- tenant-aware background jobs
+- tenant-aware audit events
+- database row-level security considerations
+
+Explicitly prevent cross-tenant reads/writes.
+
+============================================================
+4. AUTHENTICATION / RBAC
+============================================================
+
+Design:
+- authentication
+- session/token lifecycle
+- refresh/revocation
+- MFA-ready architecture
+- role-based access
+- permission-based authorization
+- branch-level authorization
+- platform-admin access
+
+Roles:
+
+OWNER
+ADMIN
+BRANCH_MANAGER
+RECEPTIONIST
+TRAINER
+DIETITIAN
+ACCOUNTANT
+STAFF
+
+Permissions must be enforced in:
+- frontend
+- API
+- domain/service layer
+- workers
+- reporting layer
+
+Never rely on UI-level authorization.
+
+============================================================
+5. CORE DATABASE ARCHITECTURE
+============================================================
+
+Produce an explicit PostgreSQL ERD and SQL schema.
+
+Use:
+- UUID primary keys for distributed domain identity where appropriate
+- numeric/bigint identifiers where beneficial for external/local IDs
+- NUMERIC for monetary amounts
+- timestamptz for timestamps
+- explicit status/state enums or constrained values
+- foreign keys
+- unique constraints
+- check constraints
+- composite indexes
+- partial indexes where appropriate
+- tenant-aware indexes
+
+Never use floating-point values for money.
+
+============================================================
+6. TENANT-SCOPED MEMBER IDENTIFIERS
+============================================================
+
+Members require a human-friendly sequential local_id per gym/organization.
+
+Design a concurrency-safe allocation strategy.
+
+Do NOT use:
+SELECT MAX(local_id) + 1
+
+Use a transactional counter, sequence strategy, or other safe mechanism.
+
+Show the SQL implementation.
+
+Example:
+
+organization_id = 174
+local_id = 3
+
+while maintaining an immutable global member UUID.
+
+============================================================
+7. MEMBER 360 DOMAIN
+============================================================
+
+Treat Member as the central business object but NOT as a giant database
+record.
+
+Member Profile must expose these sections:
+
+- Core Profile
+- Memberships
+- Services
+- PT Enrollment
+- Biometric
+- Orders
+- Measurements
+- Attendance
+- Workout
+- Follow Up
+- Points
+- Medical History
+- Transactions
+- Diet Plan
+- Attachments
+- Batches
+- Consent Forms
+
+Clearly separate:
+- Member identity
+- transactional domains
+- health/fitness domains
+- financial domains
+- CRM domains
+- operational domains
+
+Do not load all historical data through one API request.
+
+============================================================
+8. MEMBERSHIP ENGINE
+============================================================
+
+Design:
+
+MembershipPlan
+Membership
+MembershipPause
+MembershipExtension
+MembershipRenewal
+MembershipTransfer
+MembershipCancellation
+MembershipDiscount
+Invoice
+InvoiceItem
+Payment
+PaymentAllocation
+Refund
+CreditNote
+TaxLine
+
+Support:
+- monthly
+- quarterly
+- annual
+- custom duration
+- activation
+- expiry
+- pause/freeze
+- extension
+- renewal
+- cancellation
+- partial payment
+- discounts
+- taxes
+- credits
+- refunds
+
+The system must preserve financial history.
+
+Outstanding balance must be derived from the financial ledger or a
+transactionally maintained read model.
+
+Do NOT represent payment totals as mutable duplicated fields without
+an authoritative source.
+
+============================================================
+9. FINANCIAL LEDGER
+============================================================
+
+Design an auditable financial model.
+
+Show:
+
+Invoice
+→ InvoiceItem
+→ Payment
+→ PaymentAllocation
+→ Refund
+→ CreditNote
+→ TaxLine
+
+Explain whether double-entry accounting should be introduced for the
+financial scope.
+
+Support:
+- cash
+- card
+- UPI
+- bank transfer
+- payment gateway
+- recurring collection
+- UPI AutoPay
+- NACH
+- partial payment
+- overpayment
+- refund
+- reconciliation
+
+Use idempotency keys.
+
+Payment processing must be safe against:
+- duplicate requests
+- duplicate webhooks
+- retries
+- timeout/retry ambiguity
+- delayed provider notifications
+
+============================================================
+10. CRM
+============================================================
+
+Design:
+
+Lead
+LeadSource
+LeadStage
+LeadActivity
+FollowUp
+CallLog
+Trial
+Visit
+Conversion
+
+Flow:
+
+Lead
+→ Contacted
+→ Qualified
+→ Visit
+→ Trial
+→ Converted / Lost
+
+Support:
+- assignments
+- reminders
+- notes
+- campaigns
+- attribution
+- follow-up SLAs
+
+============================================================
+11. PT / TRAINING
+============================================================
+
+Design:
+
+Trainer
+TrainerAvailability
+PTPackage
+PTEnrollment
+PTSession
+TrainerBooking
+TrainerCommission
+WorkoutPlan
+Exercise
+WorkoutAssignment
+WorkoutProgress
+
+Handle:
+- trainer assignment
+- package quotas
+- session consumption
+- trainer availability
+- cancellations
+- rescheduling
+- no-shows
+- commission calculation
+
+Prevent double booking using database-level concurrency controls.
+
+============================================================
+12. BATCHES / SERVICES / SCHEDULING
+============================================================
+
+Design:
+
+Batch
+BatchSchedule
+Service
+ServiceSchedule
+MemberBatchEnrollment
+ClassCapacity
+Waitlist
+TrainerAvailability
+
+Support:
+- fixed schedules
+- recurring schedules
+- capacity limits
+- trainer limits
+- membership eligibility
+- booking windows
+- cancellation windows
+- waitlists
+- schedule conflict detection
+
+Explicitly solve the race condition where multiple users attempt to
+reserve the final available slot simultaneously.
+
+============================================================
+13. ATTENDANCE
+============================================================
+
+Support:
+
+- biometric
+- RFID
+- QR
+- manual check-in
+- mobile check-in
+
+Separate:
+
+AttendanceEvent
+AttendanceRecord
+AccessDecision
+
+Design idempotent attendance processing.
+
+Handle:
+- duplicate biometric events
+- device clock drift
+- delayed synchronization
+- multiple events for the same member
+- branch/device mapping
+
+============================================================
+14. HARDWARE EDGE ARCHITECTURE
+============================================================
+
+Design an on-premise C#/.NET edge agent.
+
+Responsibilities:
+
+- device discovery
+- vendor adapter
+- ZKTeco integration
+- eSSL integration
+- device health
+- biometric ID mapping
+- local membership/access cache
+- SQLite persistence
+- local access decision
+- relay control
+- durable event queue
+- cloud synchronization
+- retry/backoff
+- deduplication
+- clock synchronization
+
+Example mapping:
+
+local device ID:
+3
+
+→ cloud biometric identity:
+122743
+
+Do not send raw biometric templates through the SaaS request path unless
+there is an explicit and legally appropriate requirement.
+
+Prefer opaque credential/device identifiers and vendor-controlled
+biometric processing where possible.
+
+============================================================
+15. OFFLINE-FIRST ACCESS CONTROL
+============================================================
+
+The gym must remain operational during cloud/internet outages.
+
+Normal flow:
+
+Biometric
+→ Device
+→ C# Edge Agent
+→ Local eligibility cache
+→ Access decision
+→ Relay
+→ Attendance event
+→ Local SQLite queue
+
+Recovery:
+
+Cloud connectivity restored
+→ Sync cursor
+→ Batch upload
+→ Idempotency validation
+→ Ordered event processing
+→ Conflict detection
+→ PostgreSQL
+→ Acknowledgement
+→ Local event marked synchronized
+
+Explicitly design behavior for:
+
+- member expires while branch is offline
+- member renews at another branch while branch is offline
+- duplicate events
+- lost acknowledgement
+- clock drift
+- network flapping
+- corrupted local database
+- partial synchronization
+- conflicting branch updates
+
+Clearly define the consistency model.
+
+============================================================
+16. CLOUD EVENT FLOW
+============================================================
+
+Use:
+
+Domain Transaction
+→ PostgreSQL transaction
+→ Outbox event
+→ Durable Message Broker
+→ Worker
+→ External Integration
+
+Implement:
+- Outbox
+- Inbox/idempotency
+- retry
+- exponential backoff
+- dead-letter queue
+- event versioning
+- correlation IDs
+
+Do not rely on a simple fire-and-forget Redis publish.
+
+============================================================
+17. NODE + PYTHON WORKER ARCHITECTURE
+============================================================
+
+Define the responsibilities separately.
+
+Node/NestJS:
+- transactional business operations
+- member management
+- memberships
+- finance commands
+- attendance API
+- scheduling
+- authorization
+- synchronous integrations
+
+Python:
+- analytics
+- reporting
+- bulk data processing
+- scheduled automation
+- reconciliation
+- document processing
+- future ML/AI workloads
+
+Python must NOT become the authoritative source of financial state.
+
+All cross-language communication must use:
+- versioned event schemas
+- JSON Schema / AsyncAPI / OpenAPI
+- explicit event versions
+
+Example:
+
+MembershipRenewed.v1
+PaymentSucceeded.v1
+MembershipExpired.v1
+AttendanceRecorded.v1
+
+============================================================
+18. NOTIFICATION PIPELINE
+============================================================
+
+Design:
+
+Business Event
+→ Notification Policy
+→ Template Resolver
+→ Channel Adapter
+→ Provider API
+→ Delivery Status
+
+Channels:
+
+- WhatsApp
+- SMS
+- Email
+- Push
+
+Meta WhatsApp integration must be asynchronous.
+
+Support:
+- rate limiting
+- retries
+- template versioning
+- delivery status
+- provider failures
+- dead-letter handling
+
+============================================================
+19. API ARCHITECTURE
+============================================================
+
+Define versioned REST endpoints.
+
+Examples:
+
+GET /api/v1/members/:id
+GET /api/v1/members/:id/memberships
+GET /api/v1/members/:id/attendance
+GET /api/v1/members/:id/orders
+GET /api/v1/members/:id/transactions
+GET /api/v1/members/:id/measurements
+GET /api/v1/members/:id/workouts
+GET /api/v1/members/:id/diet-plans
+GET /api/v1/members/:id/medical-history
+GET /api/v1/members/:id/consents
+GET /api/v1/members/:id/attachments
+
+Commands:
+
+POST /api/v1/memberships
+POST /api/v1/memberships/:id/renew
+POST /api/v1/payments
+POST /api/v1/attendance/check-in
+
+Include representative request/response payloads.
+
+Define:
+- authentication
+- authorization
+- pagination
+- filtering
+- sorting
+- validation
+- idempotency
+- optimistic concurrency
+- error model
+- correlation IDs
+- rate limits
+
+============================================================
+20. CACHE ARCHITECTURE
+============================================================
+
+Use Redis for:
+
+- member summary
+- active membership state
+- branch configuration
+- permissions
+- feature flags
+- trainer availability
+- access eligibility snapshots
+- temporary job state
+- rate limits
+- distributed coordination where necessary
+
+Every cache key must be tenant scoped.
+
+Define:
+- key schema
+- TTL
+- invalidation events
+- stampede protection
+- hot-key handling
+
+============================================================
+21. CONCURRENCY CONTROL
+============================================================
+
+Explicitly design race-condition handling for:
+
+- membership renewal
+- payment processing
+- final batch seat
+- PT trainer slot
+- inventory decrement
+- biometric event duplication
+- notification duplication
+- concurrent member edits
+
+Explain use of:
+- database transactions
+- row-level locks
+- optimistic locking
+- unique constraints
+- advisory locks
+- idempotency keys
+
+============================================================
+22. SECURITY / PRIVACY
+============================================================
+
+Design:
+- encryption in transit
+- encryption at rest
+- secret management
+- PII classification
+- sensitive health-data access
+- Aadhaar data minimization/masking/tokenization
+- audit logs
+- secure file uploads
+- signed URLs
+- tenant isolation
+- least privilege
+- rate limiting
+- OWASP protections
+- secure authentication
+- log redaction
+
+Do not unnecessarily persist raw sensitive identity or biometric data.
+
+============================================================
+23. DOCUMENT / FILE ARCHITECTURE
+============================================================
+
+Store actual files in S3-compatible object storage.
+
+PostgreSQL stores metadata.
+
+Support:
+- consent forms
+- signatures
+- medical attachments
+- member documents
+- invoices
+- profile images
+
+Use:
+- signed URLs
+- MIME verification
+- size limits
+- malware scanning
+- tenant-scoped access
+- lifecycle retention
+
+============================================================
+24. SEARCH
+============================================================
+
+Design fast search for:
+
+- member
+- phone
+- member ID
+- lead
+- invoice
+- order
+- trainer
+
+Start with PostgreSQL indexing/full-text/trigram search.
+
+Define objective criteria for introducing OpenSearch/Elasticsearch.
+
+============================================================
+25. REPORTING / ANALYTICS
+============================================================
+
+Separate OLTP and analytics workloads.
+
+Operational reports may use:
+- PostgreSQL read replicas
+- materialized views
+- reporting schemas
+
+Large analytics should eventually use:
+- ETL/ELT
+- analytical storage
+- data warehouse where justified
+
+Python may own aggregation and analytical pipelines.
+
+============================================================
+26. OBSERVABILITY
+============================================================
+
+Use OpenTelemetry.
+
+Track:
+
+- API latency
+- database latency
+- queue depth
+- worker latency
+- attendance throughput
+- biometric sync backlog
+- payment failures
+- notification delivery
+- cache hit ratio
+- edge-agent health
+
+Use:
+- structured logs
+- distributed tracing
+- metrics
+- alerting
+
+Never log secrets or unnecessary sensitive member information.
+
+============================================================
+27. HIGH AVAILABILITY / DISASTER RECOVERY
+============================================================
+
+Design:
+
+- PostgreSQL HA
+- backups
+- PITR
+- read replicas
+- Redis HA
+- durable queues
+- S3 redundancy
+- multi-AZ deployment
+- rolling deployments
+
+Specify:
+- RPO
+- RTO
+- backup frequency
+- restore testing
+- disaster recovery procedure
+
+============================================================
+28. SCALING MODEL
+============================================================
+
+Assume:
+
+10,000 organizations
+multiple branches per organization
+100M members
+high-volume attendance events
+high concurrent staff usage
+
+Estimate:
+
+- API QPS
+- attendance events/sec
+- database growth
+- cache usage
+- queue throughput
+- object-storage growth
+
+Identify bottlenecks.
+
+Explain when to introduce:
+- read replicas
+- table partitioning
+- archival
+- dedicated workers
+- service extraction
+- sharding
+
+Do not introduce sharding or microservices without a demonstrated need.
+
+============================================================
+29. TENANT CONFIGURATION
+============================================================
+
+Each tenant/branch may define:
+
+- currency
+- locale
+- timezone
+- GST/tax configuration
+- invoice numbering
+- membership rules
+- attendance rules
+- branding
+- notification rules
+- feature flags
+
+Frontend should consume this configuration from authenticated server
+context rather than hardcoding values.
+
+============================================================
+30. COMPLETE SITEMAP
+============================================================
+
+Generate the application sitemap:
+
+Dashboard
+CRM
+Members
+PT Enrollment
+Batches
+Services
+Analytics
+Reports
+Inventory
+Finance
+Staff
+Workout Plans
+Diet Plans
+Marketing
+Subscription
+
+For each module provide:
+- screens
+- actions
+- permissions
+- APIs
+- primary entities
+- background jobs
+- audit events
+
+============================================================
+31. MEMBER PROFILE INFORMATION ARCHITECTURE
+============================================================
+
+Create an explicit Member Profile architecture.
+
+Header:
+- Member identity
+- membership status
+- access status
+- quick actions
+
+Tabs/sections:
+
+Memberships
+Services
+PT
+Biometric
+Orders
+Measurements
+Attendance
+Workout
+Follow-up
+Points
+Medical History
+Transactions
+Diet Plan
+Attachments
+Batches
+Consent Forms
+
+Define which sections load:
+- immediately
+- lazily
+- on demand
+- cached
+
+============================================================
+32. STATE MACHINES
+============================================================
+
+Define state machines for:
+
+Membership
+Payment
+Invoice
+Lead
+PT Session
+Attendance
+SaaS Subscription
+Device Sync
+
+Show valid and invalid transitions.
+
+============================================================
+33. FAILURE SCENARIOS
+============================================================
+
+Explicitly design recovery for:
+
+- PostgreSQL outage
+- Redis outage
+- message broker outage
+- payment provider outage
+- WhatsApp outage
+- biometric device outage
+- edge agent outage
+- cloud outage
+- network partition
+- duplicate webhook
+- duplicate attendance
+- lost acknowledgement
+- worker crash
+- partial synchronization
+- failed deployment
+
+For each:
+Detection
+→ fallback
+→ retry
+→ recovery
+→ reconciliation
+
+============================================================
+34. PROJECT STRUCTURE
+============================================================
+
+Provide a concrete repository structure:
+
+apps/
+  web/
+  api/
+  edge-agent/
+
+workers/
+  python/
+
+packages/
+  contracts/
+  types/
+  validation/
+  ui/
+
+infra/
+  terraform/
+  docker/
+  deployment/
+
+modules/
+  tenancy/
+  identity/
+  members/
+  memberships/
+  attendance/
+  crm/
+  pt/
+  scheduling/
+  finance/
+  inventory/
+  workouts/
+  diet/
+  notifications/
+  reports/
+
+Optimize the structure based on domain boundaries.
+
+============================================================
+35. TESTING
+============================================================
+
+Provide:
+
+- unit tests
+- integration tests
+- contract tests
+- authorization tests
+- financial consistency tests
+- payment idempotency tests
+- concurrency tests
+- biometric tests
+- offline synchronization tests
+- API E2E tests
+- load tests
+- chaos/failure tests
+
+Financial, authorization, and access-control flows require especially
+strong test coverage.
+
+============================================================
+36. CI/CD
+============================================================
+
+Design:
+
+Commit
+→ Lint
+→ Type check
+→ Unit tests
+→ Integration tests
+→ Contract tests
+→ Security scan
+→ Build
+→ Migration validation
+→ Container build
+→ Deployment
+→ Smoke test
+→ Observability validation
+
+Include zero-downtime database migration strategy.
+
+============================================================
+37. IMPLEMENTATION ROADMAP
+============================================================
+
+Divide into:
+
+Phase 0:
+Architecture/Foundation
+
+Phase 1:
+MVP Gym Operations
+
+Phase 2:
+Member 360
+
+Phase 3:
+Finance/Inventory/CRM
+
+Phase 4:
+Biometric + Offline Edge
+
+Phase 5:
+Notifications/Marketing
+
+Phase 6:
+Analytics
+
+Phase 7:
+Enterprise Scale
+
+For every phase provide:
+- features
+- database changes
+- APIs
+- frontend changes
+- worker changes
+- infrastructure
+- dependencies
+- risks
+
+============================================================
+38. FINAL ARCHITECTURE DECISION RECORD
+============================================================
+
+End with an ADR table covering:
+
+- Next.js role
+- NestJS role
+- Python role
+- C# Edge role
+- Modular monolith vs microservices
+- REST vs GraphQL
+- PostgreSQL
+- Redis
+- messaging architecture
+- Outbox pattern
+- Inbox/idempotency
+- multi-tenancy
+- RBAC
+- financial ledger
+- biometric architecture
+- offline synchronization
+- object storage
+- search
+- analytics
+- deployment
+- disaster recovery
+
+For each:
+Decision
+Alternative
+Reason
+Trade-off
+
+============================================================
+OUTPUT QUALITY REQUIREMENT
+============================================================
+
+This must be an implementation-grade engineering blueprint.
+
+Use:
+- Mermaid diagrams
+- ER diagrams
+- sequence diagrams
+- state machines
+- SQL DDL
+- TypeScript interfaces
+- Python models
+- API examples
+- event schemas
+- repository structure
+- infrastructure diagrams
+
+Do not use vague recommendations.
+
+Do not say:
+"Use Redis for caching."
+
+Instead specify:
+- what is cached
+- cache key
+- TTL
+- invalidation event
+- consistency expectation
+- failure behavior
+
+Do not say:
+"Use Python for background tasks."
+
+Specify:
+- exact worker responsibilities
+- queue/topic
+- event schema
+- database ownership
+- retry behavior
+- observability
+- failure handling
+
+Explicitly distinguish:
+1. Transactional source of truth
+2. Read models
+3. Cache
+4. Event stream
+5. Local offline state
+6. Analytics state
+
+The resulting document should be detailed enough for an engineering
+team to begin implementation without having to redesign the
+architecture from scratch.

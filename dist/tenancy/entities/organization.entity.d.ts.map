@@ -1,0 +1,1 @@
+{"version":3,"file":"organization.entity.d.ts","sourceRoot":"","sources":["../../../src/tenancy/entities/organization.entity.ts"],"names":[],"mappings":"AAEA,qBACa,YAAY;IAEvB,EAAE,EAAG,MAAM,CAAC;IAIZ,IAAI,EAAG,MAAM,CAAC;IAGd,QAAQ,EAAG,MAAM,CAAC;IAGlB,MAAM,EAAG,MAAM,CAAC;IAGhB,QAAQ,EAAG,MAAM,CAAC;IAGlB,UAAU,EAAG,IAAI,CAAC;IAGlB,UAAU,EAAG,IAAI,CAAC;IAIlB,SAAS,EAAG,OAAO,CAAC;CACrB"}

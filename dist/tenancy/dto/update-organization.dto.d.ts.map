@@ -1,0 +1,1 @@
+{"version":3,"file":"update-organization.dto.d.ts","sourceRoot":"","sources":["../../../src/tenancy/dto/update-organization.dto.ts"],"names":[],"mappings":"AAEA,qBAAa,qBAAqB;IAGhC,IAAI,CAAC,EAAE,MAAM,CAAC;IAId,QAAQ,CAAC,EAAE,MAAM,CAAC;IAIlB,MAAM,CAAC,EAAE,MAAM,CAAC;IAIhB,QAAQ,CAAC,EAAE,MAAM,CAAC;IAIlB,SAAS,CAAC,EAAE,OAAO,CAAC;CACrB"}

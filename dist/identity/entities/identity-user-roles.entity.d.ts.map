@@ -1,0 +1,1 @@
+{"version":3,"file":"identity-user-roles.entity.d.ts","sourceRoot":"","sources":["../../../src/identity/entities/identity-user-roles.entity.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,YAAY,EAAE,MAAM,yBAAyB,CAAC;AAEvD,qBACa,gBAAgB;IAE3B,EAAE,EAAG,MAAM,CAAC;IAGZ,OAAO,EAAG,MAAM,CAAC;IAGjB,OAAO,EAAG,MAAM,CAAC;IAIjB,IAAI,EAAG,YAAY,CAAC;CACrB"}

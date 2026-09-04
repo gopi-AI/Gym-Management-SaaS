@@ -1,0 +1,1766 @@
+# Task Backlog
+
+This document contains the implementation tasks broken down by phase, with dependencies and acceptance criteria.
+
+## Phase 0: Architecture/Foundation
+
+### P0-01: Monorepo Setup and Workspace Configuration
+- **Objective**: Set up monorepo structure with workspace management for shared packages and consistent tooling.
+- **Dependencies**: None
+- **Files/modules affected**: 
+  - Root package.json
+  - packages/ directory (shared, contracts, etc.)
+  - apps/ directory (web, admin if needed)
+  - Tooling configs (eslint, prettier, typescript, jest)
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**: 
+  - Validate workspace structure
+  - Test package linking
+  - Verify build scripts work
+- **Acceptance criteria**:
+  - Monorepo structure established
+  - Shared packages usable across apps
+  - Consistent linting and formatting across codebase
+  - Initial commit with workspace setup
+- **Risks**: Tooling complexity, learning curve for team
+
+### P0-02: Contracts Package and Event Schemas
+- **Objective**: Create shared contracts package with event schemas, DTOs, and TypeScript interfaces.
+- **Dependencies**: P0-01
+- **Files/modules affected**:
+  - packages/contracts/src/
+  - packages/contracts/package.json
+### P0-03: Database Setup with Multi-tenancy and RLS *(Completed)*
+- **Objective**: Create database entities and schema for multi-tenancy support with Row Level Security.
+- **Dependencies**: P0-01
+- **Files/modules affected**:
+  - src/tenancy/entities/
+  - Database schema (TENANCY_ORGANIZATIONS, TENANCY_BRANCHES)
+- **Database changes**:
+  - TENANCY_ORGANIZATIONS table
+  - TENANCY_BRANCHES table
+- **API changes**: None (foundational database task)
+- **Acceptance criteria**:
+  - Organization entity created with proper columns (id, name, timezone, locale, currency, created_at, updated_at, is_active)
+  - Branch entity created with proper columns (id, organization_id, name, address, phone, created_at, updated_at, is_active)
+  - Entities properly annotated with TypeORM decorators
+  - Tenancy module can import and use these entities
+
+### P0-04: Tenancy Module Implementation
+- **Objective**: Implement core tenancy features: organization and branch management.
+- **Dependencies**: P0-03 (now completed)
+- **Files/modules affected**:
+  - src/tenancy/ (module, controller, service, dto, entity)
+  - Database migrations for tenancy tables
+- **Database changes**:
+  - organizations table (completed in P0-03)
+  - branches table (completed in P0-03)
+  - tenant_settings table
+- **API changes**:
+  - POST /v1/organizations
+  - GET /v1/organizations (paginated)
+  - GET /v1/organizations/{id}
+  - PATCH /v1/organizations/{id}
+  - POST /v1/organizations/{orgId}/branches
+  - GET /v1/organizations/{orgId}/branches
+  - POST /v1/organizations/{orgId}/tenant-settings
+  - GET /v1/organizations/{orgId}/tenant-settings
+  - PATCH /v1/organizations/{orgId}/tenant-settings
+- **Frontend changes**: None (API only in this phase)
+- **Worker changes**: None
+- **Tests**:
+  - Unit tests for tenancy service
+  - Integration tests for tenancy API
+  - Tenancy context propagation tests
+- **Acceptance criteria**:
+  - Organizations and branches can be created via API
+  - Tenancy context correctly set for requests
+  - Data isolation between tenants
+  - API validation and error handling
+  - Tenant settings can be created and retrieved
+- **Risks**: Tenancy context leakage between requests
+- **Files/modules affected**:
+  - src/tenancy/ (module, controller, service, dto, entity)
+  - Database migrations for tenancy tables
+- **Database changes**:
+  - organizations table (completed in P0-03)
+  - branches table (completed in P0-03)
+  - tenant_settings table
+- **API changes**:
+  - POST /v1/organizations
+  - GET /v1/organizations (paginated)
+  - GET /v1/organizations/{id}
+  - PATCH /v1/organizations/{id}
+  - POST /v1/organizations/{orgId}/branches
+  - GET /v1/organizations/{orgId}/branches
+- **Frontend changes**: None (API only in this phase)
+- **Worker changes**: None
+- **Tests**:
+  - Unit tests for tenancy service
+  - Integration tests for tenancy API
+  - Tenancy context propagation tests
+- **Acceptance criteria**:
+  - Organizations and branches can be created via API
+  - Tenancy context correctly set for requests
+  - Data isolation between tenants
+  - API validation and error handling
+- **Risks**: Tenancy context leakage between requests
+
+### P0-05: Identity Module and Authentication
+- **Objective**: Implement user management, roles, permissions, and JWT authentication.
+- **Dependencies**: P0-04
+- **Files/modules affected**:
+  - src/identity/ (module, service, entity)
+  - Database identity tables (IDENTITY_USERS, IDENTITY_ROLES, IDENTITY_PERMISSIONS, IDENTITY_USER_ROLES, IDENTITY_ROLE_PERMISSIONS, IDENTITY_AUTH_TOKENS, IDENTITY_MFA_SECRETS)
+- **Database changes**:
+  - IDENTITY_USERS table
+  - IDENTITY_ROLES table
+  - IDENTITY_PERMISSIONS table
+  - IDENTITY_USER_ROLES junction table
+  - IDENTITY_ROLE_PERMISSIONS junction table
+  - IDENTITY_AUTH_TOKENS table
+  - IDENTITY_MFA_SECRETS table
+- **API changes**: None (foundational module)
+- **Frontend changes**: None (API only in this phase)
+- **Worker changes**: None
+- **Tests**:
+  - Unit tests for identity service
+  - Authentication flow tests
+  - Role-based access control tests
+- **Acceptance criteria**:
+  - User can be created and retrieved by email
+  - Roles and permissions can be managed
+  - JWT authentication works correctly
+  - Role-based access control is functional
+  - MFA secrets can be stored and retrieved
+- **Risks**: Password storage security, token expiration handling
+### P0-06: Outbox/Inbox Infrastructure
+- **Objective**: Implement reliable event publishing with outbox pattern and idempotent consumption with inbox pattern.
+- **Dependencies**: P0-03, P0-05
+- **Files/modules affected**:
+  - shared/outbox/ (entity, repository, service)
+  - shared/inbox/ (entity, repository, service)
+  - Outbox poller worker
+  - Database schema for outbox/inbox
+- **Database changes**:
+  - shared.outbox table
+  - shared.inbox table with unique constraint
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**:
+  - Outbox poller worker (Node.js)
+  - Inbox processor library
+- **Tests**:
+  - Outbox exactly-once delivery
+  - Inbox duplicate detection
+  - Transactional outbox integrity
+  - Worker failure recovery
+- **Acceptance criteria**:
+  - Events published atomically with DB transactions
+  - Consumers idempotently process events
+  - Outbox poller handles failures gracefully
+  - Inbox prevents duplicate processing
+- **Risks**: Outbox poller lag, inbox table bloat
+
+### P0-07: Redis Cache Layer
+- **Objective**: Implement Redis caching for frequently accessed data with proper invalidation.
+- **Dependencies**: P0-01
+- **Files/modules affected**:
+  - shared/cache/ (module, service)
+  - Cache keys and TTL definitions
+  - Cache invalidation strategies
+### P0-10: S3 Upload Pipeline
+- **Objective**: Implement secure file upload to S3 with virus scanning and metadata.
+- **Dependencies**: P0-01
+- **Files/modules affected**:
+  - shared/storage/ (module, service)
+  - Upload controller endpoints
+  - Virus scanning integration (ClamAV or similar)
+  - S3 client configuration
+- **Database changes**:
+  - Potentially add file metadata tables later
+- **API changes**:
+## Phase 1: MVP Gym Operations
+
+### P1-01: Member CRUD and Local ID Generation *(Completed)*
+- **Objective**: Implement member management with organization-scoped local IDs.
+- **Dependencies**: P0-05 (Identity for auth) - completed
+- **Files/modules affected**:
+  - src/members/entities/member.entity.ts
+  - src/members/entities/member-identifier.entity.ts
+  - src/members/entities/member-profile.entity.ts
+  - src/members/entities/local-id-counter.entity.ts
+  - src/members/services/members.service.ts
+  - src/members/services/member-identifiers.service.ts
+  - src/members/services/local-id.service.ts
+  - src/members/controllers/members.controller.ts
+  - src/members/controllers/member-identifiers.controller.ts
+  - src/members/dto/create-member.dto.ts
+  - src/members/dto/update-member.dto.ts
+  - src/members/dto/create-member-identifier.dto.ts
+  - src/members/dto/list-members.dto.ts
+  - src/members/members.module.ts
+- **Database changes**:
+  - MEMBERS_MEMBERS table (organization_id, branch_id, global_uuid, local_id)
+  - MEMBERS_MEMBER_IDENTIFIERS table
+  - MEMBERS_MEMBER_PROFILES table
+  - MEMBERS_LOCAL_ID_COUNTERS table (organization_id, last_local_id)
+- **API changes**:
+  - GET /v1/members (paginated, filterable)
+  - POST /v1/members
+  - GET /v1/members/{id}
+  - PATCH /v1/members/{id}
+  - GET /v1/members/{id}/identifiers
+  - POST /v1/members/{id}/identifiers
+  - DELETE /v1/members/{id}/identifiers/{identifierId}
+- **Frontend changes**: None (API focused)
+- **Worker changes**: None
+- **Tests**: Not implemented per instruction
+- **Acceptance criteria**:
+  - ✅ Members created with unique local_id per organization
+  - ✅ Global UUID generated for external reference
+  - ✅ Identifiers can be added and removed
+  - ✅ API validation and error handling
+- **Completion notes**:
+  - Local ID generation uses transaction with pessimistic_write lock on MEMBERS_LOCAL_ID_COUNTERS to prevent race conditions.
+  - Member creation is wrapped in a DataSource transaction: local ID allocation, member insert, and outbox event are committed atomically.
+  - Member endpoints are scoped to the current organization_id from TenantContextService.
+  - Identifier endpoints validate member ownership via MembersService.findOne before operations.
+  - Duplicate-prevention check rejects create/update when email or phone already exists for an active member in the same organization.
+  - Outbox lifecycle events emitted: MEMBER_CREATED, MEMBER_UPDATED, MEMBER_DEACTIVATED.
+  - MemberProfile entity created for future profile updates (not exposed via API in P1-01).
+  - TypeScript build verified (`npx tsc --noEmit` and `npx tsc` both pass). Root tsconfig.json updated with `include`/`exclude` and `experimentalDecorators`/`emitDecoratorMetadata`.
+  - Phase 0 compile-time errors fixed during validation: `BooleanColumn` → `@Column({ type: 'boolean' })`, missing `Injectable`/`CreateDateColumn` imports, incorrect tenancy/identity import paths, missing `IdentityRolePermission` relations/service logic, and `auth.service.ts` syntax correction.
+- **Risks**: Local ID counter race conditions, identifier conflicts (mitigated with locking and unique index)
+
+### P1-02: Membership Plans and Sales
+- **Objective**: Implement membership plan creation and sales to members.
+- **Dependencies**: P1-01
+- **Files/modules affected**:
+  - src/memberships/ (module, controller, service, dto, entity)
+- **Database changes**:
+### P1-05: Manual Attendance Check-in
+- **Objective**: Implement front desk manual check-in for members.
+- **Dependencies**: P1-01
+- **Files/modules affected**:
+  - src/attendance/ (module, controller, service, dto, entity)
+- **Database changes**:
+  - attendance_records table (for manual check-in)
+- **API changes**:
+  - POST /v1/attendance/check-in (manual)
+  - GET /v1/attendance/records (paginated)
+  - GET /v1/attendance/records/{id}
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Check-in validation (active membership)
+  - Duplicate check-in prevention
+  - Check-out functionality
+  - Attendance reporting
+- **Acceptance criteria**:
+  - Staff can check-in members manually
+  - System prevents double check-in
+  - Check-out records exit time
+  - Attendance records stored correctly
+- **Risks**: Attendance fraud, reporting inaccuracies
+
+### P1-06: Branch Configuration and Settings
+- **Objective**: Implement branch-level configuration and settings management.
+- **Dependencies**: P0-04
+- **Files/modules affected**:
+  - src/tenancy/ (settings service)
+  - Branch settings entity
+- **Database changes**:
+  - tenant_settings table (expand for branch-specific)
+  - Or create branch_settings table
+- **API changes**:
+  - GET /v1/branches/{id}/settings
+  - PATCH /v1/branches/{id}/settings
+  - GET /v1/organizations/{id}/settings
+  - PATCH /v1/organizations/{id}/settings
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Settings validation
+  - Inheritance (org -> branch override)
+  - Setting change auditing
+- **Acceptance criteria**:
+## Phase 2: Member 360
+
+### P2-01: Member 360 Header API
+- **Objective**: Implement API for member 360 header summary.
+- **Dependencies**: P1-01, P1-02, P1-03, P1-04
+- **Files/modules affected**:
+  - src/members/ (service for 360 header)
+  - New DTO for header summary
+- **Database changes**: None (uses existing tables)
+- **API changes**:
+  - GET /v1/members/{id}/360/header
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Header data accuracy
+  - Response time under SLA
+  - Error handling for invalid member
+- **Acceptance criteria**:
+  - Header shows member name and photo
+  - Membership status displayed
+  - Access status (granted/denied today)
+  - Quick actions available
+- **Risks**: Incomplete or stale header data
+
+### P2-02: Memberships Tab API
+- **Objective**: Implement API for memberships tab in member 360.
+- **Dependencies**: P2-01, P1-02, P1-03
+- **Files/modules affected**:
+  - src/memberships/ (service for member history)
+- **Database changes**: None
+- **API changes**:
+  - GET /v1/members/{memberId}/memberships (history)
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Historical data retrieval
+  - Active vs inactive memberships
+  - Pagination for long history
+- **Acceptance criteria**:
+  - Shows all memberships (past and present)
+  - Active membership highlighted
+### P2-05: Workouts Tab API
+- **Objective**: Implement API for workout plans and assignments tab.
+- **Dependencies**: P2-01
+- **Files/modules affected**:
+  - src/workouts/ (service for workout data)
+- **Database changes**:
+  - workout_templates table
+  - workout_exercises table
+  - workout_sessions table
+- **API changes**:
+  - GET /v1/members/{memberId}/workout-plans
+  - GET /v1/members/{memberId}/workout-sessions
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Workout plan retrieval
+  - Workout session logging
+  - Exercise library integration
+- **Acceptance criteria**:
+  - Lists assigned workout plans
+  - Shows workout session history
+  - Exercise details available
+  - Progress tracking per assignment
+- **Risks**: Workout data inconsistency, missing exercises
+
+### P2-06: Diet Tab API
+- **Objective**: Implement API for diet plans and nutrition tracking tab.
+- **Dependencies**: P2-01
+- **Files/modules affected**:
+  - src/diet/ (service for diet data)
+- **Database changes**:
+  - diet_plans table
+  - meal_templates table
+  - nutrition_logs table
+- **API changes**:
+  - GET /v1/members/{memberId}/diet-plans
+  - GET /v1/members/{memberId}/nutrition-logs
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Diet plan retrieval
+## Phase 3: Finance/Inventory/CRM
+
+### P3-01: Financial Ledger Read Model
+- **Objective**: Implement financially accurate read model for outstanding balances and reporting.
+- **Dependencies**: P1-04
+- **Files/modules affected**:
+  - src/finance/ (service for ledger queries)
+  - Database views or materialized views
+  - Possibly denormalized tables for performance
+- **Database changes**:
+  - Create materialized view for member outstanding balance
+  - Create materialized view for revenue by period
+  - Indexes on financial ledger for reporting
+- **API changes**:
+  - GET /v1/members/{id}/outstanding-balance
+  - GET /v1/financial-reports/revenue-summary
+  - GET /v1/financial-reports/outstanding-by-status
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Balance calculation accuracy
+  - Report data matches source transactions
+  - Concurrency safety
+  - Performance with large datasets
+- **Acceptance criteria**:
+  - Outstanding balance = sum of unpaid invoices
+  - Revenue reports match paid invoices
+  - Reports generated quickly
+  - Data consistent with source of truth
+- **Risks**: Report inaccuracies, performance degradation
+
+### P3-02: Refunds and Credit Notes
+- **Objective**: Implement full refund and credit note lifecycle.
+- **Dependencies**: P1-04
+- **Files/modules affected**:
+  - src/finance/ (refund and credit note service)
+- **Database changes**:
+  - refunds table (completed in P1-04)
+  - credit_notes table (completed in P1-04)
+- **API changes**:
+  - POST /v1/payments/{id}/refunds (enhanced)
+### P3-05: Inventory Management
+- **Objective**: Implement inventory tracking for retail items and supplies.
+- **Dependencies**: P0-01
+- **Files/modules affected**:
+  - src/inventory/ (module, controller, service, dto, entity)
+- **Database changes**:
+  - inventory_items table
+  - inventory_transactions table
+  - inventory_lots table
+  - suppliers table
+  - purchase_orders table
+- **API changes**:
+  - GET /v1/inventory/items (paginated, filterable)
+  - POST /v1/inventory/items
+  - GET /v1/inventory/items/{id}
+  - PATCH /v1/inventory/items/{id}
+  - POST /v1/inventory/transactions
+  - GET /v1/inventory/lots (paginated, filterable)
+  - POST /v1/inventory/purchase-orders
+  - GET /v1/inventory/purchase-orders/{id}
+- **Frontend changes**: None
+- **Worker changes**:
+  - Inventory reorder worker (suggests POs)
+  - Expiry checker worker (for lot expiration)
+- **Tests**:
+  - Stock level calculations
+  - Transaction types (in/out/adjustment)
+  - Lot tracking and expiry
+  - Purchase order lifecycle
+- **Acceptance criteria**:
+  - Items tracked with SKU, description, cost
+  - Stock levels updated on transactions
+  - Lot expiry tracking
+  - Purchase orders created and received
+- **Risks**: Inventory shrinkage, stock inaccuracies
+
+### P3-06: CRM Lead Management
+- **Objective**: Implement lead tracking, follow-up, and conversion funnel.
+- **Dependencies**: P0-05 (Identity for auth)
+- **Files/modules affected**:
+  - src/crm/ (module, controller, service, dto, entity)
+## Phase 4: Biometric + Offline Edge
+
+### P4-01: Device Registry and Credentials
+- **Objective**: Implement device registry for biometric devices and credential management.
+- **Dependencies**: P0-05 (for auth/security)
+- **Files/modules affected**:
+  - src/edge-agent/ (module for device management)
+  - Device registry entity and service
+- **Database changes**:
+  - device_registry table
+  - device_credentials table
+  - device_metadata table
+- **API changes**:
+  - GET /v1/edge/devices (paginated)
+  - POST /v1/edge/devices
+  - GET /v1/edge/devices/{id}
+  - PATCH /v1/edge/devices/{id}
+  - DELETE /v1/edge/devices/{id}
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Device registration validation
+  - Credential security (encryption at rest)
+  - Device status tracking
+  - Credential rotation
+- **Acceptance criteria**:
+  - Devices registered with unique identifiers
+  - Credentials stored securely
+  - Device status (online/offline) tracked
+  - Credentials can be rotated
+- **Risks**: Credential leakage, device impersonation
+
+### P4-02: Edge Agent Core (SQLite, Queue)
+- **Objective**: Build core edge agent components: SQLite database and persistent queue.
+- **Dependencies**: None (can start early)
+- **Files/modules affected**:
+  - Edge agent SQLite schema
+  - Outbox/inbox tables for edge agent
+  - Sync manager logic
+- **Database changes** (edge agent local SQLite):
+  - Local outbox table (events to upload)
+### P4-05: Eligibility Snapshot Distributor
+- **Objective**: Implement worker that distributes eligibility snapshots to edge agents.
+- **Dependencies**: P1-02, P1-03, P1-04 (eligibility determination)
+- **Files/modules affected**:
+  - src/edge-agent/ (service for eligibility distribution)
+  - Worker that runs periodically
+- **Database changes**:
+  - eligibility_snapshots table (may enhance from P0-03)
+  - Potentially snapshot_metadata table
+- **API changes**:
+  - GET /v1/edge/eligibility-snapshots/{orgId} (for edge pull)
+  - Or worker pushes via internal API
+- **Frontend changes**: None
+- **Worker changes**:
+  - Eligibility snapshot distributor worker
+- **Tests**:
+  - Snapshot accuracy (matches membership status)
+  - Distribution timing and frequency
+  - Handling of eligibility changes
+  - Snapshot size and performance
+- **Acceptance criteria**:
+  - Snapshots accurately reflect eligibility
+  - Distributed to edge agents on schedule
+  - Updates sent when eligibility changes
+  - Edge agents can apply snapshots correctly
+- **Risks**: Stale eligibility data, distribution failures
+
+### P4-06: Sync Ingest API
+- **Objective**: Implement API endpoint for edge agents to upload batches of events.
+- **Dependencies**: P0-06 (outbox/inbox), P0-05 (auth)
+- **Files/modules affected**:
+  - src/edge-sync/ (module for sync ingest)
+  - Controller and service for ingest
+- **Database changes**:
+  - May enhance shared.inbox for edge events
+  - Or create edge_specific tables
+- **API changes**:
+  - POST /v1/edge/sync (main ingest endpoint)
+  - GET /v1/edge/sync/status/{deviceId}
+  - GET /v1/edge/conflicts (paginated)
+  - POST /v1/edge/conflicts/{id}/resolve
+## Phase 5: Notifications/Marketing
+
+### P5-01: Notification Policy Engine
+- **Objective**: Implement engine for evaluating notification triggers and conditions.
+- **Dependencies**: P0-06 (events), P0-05 (auth)
+- **Files/modules affected**:
+  - src/notifications/ (policy engine service)
+  - Policy evaluation logic
+  - Condition language implementation
+- **Database changes**:
+  - notification_policies table
+  - policy_execution_log table
+- **API changes**:
+  - GET /v1/notification/policies (paginated)
+  - POST /v1/notification/policies
+  - GET /v1/notification/policies/{id}
+  - PATCH /v1/notification/policies/{id}
+- **Frontend changes**: None
+- **Worker changes**:
+  - Notification policy evaluator worker
+- **Tests**:
+  - Trigger evaluation accuracy
+  - Condition language parsing
+  - Policy execution timing
+  - Concurrent policy safety
+- **Acceptance criteria**:
+  - Policies correctly evaluate triggers
+  - Conditions work as specified
+  - Policies executed on schedule or event
+  - Execution logged for auditing
+- **Risks**: Policy engine performance, incorrect evaluations
+
+### P5-02: Template Resolver and Personalization
+- **Objective**: Implement template system with personalization and localization.
+- **Dependencies**: P5-01
+- **Files/modules affected**:
+  - src/notifications/ (template service)
+  - Template storage and versioning
+  - Personalization engine (handlebar-like)
+  - Internationalization support
+- **Database changes**:
+### P5-04: WhatsApp Adapter
+- **Objective**: Implement adapter for WhatsApp Business API delivery.
+- **Dependencies**: P5-01, P5-02, P5-03
+- **Files/modules affected**:
+  - src/notifications/channels/whatsapp/
+  - WhatsApp API integration
+  - Template message handling (HSM)
+- **Database changes**:
+  - Enhance notification_channels for Whatsam
+  - WhatsApp-specific message templates
+- **API changes**:
+  - WhatsApp channel CRUD (same as P5-03)
+- **Frontend changes**: None
+- **Worker changes**:
+  - WhatsApp adapter worker
+- **Tests**:
+  - Template message submission
+  - Session message handling
+  - Media message support
+  - Opt-in/opt-out compliance
+- **Acceptance criteria**:
+  - WhatsApp messages sent via API
+  - Template messages work correctly
+  - Media messages supported
+  - Opt-in status respected
+- **Risks**: WhatsApp policy violations, message blocking
+
+### P5-05: Delivery Tracking and DLQ
+- **Objective**: Implement delivery tracking, failure handling, and dead letter queue.
+- **Dependencies**: P5-01 through P5-04
+- **Files/modules affected**:
+  - src/notifications/ (tracking service)
+  - Dead letter queue implementation
+  - Retry logic with exponential backoff
+- **Database changes**:
+  - notification_attempts table (enhance)
+  - notification_deliveries table (enhance)
+  - notification_dlq table (dead letter queue)
+- **API changes**:
+  - GET /v1/notification/deliveries (paginated)
+  - GET /v1/notification/dlq (paginated)
+## Phase 6: Analytics
+
+### P6-01: Read Replica and Reporting Schema
+- **Objective**: Set up PostgreSQL read replica and reporting schema for analytics.
+- **Dependencies**: P0-03
+- **Files/modules affected**:
+  - Database replication configuration
+  - Reporting schema creation
+  - Connection routing configuration
+- **Database changes**:
+  - Configure read replica
+  - Create reporting schema
+  - Set up replication slots
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Replica lag monitoring
+  - Query routing to replica
+  - Data consistency checks
+  - Failover simulation
+- **Acceptance criteria**:
+  - Read replica replicating correctly
+  - Reporting schema isolated
+  - Queries routed to replica
+  - Lag within acceptable limits
+- **Risks**: Replication lag, inconsistency
+
+### P6-02: Python Reporting Worker
+- **Objective**: Implement Python worker for generating reports and analytics.
+- **Dependencies**: P6-01
+- **Files/modules affected**:
+  - Python reporting service
+  - Report generation logic
+  - Scheduled report execution
+- **Database changes**:
+  - Potentially add report scheduling tables
+  - Or use existing tables
+- **API changes**:
+  - POST /v1/report/schemas/{id}/execute
+  - GET /v1/report/jobs/{id}
+### P6-04: Reconciliation Workers
+- **Objective**: Implement workers for reconciling data between systems.
+- **Dependencies**: P1-04, P3-03, P4-06
+- **Files/modules affected**:
+  - src/finance/ (reconciliation service)
+  - src/attendance/ (reconciliation service)
+  - src/edge-sync/ (reconciliation service)
+- **Database changes**:
+  - reconciliation_logs table
+  - Potentially discrepancy tables
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**:
+  - Financial reconciliation worker (ledger vs gateway)
+  - Attendance reconciliation worker (device vs cloud)
+  - Edge sync reconciliation worker (eligibility vs events)
+- **Tests**:
+  - Reconciliation accuracy
+  - Discrepancy detection and logging
+  - Automatic correction where possible
+  - Manual intervention workflow
+- **Acceptance criteria**:
+  - Reconciles financial ledger with gateway statements
+  - Matches device events with cloud records
+  - Validates edge eligibility decisions
+  - Logs discrepancies for investigation
+- **Risks**: Reconciliation loops, missed discrepancies
+
+### P6-05: Analytics Dashboards
+- **Objective**: Create analytics dashboards for business insights.
+- **Dependencies**: P6-01 through P6-04
+- **Files/modules affected**:
+  - apps/web/analytics/ (pages and components)
+  - Dashboard layouts and widgets
+  - Charting library integration
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**:
+  - Analytics dashboard route
+  - Widget components (charts, tables, metrics)
+  - Date range selectors
+## Phase 7: Enterprise Scale
+
+### P7-01: Partitioning and Archival Strategy
+- **Objective**: Implement table partitioning and data archival for large tables.
+- **Dependencies**: P6-01 (read replica for reporting)
+- **Files/modules affected**:
+  - Database partitioning procedures
+  - Archival jobs and procedures
+  - Partition maintenance scripts
+- **Database changes**:
+  - Partition attendance_events by month
+  - Partition financial_ledger by year
+  - Create archival tables
+  - Set up partitioning maintenance
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**:
+  - Partition maintenance worker
+  - Archival worker (move to cold storage)
+- **Tests**:
+  - Partition creation and maintenance
+  - Query performance on partitions
+  - Archival and retrieval process
+  - Point-in-time recovery with partitions
+- **Acceptance criteria**:
+  - Large tables partitioned correctly
+  - Queries route to appropriate partitions
+  - Archival moves data to cost-effective storage
+  - Retrieval works when needed
+- **Risks**: Partitioning errors, archival failures
+
+### P7-02: Platform Administration
+- **Objective**: Implement platform-level administration features.
+- **Dependencies**: P0-04, P0-05
+- **Files/modules affected**:
+  - src/platform-admin/ (new module)
+  - Platform-wide settings and billing
+  - Organization provisioning workflow
+- **Database changes**:
+  - platform_settings table
+  - organization_billing table
+### P7-04: Load/Chaos Gates
+- **Objective**: Implement performance testing and chaos engineering gates.
+- **Dependencies**: P6-01 (baseline metrics)
+- **Files/modules affected**:
+  - Chaos testing framework
+  - Load testing scripts
+  - Performance monitoring enhancement
+  - Gate definitions (pass/fail criteria)
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Load testing at expected scale
+  - Chaos experiments (network, instance failure)
+  - Performance regression detection
+  - Recovery time objectives
+- **Acceptance criteria**:
+  - System handles expected load
+  - Graceful degradation under failure
+  - Recovery within time objectives
+  - No data loss during chaos tests
+- **Risks**: Test environment differences, false negatives
+
+### P7-05: DR Drill Automation
+- **Objective**: Automate disaster recovery drills and validation.
+- **Dependencies**: P7-04, P0-09 (CI/CD for deployment)
+- **Files/modules affected**:
+  - DR runbook automation
+  - Failover testing scripts
+  - Data validation procedures
+  - Cutover and switchback procedures
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Full failover drill execution
+  - Data integrity validation
+  - Application functionality testing
+  - Performance baseline confirmation
+- **Acceptance criteria**:
+  - Failover completes within RTO
+  - Data integrity verified
+  - Application functions correctly
+  - Performance meets SLAs
+  - Switchback procedure works
+- **Risks**: DR plan gaps, incomplete validation
+
+--- 
+
+*Document Version: 1.0*
+*Last Updated: 2026-09-01*
+  - provisioning_requests table
+  - audit_log enhancements for platform actions
+- **API changes**:
+  - Platform admin APIs (internal)
+  - Organization provisioning endpoints
+  - Platform settings endpoints
+- **Frontend changes**:
+  - Platform admin dashboard
+  - Organization management
+  - Billing and subscription management
+  - System health monitoring
+- **Worker changes**:
+  - Provisioning workflow worker
+  - Billing cycle worker
+- **Tests**:
+  - Organization provisioning flow
+  - Platform settings management
+  - Billing and invoicing
+  - Health monitoring alerts
+- **Acceptance criteria**:
+  - Platform admins can manage system
+  - Organizations can be provisioned
+  - Billing and invoicing works
+  - System health visible
+- **Risks**: Platform security breach, billing errors
+
+### P7-03: SaaS Subscription Billing
+- **Objective**: Implement billing for the platform itself to customers.
+- **Dependencies**: P7-02, P3-04
+- **Files/modules affected**:
+  - src/platform-billing/ (new module)
+  - Subscription plans and cycles
+  - Usage-based billing if applicable
+- **Database changes**:
+  - platform_subscription_plans table
+  - organization_subscriptions table
+  - usage_metrics table (if applicable)
+  - platform_invoices table
+- **API changes**:
+  - Platform billing APIs
+  - Usage reporting endpoints
+  - Invoice and payment endpoints
+- **Frontend changes**:
+  - Billing portal for organizations
+  - Subscription management
+  - Usage dashboard
+- **Worker changes**:
+  - Subscription renewal worker
+  - Usage aggregation worker
+- **Tests**:
+  - Subscription creation and renewal
+  - Usage-based billing accuracy
+  - Proration and plan changes
+  - Payment failure handling
+- **Acceptance criteria**:
+  - Organizations subscribed to plans
+  - Usage billed correctly if applicable
+  - Plan changes handled correctly
+  - Payment failures managed
+- **Risks**: Billing errors, revenue leakage
+  - Export functionality (CSV, Excel)
+  - Drill-down capabilities
+- **Worker changes**: None
+- **Tests**:
+  - Dashboard load performance
+  - Chart data accuracy
+  - Interactive functionality
+  - Export correctness
+- **Acceptance criteria**:
+  - Dashboard loads within SLA
+  - Charts display accurate data
+  - Interactive elements work
+  - Export produces correct files
+- **Risks**: Dashboard performance, misleading visualizations
+  - GET /v1/report/jobs (history)
+- **Frontend changes**: None
+- **Worker changes**:
+  - Python reporting worker (Celery or similar)
+- **Tests**:
+  - Report generation accuracy
+  - Scheduled report execution
+  - Report performance
+  - Error handling and retry
+- **Acceptance criteria**:
+  - Reports generated accurately
+  - Scheduled reports run on time
+  - Performance within SLAs
+  - Failed reports retry appropriately
+- **Risks**: Report inaccuracies, performance issues
+
+### P6-03: Materialized Views for Reporting
+- **Objective**: Create materialized views for common reporting queries.
+- **Dependencies**: P6-01
+- **Files/modules affected**:
+  - Database materialized view definitions
+  - Refresh schedules and procedures
+- **Database changes**:
+  - Create materialized views:
+    - Member summary dashboard
+    - Monthly revenue by organization
+    - Attendance trends and peak times
+    - Membership growth and churn
+    - Financial summary reports
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**:
+  - Materialized view refreshed worker
+- **Tests**:
+  - Materialized view accuracy
+  - Refresh performance
+  - Concurrent refresh handling
+  - Stale data detection
+- **Acceptance criteria**:
+  - Views match source query results
+  - Refresh completes within window
+  - Concurrent access handled
+  - Stale data indicated appropriately
+- **Risks**: View refresh failures, stale data
+  - POST /v1/notification/dlq/{id}/retry
+- **Frontend changes**: None
+- **Worker changes**:
+  - Delivery tracker worker
+  - DLQ processor worker
+  - Retry worker with backoff
+- **Tests**:
+  - Delivery status tracking
+  - Failed delivery retry logic
+  - DLQ message handling
+  - Manual replay from DLQ
+- **Acceptance criteria**:
+  - Delivery attempts logged with status
+  - Failed deliveries retried with backoff
+  - Permanently failed moves to DLQ
+  - DLQ messages can be replayed
+- **Risks**: DLQ buildup, retry storms
+
+### P5-06: Campaign Management
+- **Objective**: Implement marketing campaign creation and execution.
+- **Dependencies**: P5-01 through P5-05
+- **Files/modules affected**:
+  - src/notifications/ (campaign service)
+  - Campaign definition and execution
+  - Member segmentation and targeting
+- **Database changes**:
+  - campaigns table
+  - campaign_logs table
+  - segmentation_rules table
+  - campaign_targets table
+- **API changes**:
+  - GET /v1/campaigns (paginated, filterable)
+  - POST /v1/campaigns
+  - GET /v1/campaigns/{id}
+  - PATCH /v1/campaigns/{id}
+  - POST /v1/campaigns/{id}/execute
+  - GET /v1/segmentation/rules
+- **Frontend changes**: None
+- **Worker changes**:
+  - Campaign execution worker
+  - Segmentation worker
+- **Tests**:
+  - Campaign creation and scheduling
+  - Segmentation accuracy
+  - Campaign execution tracking
+  - A/B testing functionality
+- **Acceptance criteria**:
+  - Campaigns can be created and scheduled
+  - Members correctly segmented
+  - Campaigns executed as specified
+  - Results tracked and reported
+- **Risks**: Campaign fatigue, incorrect targeting
+  - notification_templates table
+  - template_versions table
+  - template_languages table
+- **API changes**:
+  - GET /v1/notification/templates (paginated)
+  - POST /v1/notification/templates
+  - GET /v1/notification/templates/{id}
+  - PATCH /v1/notification/templates/{id}
+- **Frontend changes**: None
+- **Worker changes**:
+  - Template resolver worker (for merging data)
+- **Tests**:
+  - Template rendering accuracy
+  - Personalization data substitution
+  - Language fallback and localization
+  - Template versioning
+- **Acceptance criteria**:
+  - Templates render with correct data
+  - Personalization tags replaced
+  - Multi-language support
+  - Template versioning works
+- **Risks**: Template injection, personalization errors
+
+### P5-03: Channel Adapters (Email/SMS)
+- **Objective**: Implement adapters for email and SMS delivery channels.
+- **Dependencies**: P5-01, P5-02
+- **Files/modules affected**:
+  - src/notifications/channels/email/
+  - src/notifications/channels/sms/
+  - Adapter interfaces and implementations
+- **Database changes**:
+  - notification_channels table (config)
+  - notification_attempts table (enhance)
+  - notification_deliveries table (enhance)
+- **API changes**:
+  - GET /v1/notification/channels
+  - POST /v1/notification/channels
+  - GET /v1/notification/channels/{id}
+  - PATCH /v1/notification/channels/{id}
+- **Frontend changes**: None
+- **Worker changes**:
+  - Email adapter worker
+  - SMS adapter worker
+  - Delivery tracking worker
+- **Tests**:
+  - Email delivery success/failure
+  - SMS delivery success/failure
+  - Rate limiting and throttling
+  - Provider error handling
+- **Acceptance criteria**:
+  - Email sent via provider API
+  - SMS sent via provider API
+  - Delivery tracking recorded
+  - Errors handled and retried
+- **Risks**: Delivery failures, cost overruns, provider issues
+- **Frontend changes**: None
+- **Worker changes**:
+  - Batch sync processor worker (handles incoming batches)
+  - Conflict detector worker
+- **Tests**:
+  - Batch validation and processing
+  - Idempotency (duplicate batch handling)
+  - Conflict detection logic
+  - Error handling and rejection
+- **Acceptance criteria**:
+  - Accepts and validates event batches
+  - Processes batches idempotently
+  - Detects and logs conflicts
+  - Returns appropriate sync receipt
+- **Risks**: Ingest bottleneck, duplicate processing
+
+### P4-07: Access Decision Engine and Relay Control
+- **Objective**: Implement local access decision engine and relay control logic.
+- **Dependencies**: P4-02, P4-05
+- **Files/modules affected**:
+  - src/edge-agent/ (access decision service)
+  - Relay controller interface
+  - Configuration for rules (anti-passback, time windows)
+- **Database changes** (edge local):
+  - access_decisions table (for local audit)
+  - relay_state table
+  - anti_passback_state table
+- **API changes**: None (edge internal)
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Eligibility evaluation
+  - Time window validation
+  - Anti-passback rule enforcement
+  - Relay triggering logic
+- **Acceptance criteria**:
+  - Correctly grants/denies access based on rules
+  - Triggers relay for granted access
+  - Logs all decisions with reasons
+  - Handles edge cases (expired, blocked, etc.)
+- **Risks**: Incorrect access decisions, relay failures
+
+### P4-08: Offline Conflict Handling
+- **Objective**: Implement conflict detection and resolution mechanisms.
+- **Dependencies**: P4-06, P4-07
+- **Files/modules affected**:
+  - src/edge-sync/ (conflict detection service)
+  - Conflict resolution workflow
+  - UI for manual resolution
+- **Database changes**:
+  - sync_conflicts table (enhanced from planning)
+  - conflict_resolution_log table
+- **API changes**:
+  - GET /v1/edge/conflicts (enhanced)
+  - POST /v1/edge/conflicts/{id}/resolve
+  - GET /v1/edge/sync/status (enhanced)
+- **Frontend changes**: None
+- **Worker changes**:
+  - Conflict detector worker
+  - Conflict resolution worker (suggests resolutions)
+- **Tests**:
+  - Duplicate event detection
+  - Eligibility mismatch detection
+  - Clock skew detection and handling
+  - Resolution workflow execution
+- **Acceptance criteria**:
+  - Detects duplicate events correctly
+  - Identifies eligibility mismatches
+  - Handles clock skew appropriately
+  - Provers resolution suggestions
+- **Risks**: Incorrect conflict resolution, data loss
+
+### P4-09: Edge E2E Chaos Tests
+- **Objective**: Create end-to-end chaos tests for edge agent scenarios.
+- **Dependencies**: P4-01 through P4-08
+- **Files/modules affected**:
+  - Test suite for edge-agent-cloud interaction
+  - Chaos injection tools (network, latency, failure)
+  - Test data generators
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Network partition simulation
+  - Device failure scenarios
+  - Clock drift injection
+  - Power loss and recovery
+  - Malicious data injection
+- **Acceptance criteria**:
+  - System maintains safety during failures
+  - Data consistency after recovery
+  - Access decisions conservative during uncertainty
+  - Recovery automatic where possible
+- **Risks**: Test complexity, false positives in chaos testing
+  - Local inbox table (processed cloud messages)
+  - Eligibility cache table
+  - Device state table
+- **API changes**: None (edge internal)
+- **Frontend changes**: None
+- **Worker changes**: None (edge agent is the worker)
+- **Tests**:
+  - SQLite schema integrity
+  - Queue persistence across restarts
+  - Idempotency in outbox/inbox
+  - Crash recovery
+- **Acceptance criteria**:
+  - Local SQLite database initialized
+  - Events queued persistently
+  - State recovered after crash
+  - Idempotency prevents duplicates
+- **Risks**: Database corruption, queue loss
+
+### P4-03: ZKTeco Device Adapter
+- **Objective**: Implement adapter for ZKTeco biometric devices.
+- **Dependencies**: P4-02
+- **Files/modules affected**:
+  - src/edge-agent/adapters/zkteco/
+  - Device communication logic
+  - Event translation to internal format
+- **Database changes**: None (edge local)
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Device connection and discovery
+  - Event capture (fingerprint, card, etc.)
+  - Error handling and timeouts
+  - Communication protocol compliance
+- **Acceptance criteria**:
+  - Successfully connects to ZKTeco device
+  - Receives biometric events
+  - Translates to internal event format
+  - Handles device errors gracefully
+- **Risks**: SDK compatibility, device communication failures
+
+### P4-04: eSSL Device Adapter
+- **Objective**: Implement adapter for eSSL biometric devices.
+- **Dependencies**: P4-02
+- **Files/modules affected**:
+  - src/edge-agent/adapters/essl/
+  - Device communication logic
+  - Event translation to internal format
+- **Database changes**: None (edge local)
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Device connection and discovery
+  - Event capture (fingerprint, face, etc.)
+  - Error handling and timeouts
+  - Communication protocol compliance
+- **Acceptance criteria**:
+  - Successfully connects to eSSL device
+  - Receives biometric events
+  - Translates to internal event format
+  - Handles device errors gracefully
+- **Risks**: SDK compatibility, device communication failures
+- **Database changes**:
+  - leads table
+  - lead_sources table
+  - lead_stages table
+  - lead_activities table
+  - follow_ups table
+  - trials table
+  - visits table
+  - conversions table
+- **API changes**:
+  - GET /v1/leads (paginated, filterable)
+  - POST /v1/leads
+  - GET /v1/leads/{id}
+  - PATCH /v1/leads/{id}
+  - POST /v1/leads/{id}/activities
+  - POST /v1/leads/{id}/follow-ups
+  - POST /v1/leads/{id}/convert
+  - GET /v1/leads/{id}/trials
+- **Frontend changes**: None
+- **Worker changes**:
+  - Lead nurturing worker (automated follow-ups)
+  - Follow-up scheduler worker
+- **Tests**:
+  - Lead lifecycle progression
+  - Activity and follow-up logging
+  - Conversion tracking accuracy
+  - Lead source attribution
+- **Acceptance criteria**:
+  - Leads created and tracked
+  - Activities and follow-ups recorded
+  - Leads can be converted to members
+  - Trial memberships created
+- **Risks**: Lead leakage, incorrect conversion tracking
+
+### P3-07: Follow-ups and SLAs
+- **Objective**: Implement automated follow-up tasks and service level agreements.
+- **Dependencies**: P3-06
+- **Files/modules affected**:
+  - src/crm/ (follow-up service enhancement)
+  - SLA tracking entities
+- **Database changes**:
+  - Enhance follow_ups table with SLA fields
+  - Create sla_policies table
+  - Create sla_breaches table
+- **API changes**:
+  - GET /v1/follow-ups/due
+  - POST /v1/follow-ups/{id}/complete
+  - GET /v1/sla/reports
+- **Frontend changes**: None
+- **Worker changes**:
+  - Follow-up scheduler worker (enhanced)
+  - SLA monitoring worker
+- **Tests**:
+  - Follow-up due date calculation
+  - SLA timing and escalation
+  - Overdue follow-up reporting
+  - Escalation workflow
+- **Acceptance criteria**:
+  - Follow-ups generated per SLA
+  - Overdue follow-ups escalated
+  - SLA compliance tracked
+  - Escalation notifications sent
+- **Risks**: Follow-up fatigue, SLA gaming
+  - POST /v1/invoices/{id}/credit-notes
+  - GET /v1/refunds (paginated)
+  - GET /v1/credit-notes (paginated)
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Refund validation (amount <= payment)
+  - Credit note validation (amount <= invoice)
+  - Financial ledger impact
+  - Reversal scenarios
+- **Acceptance criteria**:
+  - Refunds correctly reduce payment amount
+  - Credit notes correctly reduce invoice amount
+  - Both update financial ledger
+  - Cannot refund more than collected
+- **Risks**: Financial inaccuracies, fraud opportunities
+
+### P3-03: Payment Gateway Integration
+- **Objective**: Integrate with real payment gateway (e.g., Stripe) with webhook handling.
+- **Dependencies**: P1-04, P0-06 (for idempotency)
+- **Files/modules affected**:
+  - src/finance/ (payment service enhancement)
+  - Webhook controller
+  - Payment provider adapters
+- **Database changes**:
+  - Enhance payments table with gateway-specific fields
+  - Potentially add webhook logs table
+- **API changes**:
+  - POST /v1/payments/{id}/process (initiate gateway payment)
+  - POST /v1/webhooks/payment-gateway (idempotent)
+- **Frontend changes**: None
+- **Worker changes**:
+  - Payment retry worker (enhanced for gateway)
+  - Webhook processing worker (if using queue)
+- **Tests**:
+  - Successful payment flow
+  - Failed payment handling
+  - Webhook idempotency
+  - Refund via gateway
+- **Acceptance criteria**:
+  - Payments processed via gateway
+  - Webhooks handled idempotently
+  - Failed payments retry appropriately
+  - Refunds processed via gateway
+- **Risks**: Security vulnerabilities, financial losses
+
+### P3-04: Tax Handling and Discounts
+- **Objective**: Implement tax calculation and discount application.
+- **Dependencies**: P1-04
+- **Files/modules affected**:
+  - src/finance/ (tax and discount service)
+- **Database changes**:
+  - tax_lines table (completed in P1-04)
+  - Potentially tax_rates table
+  - membership_discounts table (completed in P1-03)
+- **API changes**:
+  - GET /v1/tax-rates
+  - POST /v1/tax-rates (admin)
+  - Enhance invoice creation with tax/discount
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Tax calculation accuracy
+  - Discount application rules
+  - Combined tax and discount scenarios
+  - Tax-exempt handling
+- **Acceptance criteria**:
+  - Taxes calculated correctly per jurisdiction
+  - Discounts applied before/after tax as configured
+  - Tax-exempt members handled
+  - Tax reporting data available
+- **Risks**: Tax calculation errors, compliance issues
+  - Nutrition log storage
+  - Meal template usage
+- **Acceptance criteria**:
+  - Shows assigned diet plans
+  - Lists nutrition logs
+  - Meal template details available
+  - Nutritional summary (calories, macros)
+- **Risks**: Nutrition data inaccuracies, template mismatches
+
+### P2-07: Measurements Tab API
+- **Objective**: Implement API for body measurements tracking tab.
+- **Dependencies**: P2-01
+- **Files/modules affected**:
+  - src/members/ (service for measurement data)
+- **Database changes**:
+  - measurement_logs table (new)
+- **API changes**:
+  - GET /v1/members/{memberId}/measurements
+  - POST /v1/members/{memberId}/measurements
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Measurement validation (ranges, types)
+  - Time series data storage
+  - Aggregation for charts
+- **Acceptance criteria**:
+  - Stores weight, height, body fat, etc.
+  - Time-stamped measurement records
+  - Validates input ranges
+  - Supports aggregation for trends
+- **Risks**: Measurement fraud, inconsistent units
+
+### P2-08: Loyalty Points and Transactions API
+- **Objective**: Implement API for loyalty points balance and transaction history.
+- **Dependencies**: P2-01
+- **Files/modules affected**:
+  - src/notifications/ or src/members/ (points service)
+- **Database changes**:
+  - loyalty_points table (member_id, balance)
+  - loyalty_transactions table
+- **API changes**:
+  - GET /v1/members/{memberId}/points/balance
+  - GET /v1/members/{memberId}/points/transactions
+  - POST /v1/members/{memberId}/points/adjust (internal/admin)
+- **Frontend changes**: None
+- **Worker changes**:
+  - Points calculation worker (for awarding points)
+- **Tests**:
+  - Points accrual for activities
+  - Balance calculation accuracy
+  - Transaction history completeness
+  - Points expiration (if applicable)
+- **Acceptance criteria**:
+  - Shows current points balance
+  - Lists earning and redemption transactions
+  - Points awarded for configured activities
+  - Balance updates in real-time
+- **Risks**: Points inflation, incorrect accrual rules
+
+### P2-09: Member 360 Tab UI with Lazy Loading
+- **Objective**: Create Member 360 page with tabs and lazy loading.
+- **Dependencies**: P2-01 through P2-08
+- **Files/modules affected**:
+  - apps/web/pages/members/[id]/360.tsx
+  - Individual tab components
+  - Lazy loading wrappers
+  - Shared UI components
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**:
+  - Member 360 route layout
+  - Tab navigation component
+  - Individual tab components (Memberships, Services, PT, etc.)
+  - Lazy loading for heavy tabs
+  - Loading and error states
+- **Worker changes**: None
+- **Tests**:
+  - E2E navigation between tabs
+  - Lazy loading works correctly
+  - Tab state preservation
+  - Responsive design
+- **Acceptance criteria**:
+  - Member 360 page accessible
+  - Tabs load content correctly
+  - Lazy loading defers non-critical tabs
+  - UI responsive and accessible
+- **Risks**: Poor tab performance, UI inconsistency
+  - Dates and plans correct
+  - Pagination works
+- **Risks**: Performance with long membership history
+
+### P2-03: Services Tab API
+- **Objective**: Implement API for service subscriptions tab.
+- **Dependencies**: P2-01
+- **Files/modules affected**:
+  - src/scheduling/ (service for member enrollments)
+- **Database changes**:
+  - member_service_bookings table (if not in P1)
+- **API changes**:
+  - GET /v1/members/{memberId}/service-bookings
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Active service bookings retrieval
+  - Past bookings inclusion
+  - Service details population
+- **Acceptance criteria**:
+  - Lists current service subscriptions
+  - Shows service details and schedule
+  - Past bookings accessible
+  - Filtering by status
+- **Risks**: Missing service data, incorrect scheduling
+
+### P2-04: Personal Training Tab API
+- **Objective**: Implement API for personal training tab.
+- **Dependencies**: P2-01
+- **Files/modules affected**:
+  - src/pt/ (service for member PT data)
+- **Database changes**:
+  - pt_enrollments table
+  - pt_sessions table
+  - workout_assignments table
+  - workout_progress table
+- **API changes**:
+  - GET /v1/members/{memberId}/pt-enrollments
+  - GET /v1/members/{memberId}/pt-sessions
+  - GET /v1/members/{memberId}/workout-progress
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - PT enrollment data accuracy
+  - Session history retrieval
+  - Workout progress tracking
+- **Acceptance criteria**:
+  - Shows active PT enrollments
+  - Lists past and future sessions
+  - Shows workout assignments and progress
+  - Session booking/cancellation history
+- **Risks**: Incomplete PT data, progress tracking gaps
+  - Branch settings configurable
+  - Settings properly inherited/overridden
+  - Changes audited
+  - Default values provided
+- **Risks**: Configuration drift, inconsistent settings
+
+### P1-07: Member Search and Listing
+- **Objective**: Implement efficient member search and listing with filtering.
+- **Dependencies**: P1-01
+- **Files/modules affected**:
+  - src/members/ (service enhancements)
+  - Database indexes for search
+- **Database changes**:
+  - Add indexes for member search (name, email, phone)
+  - Consider pg_trgm for fuzzy matching
+- **API changes**:
+  - Enhance GET /v1/members with filtering parameters
+  - Add search query parameter
+  - Add sort parameters
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Search performance with indexes
+  - Filter combinations work
+  - Pagination correctness
+  - Sorting options
+- **Acceptance criteria**:
+  - Members searchable by name, email, phone
+  - Filtering works correctly
+  - Pagination handles large result sets
+  - Sorting by multiple fields
+- **Risks**: Search performance degradation, incorrect results
+
+### P1-08: Basic Web Shell and Dashboard
+- **Objective**: Create basic Next.js shell with navigation and placeholder dashboard.
+- **Dependencies**: P0-01, P0-04, P0-05 (for auth)
+- **Files/modules affected**:
+  - apps/web/ (pages, components, layout)
+  - Next.js configuration
+  - Auth integration with Next.js
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**:
+  - Login page
+  - Logout functionality
+  - Main layout with navigation
+  - Placeholder dashboard showing key metrics
+  - Not-found page
+- **Worker changes**: None
+- **Tests**:
+  - E2E login flow
+  - Navigation between pages
+  - Auth protection on routes
+  - Responsive layout
+- **Acceptance criteria**:
+  - Users can log in and out
+  - Protected routes require authentication
+  - Basic navigation works
+  - Dashboard placeholder shown
+- **Risks**: Auth bypass, navigation issues
+  - membership_plans table
+  - memberships table
+- **API changes**:
+  - GET /v1/membership-plans
+  - POST /v1/membership-plans
+  - GET /v1/membership-plans/{id}
+  - POST /v1/members/{memberId}/memberships
+  - GET /v1/memberships/{id}
+  - PATCH /v1/memberships/{id}
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Plan validation (price, duration)
+  - Membership creation validation
+  - Membership lifecycle checks
+  - Concurrent sale prevention
+- **Acceptance criteria**:
+  - Plans created with pricing and billing cycle
+  - Members can purchase memberships
+  - Memberships tied to member and organization
+  - Basic CRUD operations work
+- **Risks**: Plan configuration errors, membership data inconsistency
+
+### P1-03: Membership Lifecycle State Machine
+- **Objective**: Implement membership state transitions (active, paused, cancelled, expired).
+- **Dependencies**: P1-02
+- **Files/modules affected**:
+  - src/memberships/ (service for state transitions)
+  - State machine logic (possibly using XState or custom)
+  - Database already has status field
+- **Database changes**:
+  - membership_pauses table
+  - membership_cancellations table
+  - membership_extensions table
+  - membership_transfers table
+  - membership_discounts table
+- **API changes**:
+  - POST /v1/memberships/{id}/pause
+  - POST /v1/memberships/{id}/resume
+  - POST /v1/memberships/{id}/cancel
+  - POST /v1/memberships/{id}/extend
+  - POST /v1/memberships/{id}/transfer
+  - POST /v1/memberships/{id}/discount
+- **Frontend changes**: None
+- **Worker changes**:
+  - Membership expiry checker (to update statuses)
+  - Payment retry worker (for failed renewal payments)
+- **Tests**:
+  - All state transitions valid
+  - Invalid transitions prevented
+  - Pause/resume calculations correct
+  - Cancellation and refund handling
+- **Acceptance criteria**:
+  - Memberships transition through states correctly
+  - Pause/resume maintains continuity
+  - Cancellation stops future billing
+  - Expiration handled automatically
+- **Risks**: State corruption, missed transitions
+
+### P1-04: Core Invoicing and Payment Processing
+- **Objective**: Implement invoice creation and payment recording.
+- **Dependencies**: P1-02, P1-03
+- **Files/modules affected**:
+  - src/finance/ (module, controller, service, dto, entity)
+  - Invoice items, payments, allocations
+- **Database changes**:
+  - invoices table
+  - invoice_items table
+  - payments table
+  - payment_allocations table
+  - refunds table
+  - credit_notes table
+  - tax_lines table
+  - financial_ledger table
+- **API changes**:
+  - GET /v1/invoices (paginated, filterable)
+  - POST /v1/invoices
+  - GET /v1/invoices/{id}
+  - POST /v1/invoices/{id}/payments
+  - GET /v1/payments (paginated)
+  - GET /v1/payments/{id}
+  - POST /v1/payments/{id}/refunds
+  - GET /v1/financial-ledger (paginated)
+- **Frontend changes**: None
+- **Worker changes**:
+  - Payment retry worker (Phase 1 stub)
+  - Revenue recognition worker (deferred)
+- **Tests**:
+  - Invoice calculation (subtotal, tax, total)
+  - Payment application to invoices
+  - Partial payment handling
+  - Refund and credit note logic
+- **Acceptance criteria**:
+  - Invoices generated correctly
+  - Payments applied to invoices
+  - Partial payments tracked
+  - Refunds and credit notes issued
+  - Financial ledger updated
+- **Risks**: Financial inaccuracies, payment application errors
+  - POST /v1/upload (presigned URL or direct)
+  - POST /v1/files (metadata)
+  - GET /v1/files/{id}
+- **Frontend changes**: None
+- **Worker changes**: 
+  - Virus scanning worker (if async)
+- **Tests**:
+  - Upload success/failure
+  - Virus detection and rejection
+  - Metadata storage
+  - Access control enforcement
+- **Acceptance criteria**:
+  - Files uploaded securely to S3
+  - Virus scanning integrated
+  - Access controlled (private by default)
+  - Metadata stored and retrievable
+- **Risks**: Upload bottlenecks, virus scanning false positives
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Cache get/set operations
+  - Cache invalidation on data change
+  - Cache stampede protection
+  - Fallback to DB on cache miss
+- **Acceptance criteria**:
+  - Cache stores data with appropriate TTL
+  - Cache invalidated when source data changes
+  - Fallback to database when cache unavailable
+  - Performance improvement demonstrated
+- **Risks**: Cache inconsistency, memory overuse
+
+### P0-08: Audit Logging
+- **Objective**: Implement comprehensive audit logging for all tenant data changes.
+- **Dependencies**: P0-03, P0-05
+- **Files/modules affected**:
+  - shared/audit-log/ (module, service)
+  - Audit log entity
+  - Database table
+  - Audit interceptor or decorator
+- **Database changes**:
+  - shared.audit_log table
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Audit log creation for CREATE/UPDATE/DELETE
+  - Audit log includes user and timestamp
+  - Audit log contains changes diff
+  - Audit log querying
+- **Acceptance criteria**:
+  - All tenant data changes logged
+  - Audit logs include who, what, when
+  - Logs tamper-evident (append-only)
+  - Queryable by entity and time range
+- **Risks**: Performance impact, log storage growth
+
+### P0-09: CI/CD Pipeline Foundation
+- **Objective**: Set up continuous integration and delivery pipeline with quality gates.
+- **Dependencies**: P0-01
+- **Files/modules affected**:
+  - .github/workflows/ (CI yaml)
+  - Dockerfiles for services
+  - Scripts for linting, testing, building
+  - Pre-commit hooks
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Pipeline runs on commit
+  - Quality gates (lint, test, security)
+  - Docker image builds successfully
+  - Deployment scripts functional
+- **Acceptance criteria**:
+  - CI pipeline runs on every push
+  - Automated testing on PRs
+  - Secure artifact storage
+  - Basic deployment automation
+- **Risks**: Pipeline failures blocking development
+  - Authentication guard and strategy
+  - Token service
+- **Database changes**:
+  - users table
+  - roles table
+  - permissions table
+  - user_roles junction table
+  - role_permissions junction table
+  - auth_tokens table
+  - mfa_secrets table
+- **API changes**:
+  - POST /v1/auth/login
+  - POST /v1/auth/logout
+  - POST /v1/auth/refresh
+  - POST /v1/users
+  - GET /v1/users/{id}
+  - PATCH /v1/users/{id}
+  - POST /v1/users/{id}/mfa/enroll
+  - POST /v1/users/{id}/mfa/verify
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Authentication flow unit tests
+  - Permission checking tests
+  - MFA enrollment and verification
+  - Token expiration and refresh
+- **Acceptance criteria**:
+  - Users can register and log in
+  - JWT tokens issued and validated
+  - RBAC enforced on API endpoints
+  - MFA works correctly
+  - Password hashing secure
+- **Risks**: Authentication vulnerabilities, token leakage
+  - Event schema definitions (JSON Schema or similar)
+- **Database changes**: None
+- **API changes**: None (defines contracts for future APIs)
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Schema validation tests
+  - TypeScript type checking
+  - Versioning compatibility tests
+- **Acceptance criteria**:
+  - Contracts package published and usable
+  - Event schemas defined for core domains
+  - TypeScript interfaces generated from schemas
+  - Backward/forward compatibility tested
+- **Risks**: Schema design mistakes requiring breaking changes later
+
+### P0-03: Database Setup with Multi-tenancy and RLS
+- **Objective**: Configure PostgreSQL with multi-tenancy schema and row-level security.
+- **Dependencies**: P0-01
+- **Files/modules affected**:
+  - Database migration scripts
+  - Shared database module
+  - Tenancy module entities
+- **Database changes**:
+  - Create organizations table
+  - Create branches table
+  - Create shared tables: outbox, inbox, audit_log
+  - Enable RLS on all tenant tables
+  - Add indexes for tenant queries
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - RLS policy testing (cross-tenant access blocked)
+  - Migration script validity
+  - Index effectiveness
+- **Acceptance criteria**:
+  - Database deployed with multi-tenancy support
+  - RLS policies enforce tenant isolation
+  - Migrations run successfully in dev/test
+  - Basic CRUD operations work with tenant context
+- **Risks**: RLS misconfiguration leading to data leaks

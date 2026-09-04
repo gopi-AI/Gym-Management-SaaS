@@ -1,0 +1,1 @@
+{"version":3,"file":"create-branch.dto.d.ts","sourceRoot":"","sources":["../../../src/tenancy/dto/create-branch.dto.ts"],"names":[],"mappings":"AAEA,qBAAa,eAAe;IAE1B,eAAe,EAAG,MAAM,CAAC;IAGzB,IAAI,EAAG,MAAM,CAAC;IAId,OAAO,CAAC,EAAE,MAAM,CAAC;IAIjB,KAAK,CAAC,EAAE,MAAM,CAAC;IAIf,SAAS,CAAC,EAAE,OAAO,CAAC;CACrB"}
