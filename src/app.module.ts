@@ -56,7 +56,12 @@ function validateEnv(config: Record<string, unknown>): Record<string, unknown> {
         password: configService.get<string>('DB_PASSWORD', 'postgres'),
         database: configService.get<string>('DB_DATABASE', 'gym_management'),
         autoLoadEntities: true,
+        // Schema is managed exclusively through migrations. `synchronize` is
+        // hard-disabled so a production database can never be auto-altered.
         synchronize: false,
+        migrations: [__dirname + '/migrations/*{.ts,.js}'],
+        migrationsTableName: 'typeorm_migrations',
+        migrationsRun: configService.get<string>('DB_MIGRATIONS_RUN', 'false') === 'true',
       }),
       inject: [ConfigService],
     }),
