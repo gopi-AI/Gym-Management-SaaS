@@ -31,4 +31,7 @@ export class IdentityUser {
 
   @Column({ type: 'boolean', default: false })
   email_verified!: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  is_mfa_enabled!: boolean;
 }

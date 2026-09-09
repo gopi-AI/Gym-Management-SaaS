@@ -24,11 +24,16 @@ export class MembersService {
   ) {}
 
   async getOrganizationId(): Promise<string> {
-    const orgId = await this.tenantContextService.getCurrentOrganizationId();
-    if (!orgId) {
+    const currentOrgId = await this.tenantContextService.getCurrentOrganizationId();
+    if (currentOrgId) {
+      return currentOrgId;
+    }
+    const requestedOrgId =
+      await this.tenantContextService.getRequestedOrganizationId();
+    if (!requestedOrgId) {
       throw new NotFoundException('Organization context not found');
     }
-    return orgId;
+    return this.tenantContextService.requireOrganizationAccess(requestedOrgId);
   }
 
   async findAll(query: ListMembersDto): Promise<{ data: Member[]; total: number; page: number; limit: number }> {
@@ -101,9 +106,25 @@ export class MembersService {
     }
   }
 
+  private async ensureBranchBelongsToOrg(
+    organizationId: string,
+    branchId?: string,
+  ): Promise<void> {
+    if (!branchId) {
+      return;
+    }
+    const ok = await this.tenantContextService.validateBranchAccess(organizationId, branchId);
+    if (!ok) {
+      throw new BadRequestException('Branch does not belong to the authorized organization');
+    }
+  }
+
   async create(dto: CreateMemberDto): Promise<Member> {
     const organizationId = await this.getOrganizationId();
     const branchId = dto.branch_id || (await this.tenantContextService.getCurrentBranchId()) || '';
+
+    // The client-supplied branch must belong to the authorized organization.
+    await this.ensureBranchBelongsToOrg(organizationId, dto.branch_id);
 
     await this.ensureNoDuplicateContact(dto, organizationId);
 
@@ -150,7 +171,12 @@ export class MembersService {
       date_of_birth: dto.date_of_birth ? new Date(dto.date_of_birth) : member.date_of_birth,
     };
 
-    await this.memberRepository.update(id, updates);
+    // Scope the update by the authorized org so the record cannot be moved
+    // across tenants between the ownership check and the write.
+    await this.memberRepository.update(
+      { id, organization_id: organizationId },
+      updates,
+    );
 
     await this.outboxService.saveEvent(
       'MEMBER_UPDATED',

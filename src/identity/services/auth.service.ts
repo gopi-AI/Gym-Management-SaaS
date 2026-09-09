@@ -1,4 +1,4 @@
-import { Injectable, Inject, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Inject, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -24,6 +24,8 @@ const TOKEN_TYPE_CHALLENGE = 'challenge';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly configService: ConfigService,
     private readonly jwtService: JwtService,
@@ -31,7 +33,7 @@ export class AuthService {
     @InjectRepository(IdentityUser)
     private readonly userRepository: Repository<IdentityUser>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
-    private readonly mfaService: MfaService,
+    public readonly mfaService: MfaService,
   ) {}
 
   async registerUser(registerDto: RegisterDto): Promise<IdentityUser> {
@@ -229,9 +231,18 @@ export class AuthService {
   }
 
   async isTokenBlacklisted(token: string): Promise<boolean> {
-    // Check if the token is present in the Redis-backed blacklist cache
-    const result = await this.cacheManager.get(`blacklisted:${token}`);
-    return result !== undefined;
+    // Check if the token is present in the Redis-backed blacklist cache.
+    // Fail CLOSED: if the cache is unreachable we MUST treat the token as
+    // blacklisted so revoked credentials are never accidentally accepted.
+    try {
+      const result = await this.cacheManager.get(`blacklisted:${token}`);
+      return result !== undefined;
+    } catch (err) {
+      this.logger.error(
+        'Blacklist lookup failed (failing closed): ' + (err as Error).message,
+      );
+      throw new UnauthorizedException('Authentication backend unavailable');
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -243,7 +254,18 @@ export class AuthService {
   }
 
   private getRefreshSecret(): string {
-    return (this.configService.get<string>('JWT_REFRESH_SECRET') || this.getAccessSecret()) as string;
+    const secret = this.configService.get<string>('JWT_REFRESH_SECRET');
+    if (!secret) {
+      // Fail closed: a missing refresh secret means refresh tokens cannot be
+      // safely signed with a distinct key. The production startup validation in
+      // app.module.ts enforces this, but we also fail here in case the config
+      // changes at runtime or the validation is bypassed.
+      throw new Error(
+        'JWT_REFRESH_SECRET is not configured. It must be set to a value ' +
+          'different from JWT_SECRET. Generate one with: openssl rand -base64 32',
+      );
+    }
+    return secret;
   }
 
   /**

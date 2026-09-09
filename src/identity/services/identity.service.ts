@@ -6,6 +6,7 @@ import { IdentityRole } from '../entities/identity-roles.entity';
 import { IdentityPermission } from '../entities/identity-permissions.entity';
 import { IdentityUserRole } from '../entities/identity-user-roles.entity';
 import { IdentityRolePermission } from '../entities/identity-role-permissions.entity';
+import { IdentityUserOrganization } from '../entities/identity-user-organizations.entity';
 
 @Injectable()
 export class IdentityService {
@@ -20,6 +21,8 @@ export class IdentityService {
     private readonly userRoleRepository: Repository<IdentityUserRole>,
     @InjectRepository(IdentityRolePermission)
     private readonly rolePermissionRepository: Repository<IdentityRolePermission>,
+    @InjectRepository(IdentityUserOrganization)
+    private readonly userOrganizationRepository: Repository<IdentityUserOrganization>,
   ) {}
 
   async findUserByEmail(email: string): Promise<IdentityUser | null> {
@@ -163,5 +166,59 @@ export class IdentityService {
     });
 
     return !!permission;
+  }
+
+  // Organization membership (Correction #10a)
+
+  /**
+   * Assign a user to an organization (active membership), optionally with an
+   * organization-level role. Throws/relies on the unique constraint
+   * (user_id, organization_id) to prevent duplicate active memberships.
+   */
+  async assignUserToOrganization(
+    userId: string,
+    organizationId: string,
+    roleId?: string,
+  ): Promise<IdentityUserOrganization> {
+    const membership = this.userOrganizationRepository.create({
+      user_id: userId,
+      organization_id: organizationId,
+      role_id: roleId ?? null,
+      is_active: true,
+    });
+    return this.userOrganizationRepository.save(membership);
+  }
+
+  /**
+   * Return all active organization memberships for a user, including the
+   * organization and optional role relations.
+   */
+  async getUserOrganizations(userId: string): Promise<IdentityUserOrganization[]> {
+    return this.userOrganizationRepository.find({
+      where: { user_id: userId, is_active: true },
+      relations: ['organization', 'role'],
+    });
+  }
+
+  /**
+   * Determine whether a user has an ACTIVE membership in the given
+   * organization. This is the authoritative tenant-authorization check used
+   * by the tenant-context enforcement (Correction #10).
+   */
+  async isUserInOrganization(userId: string, organizationId: string): Promise<boolean> {
+    const membership = await this.userOrganizationRepository.findOne({
+      where: { user_id: userId, organization_id: organizationId, is_active: true },
+    });
+    return !!membership;
+  }
+
+  /**
+   * Deactivate a user's membership in an organization (soft-delete semantics).
+   */
+  async disableOrganizationMembership(userId: string, organizationId: string): Promise<void> {
+    await this.userOrganizationRepository.update(
+      { user_id: userId, organization_id: organizationId, is_active: true },
+      { is_active: false },
+    );
   }
 }

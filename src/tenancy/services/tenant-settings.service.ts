@@ -34,7 +34,10 @@ export class TenantSettingsService {
     locale?: string;
     currency?: string;
   }): Promise<TenantSettings | null> {
-    await this.tenantSettingsRepository.update(organizationId, dto);
+    await this.tenantSettingsRepository.update(
+      { organization_id: organizationId },
+      dto,
+    );
     return this.findOne(organizationId);
   }
 }

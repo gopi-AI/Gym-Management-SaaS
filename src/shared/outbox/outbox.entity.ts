@@ -19,4 +19,13 @@ export class OutboxEntity {
 
   @Column({ type: 'boolean', default: false })
   processed!: boolean;
+
+  @Column({ type: 'int', default: 0 })
+  attempts!: number;
+
+  @Column({ type: 'timestamp', nullable: true })
+  lockedAt!: Date | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  lockedBy!: string | null;
 }
