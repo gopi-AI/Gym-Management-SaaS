@@ -68,20 +68,33 @@ function validateEnv(config: Record<string, unknown>): Record<string, unknown> {
     CacheModule.registerAsync({
       isGlobal: true,
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        // cache-manager v5-compatible Redis adapter. The v4-era
-        // `cache-manager-redis-store` does not satisfy the cache-manager@5
-        // Store contract; `cache-manager-redis-yet@5` pairs with
-        // `cache-manager@5.7.6` (its `redisStore` is a Store factory, matching
-        // the `CacheStoreFactory` shape expected by @nestjs/cache-manager).
-        store: require('cache-manager-redis-yet').redisStore,
-        host: configService.get<string>('REDIS_HOST', 'localhost'),
-        port: configService.get<number>('REDIS_PORT', 6379),
-        username: configService.get<string>('REDIS_USERNAME', ''), // for Redis ACL
-        password: configService.get<string>('REDIS_PASSWORD', ''),
-        database: configService.get<number>('REDIS_DATABASE', 0),
-        ttl: configService.get<number>('REDIS_TTL', 0), // 0 means no default TTL, we will set TTL per item
-      }),
+      useFactory: (configService: ConfigService) => {
+        const host = configService.get<string>('REDIS_HOST', 'localhost');
+        const port = configService.get<number>('REDIS_PORT', 6379);
+        const username = configService.get<string>('REDIS_USERNAME', '');
+        const password = configService.get<string>('REDIS_PASSWORD', '');
+        const database = configService.get<number>('REDIS_DATABASE', 0);
+        const ttl = configService.get<number>('REDIS_TTL', 0);
+
+        // Build the Redis connection URL explicitly.
+        // cache-manager-redis-yet@5 passes options directly to Node Redis
+        // redis.createClient(), which in v4+ prefers a `url` property over
+        // legacy top-level host/port.  We build: redis://[user:pass@]host:port
+        let url = `redis://`;
+        if (username && password) {
+          url += `${encodeURIComponent(username)}:${encodeURIComponent(password)}@`;
+        } else if (password) {
+          url += `:${encodeURIComponent(password)}@`;
+        }
+        url += `${host}:${port}`;
+
+        return {
+          store: require('cache-manager-redis-yet').redisStore,
+          url,
+          database,
+          ttl, // 0 means no default TTL, we will set TTL per item
+        };
+      },
       inject: [ConfigService],
     }),
     AuthModule,

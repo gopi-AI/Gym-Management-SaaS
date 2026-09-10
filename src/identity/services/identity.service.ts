@@ -46,7 +46,11 @@ export class IdentityService {
 
   async createUser(dto: { email: string; passwordHash: string; firstName: string; lastName: string; phone?: string }): Promise<IdentityUser> {
     const user = this.userRepository.create({
-      ...dto,
+      email: dto.email,
+      password_hash: dto.passwordHash,
+      first_name: dto.firstName,
+      last_name: dto.lastName,
+      phone: dto.phone,
       is_active: true,
       email_verified: false,
     });
