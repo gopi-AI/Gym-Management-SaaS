@@ -12,6 +12,7 @@ import { RegisterDto } from '../dto/register.dto';
 import { LoginDto } from '../dto/login.dto';
 import { RefreshTokenDto } from '../dto/refresh-token.dto';
 import { VerifyMfaDto } from '../dto/verify-mfa.dto';
+import { MfaEnableDto, MfaDisableDto, MfaVerifyDto, MfaCheckDto } from '../dto/mfa-enable.dto';
 import { AuthService } from '../services/auth.service';
 import { CurrentUser } from '../../shared/auth/current-user.decorator';
 import { JwtAuthGuard } from '../../shared/auth/jwt-auth.guard';
@@ -63,7 +64,7 @@ export class AuthController {
   @Post('mfa-enable')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
-  async enableMfa(@CurrentUser() user: { userId: string }, @Body() dto: { otpCode: string }): Promise<{ secret: string; provisioningUri: string }> {
+  async enableMfa(@CurrentUser() user: { userId: string }, @Body() dto: MfaEnableDto): Promise<{ secret: string; provisioningUri: string }> {
     // First generate a secret for the authenticated user
     const { secret, provisioningUri } = await this.authService.mfaService.generateSecret(user.userId);
 
@@ -76,7 +77,7 @@ export class AuthController {
   @Post('mfa-verify')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
-  async verifyMfaSetup(@CurrentUser() user: { userId: string }, @Body() dto: { otpCode: string }): Promise<{ success: boolean }> {
+  async verifyMfaSetup(@CurrentUser() user: { userId: string }, @Body() dto: MfaVerifyDto): Promise<{ success: boolean }> {
     // Verify the OTP code against the stored secret
     const isValid = await this.authService.mfaService.verifyTotp(user.userId, dto.otpCode);
 
@@ -93,7 +94,7 @@ export class AuthController {
   @Post('mfa-disable')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
-  async disableMfa(@CurrentUser() user: { userId: string }, @Body() dto: { otpCode: string }): Promise<{ success: boolean }> {
+  async disableMfa(@CurrentUser() user: { userId: string }, @Body() dto: MfaDisableDto): Promise<{ success: boolean }> {
     const success = await this.authService.mfaService.disableMfa(user.userId, dto.otpCode);
 
     if (!success) {
@@ -106,7 +107,7 @@ export class AuthController {
   @Post('mfa-check')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
-  async checkMfaStatus(@CurrentUser() user: { userId: string }): Promise<{ isMfaEnabled: boolean }> {
+  async checkMfaStatus(@CurrentUser() user: { userId: string }): Promise<MfaCheckDto> {
     const isMfaEnabled = await this.authService.mfaService.isMfaEnabled(user.userId);
     return { isMfaEnabled };
   }

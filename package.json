@@ -48,6 +48,10 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "jest --passWithNoTests",
+    "test:watch": "jest --watch --passWithNoTests",
+    "test:coverage": "jest --coverage --passWithNoTests",
+    "typecheck": "tsc --noEmit -p tsconfig.spec.json",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write .",
     "typeorm": "typeorm-ts-node-commonjs -d src/data-source.ts",

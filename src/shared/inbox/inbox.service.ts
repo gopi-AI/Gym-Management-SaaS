@@ -16,8 +16,24 @@ export class InboxService {
     });
   }
 
-  async markAsHandled(correlationId: string): Promise<void> {
-    await this.inboxRepository.update(correlationId, { handled: true });
+  /**
+   * Idempotently mark an inbox event as handled.
+   *
+   * The update criteria uses the business-unique `correlationId` (NOT the primary
+   * key `id`) and additionally guards on `handled = false` so that concurrent or
+   * duplicate deliveries of the same event are safe: the first caller flips the
+   * flag (affected === 1) and every later caller observes affected === 0 and
+   * returns `false` without error.
+   *
+   * Returns `true` when the event was transitioned unhandled -> handled by THIS
+   * call, or `false` when the event was already handled (or does not exist).
+   */
+  async markAsHandled(correlationId: string): Promise<boolean> {
+    const result = await this.inboxRepository.update(
+      { correlationId, handled: false },
+      { handled: true },
+    );
+    return (result.affected ?? 0) > 0;
   }
 
   async saveEvent(correlationId: string, eventType: string, payload: string): Promise<InboxEntity> {
