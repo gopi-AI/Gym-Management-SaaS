@@ -1,0 +1,40 @@
+@import 'https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/css/tabler.min.css';
+@import 'https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/css/tabler-vendors.min.css';
+
+/* ── Gym Management custom overrides ──────────────────────────────────── */
+
+/* Keep the app shell full-height */
+html,
+body {
+  height: 100%;
+}
+
+/* Tabler's .page wrapper should always fill the viewport */
+.page {
+  min-height: 100vh;
+}
+
+/* Smooth transitions for interactive elements */
+.btn,
+.card,
+.nav-link,
+.page-link {
+  transition: all 0.15s ease-in-out;
+}
+
+/* ── Query provider (TanStack) placeholder — will be replaced with a real
+ *    <QueryClientProvider> wrapper once providers are composed ────────── */
+
+/*
+ * ── Brand customisations ────────────────────────────────────────────────
+ * Override Tabler CSS variables here if needed:
+ *
+ * :root {
+ *   --tblr-primary: #<your-brand-color>;
+ * }
+ */
+
+/* ── Utility helpers ──────────────────────────────────────────────────── */
+.cursor-pointer {
+  cursor: pointer;
+}
