@@ -16,7 +16,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" data-bs-theme="light" data-theme="light">
+    <html lang="en" data-bs-theme="light" data-theme="light" data-bs-navbar-position="vertical">
       <head>
         <meta charSet="utf-8" />
         <meta
