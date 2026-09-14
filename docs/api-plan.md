@@ -114,10 +114,24 @@ This document outlines the API design for the Gym Management SaaS platform.
 
 ### Attendance
 - `POST /v1/attendance/events` - Record attendance event (from edge sync)
+- `POST /v1/attendance/check-out` - Check a member out (closes their open session)
 - `GET /v1/attendance/records` - List attendance records (paginated, filterable)
 - `GET /v1/attendance/records/{id}` - Get attendance record details
 - `GET /v1/attendance/access-decisions` - List access decisions (paginated)
 - `GET /v1/attendance/eligibility-snapshots` - List eligibility snapshots (paginated)
+
+> Phase 1 status: `POST /v1/attendance/events` records a manual front-desk CHECK_IN
+> (the event time is stamped by the server, never by the client), `POST
+> /v1/attendance/check-out` closes the open session, and `GET
+> /v1/attendance/records` / `GET /v1/attendance/records/{id}` / `GET
+> /v1/attendance/access-decisions` are implemented. Check-out has its own route
+> because it carries its own permission (`attendance:check-out`) and
+> `@RequirePermissions` ANDs its entries, so one route could not express
+> "check-in OR check-out" without letting a check-in-only operator check members
+> out. `GET /v1/attendance/eligibility-snapshots` is NOT implemented: nothing in
+> Phase 1 writes an eligibility snapshot (there is no device/edge sync yet), so it
+> would always return an empty page. Device-driven events, snapshots and
+> `ATTENDANCE_DEVICE_MAPPINGS` arrive with the Phase 2 hardware integration.
 
 ### Inventory
 - `GET /v1/inventory/items` - List inventory items (paginated, filterable)

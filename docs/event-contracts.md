@@ -67,6 +67,63 @@ Events are versioned to allow for backward compatibility. Major version incremen
     "reason": "string"
   }
   ```
+- `MembershipExpired.v1`
+  ```json
+  {
+    "membershipId": "uuid",
+    "memberId": "uuid",
+    "expiredAt": "timestamp",
+    "endDate": "date (optional)"
+  }
+  ```
+- `MembershipResumed.v1`
+  ```json
+  {
+    "membershipId": "uuid",
+    "resumeDate": "timestamp",
+    "remainingDays": "integer" // days until the membership end date
+  }
+  ```
+- `MembershipTransferred.v1` (contract defined — **no producer yet**, see implementation note below)
+  ```json
+  {
+    "membershipId": "uuid",
+    "memberId": "uuid",
+    "fromBranchId": "uuid",
+    "toBranchId": "uuid",
+    "transferDate": "timestamp"
+  }
+  ```
+- `MembershipFreezeStarted.v1`
+  ```json
+  {
+    "membershipId": "uuid",
+    "freezeStartDate": "timestamp",
+    "freezeEndDate": "timestamp (optional)", // omitted by the current emitter
+    "freezeDurationDays": "integer" // currently always 0 — see implementation note below
+  }
+  ```
+- `MembershipFreezeEnded.v1`
+  ```json
+  {
+    "membershipId": "uuid",
+    "freezeEndDate": "timestamp", // when the freeze period ended (unfreeze instant)
+    "actualEndDate": "date", // the membership's actual (possibly extended) end date
+    "daysRemaining": "integer" // calendar days until the (extended) end date
+  }
+  ```
+
+**Implementation note (verified against source 2026-09-14).** All five payloads above match the
+committed interfaces in `packages/contracts/src/events/membership.events.ts` field for field.
+The resumed/freeze events are produced by `MembershipsService.buildLifecycleEventPayload`
+(`src/memberships/services/memberships.service.ts`). The counter fields `remainingDays` (resume)
+and `daysRemaining` (unfreeze) now compute the actual calendar-day difference against the
+membership's `end_date`; `actualEndDate` (unfreeze) carries the membership's (possibly extended)
+end date in `YYYY-MM-DD` form while `freezeEndDate` carries the ISO-8601 unfreeze instant.
+`freezeDurationDays` remains a hard-coded `0` because no freeze-duration feature exists yet —
+freezes are currently open-ended, and `MembershipLifecycleDto` carries only a `reason`.
+**`MembershipTransferred.v1` is contract-only: there is no `transfer` transition, service method,
+DTO or HTTP endpoint in `src/memberships`, so nothing publishes it yet.**
 ### Finance Events
 - `PaymentSucceeded.v1`
   ```json
@@ -115,14 +172,24 @@ Events are versioned to allow for backward compatibility. Major version incremen
 - `AttendanceEventRecorded.v1`
   ```json
   {
-    "eventId": "uuid",
-    "deviceId": "uuid",
+    "eventId": "uuid", // the recorded attendance event (ATTENDANCE_ATTENDANCE_EVENTS.id)
+    "deviceId": "uuid|null", // null for a staff-initiated manual check-in
     "memberId": "uuid",
     "eventTime": "timestamp",
     "eventType": "string", // e.g., CHECK_IN, CHECK_OUT
-    "biometricId": "string" // hashed or tokenized biometric identifier
+    "biometricId": "string|null", // hashed or tokenized biometric identifier; null when manual
+    "checkInMethod": "string", // optional, backward-compatible: manual | device | biometric | api
+    "checkOutMethod": "string", // optional, backward-compatible: mirror of checkInMethod for CHECK_OUT
+    "checkedInBy": "uuid|null" // optional, backward-compatible: staff user id for a manual check-in
   }
   ```
+  Phase 1 only produces staff-initiated manual events: `eventTime` is stamped by the
+  server (never by the client), `deviceId`/`biometricId` are `null`, exactly one of
+  `checkInMethod`/`checkOutMethod` is present (`"manual"`), and `checkedInBy` carries
+  the operator. `correlationId` is the attendance *record* id (the check-in/check-out
+  session), while `eventId` is the raw event that `ATTENDANCE_ACCESS_DECISIONS`
+  points at. The payload is additive-only, so device-driven events (Phase 2) can
+  populate the same fields without a version bump.
 - `AccessGranted.v1`
   ```json
   {
@@ -257,4 +324,4 @@ Events are versioned to allow for backward compatibility. Major version incremen
 --- 
 
 *Document Version: 1.0*
-*Last Updated: 2026-09-01*
+*Last Updated: 2026-09-14*

@@ -199,7 +199,7 @@ MEMBERS_MEMBER_CONSENTS {
         uuid branch_id FK
         uuid member_id FK
         uuid membership_id FK
-        string invoice_number
+        string invoice_number UK (organization_id, invoice_number)
         timestamptz invoice_date
         timestamptz due_date
         decimal subtotal
@@ -218,6 +218,11 @@ MEMBERS_MEMBER_CONSENTS {
         decimal unit_price
         decimal line_total
         string tax_code
+    }
+    FINANCE_INVOICE_NUMBER_COUNTERS {
+        uuid id PK
+        uuid organization_id FK UK
+        int last_invoice_number
     }
 FINANCE_PAYMENTS {
         uuid id PK
@@ -743,6 +748,22 @@ NOTIFICATIONS_NOTIFICATION_POLICIES {
         timestamptz occurred_at
     }
 ```
+## Invoice Numbering Scheme (`FINANCE_INVOICES.invoice_number`)
+
+Invoice numbers are **per-organization, not global**. Each organization owns exactly one
+counter row in `FINANCE_INVOICE_NUMBER_COUNTERS` (UNIQUE on `organization_id`) that holds its
+`last_invoice_number`; allocation runs on the *same transaction* as the invoice insert, locking
+that row with `pessimistic_write` (the same pattern as the member `local_id` counter in
+`src/members/services/local-id.service.ts`), and formats the result as `INV-` plus the sequence
+zero-padded to six digits — e.g. `INV-000001`.
+
+- The sequence **restarts at 1 for every organization**: an organization's first invoice is
+  `INV-000001`, regardless of how many invoices other organizations have issued.
+- `UNIQUE (organization_id, invoice_number)` on `FINANCE_INVOICES` is the final backstop
+  against a duplicate number inside one organization.
+- Consequence for consumers (Phase 3 finance, reporting, exports): `invoice_number` is unique
+  **per organization only** — always pair it with `organization_id`; never treat it as a
+  globally unique key.
 ## Conventions
 
 - Primary keys: UUID v4 for distributed identity, except for local sequential IDs (e.g., member.local_id) which use bigint with a per-organization sequence.
@@ -777,6 +798,7 @@ Similar policies for branches, users, memberships, finance, etc.
 | Biometric event duplication | Unique constraint on (device_id, event_time, member_id) with normalization | Normalize event_time to minute precision and create unique constraint |
 | Notification duplication | Idempotency key on notification attempts | Unique constraint on idempotency_key in notification_attempts |
 | Concurrent member edits | Optimistic locking | version column incremented on each update, check version in WHERE clause |
+| Invoice number allocation | Locked per-organization counter row | `SELECT ... FOR UPDATE` (`pessimistic_write`) on `FINANCE_INVOICE_NUMBER_COUNTERS` for the invoice's `organization_id`, incremented in the invoice transaction; `UNIQUE (organization_id, invoice_number)` on `FINANCE_INVOICES` as backstop |
 ## Indexing & Search Plan
 
 ### Tenant-Aware Indexes

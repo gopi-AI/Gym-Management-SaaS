@@ -9,6 +9,10 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_DATABASE}
     ports:
+      # Host-side published port. Keep `DB_PORT` in .env identical to this so
+      # host commands (npm run migration:*, npm run bootstrap:dev) reach THIS
+      # container at 127.0.0.1:5433 instead of an unrelated host PostgreSQL
+      # cluster listening on 5432. The container port stays 5432.
       - "${DB_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -36,12 +40,27 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Build provenance — REQUIRED. The Dockerfile sets
+        # REQUIRE_GIT_REVISION=true and FAILS the build when this is missing or
+        # is not a hex Git object name, because an image that cannot name its
+        # source revision must not be deployable. Build with:
+        #   GIT_REVISION=$(git rev-parse HEAD) docker compose build api
+        # It never affects the source fingerprint reported by GET /v1/health.
+        GIT_REVISION: ${GIT_REVISION:-unknown}
     container_name: gym-api
     restart: unless-stopped
     env_file:
       - .env
     environment:
+      # Container-internal endpoints. These OVERRIDE .env on purpose: the values
+      # there describe how the HOST reaches the published ports
+      # (127.0.0.1:5433 for PostgreSQL), while inside the compose network the
+      # database is `postgres:5432` and Redis is `redis:6379`. Pinning both
+      # explicitly means changing the published host port can never silently
+      # point the API at a different database.
       DB_HOST: postgres
+      DB_PORT: 5432
       REDIS_HOST: redis
     ports:
       - "${PORT}:3000"
