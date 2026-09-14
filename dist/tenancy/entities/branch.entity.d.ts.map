@@ -1,1 +1,0 @@
-{"version":3,"file":"branch.entity.d.ts","sourceRoot":"","sources":["../../../src/tenancy/entities/branch.entity.ts"],"names":[],"mappings":"AAEA,qBACa,MAAM;IAEjB,EAAE,EAAG,MAAM,CAAC;IAGZ,eAAe,EAAG,MAAM,CAAC;IAIzB,IAAI,EAAG,MAAM,CAAC;IAGd,OAAO,EAAG,MAAM,CAAC;IAGjB,KAAK,EAAG,MAAM,CAAC;IAGf,UAAU,EAAG,IAAI,CAAC;IAGlB,UAAU,EAAG,IAAI,CAAC;IAIlB,SAAS,EAAG,OAAO,CAAC;CACrB"}
