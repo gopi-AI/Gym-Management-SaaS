@@ -1,6 +1,8 @@
 'use client';
 
 import React from 'react';
+import { useRouter } from 'next/navigation';
+import { authApi, clearTokens, getRefreshToken, setOrganizationId } from '@/lib';
 
 interface SidebarProps {
   activeMenu?: string;
@@ -86,6 +88,50 @@ export default function Sidebar({
               href="/organizations"
               active={activeMenu === 'organizations'}
             />
+            <SidebarItem
+              icon="file-text"
+              label="Membership Plans"
+              href="/membership-plans"
+              active={activeMenu === 'membership-plans'}
+            />
+            <SidebarItem
+              icon="cards"
+              label="Memberships"
+              href="/memberships"
+              active={activeMenu === 'memberships'}
+            />
+            <SidebarItem
+              icon="door-enter"
+              label="Check-in"
+              href="/check-in"
+              active={activeMenu === 'check-in'}
+            />
+            <SidebarItem
+              icon="heartbeat"
+              label="Retention"
+              href="/retention-analysis"
+              active={activeMenu === 'retention'}
+            />
+            <SidebarItem
+              icon="chart-bar"
+              label="Plan performance"
+              href="/plan-performance"
+              active={activeMenu === 'plan-performance'}
+            />
+            <SidebarItem
+              icon="activity"
+              label="AI usage"
+              href="/ai-usage"
+              active={activeMenu === 'ai-usage'}
+            />
+
+            <SidebarSection title="Finance" />
+            <SidebarItem
+              icon="cash"
+              label="Payments"
+              href="/payments"
+              active={activeMenu === 'payments'}
+            />
 
             <SidebarSection title="System" />
             <SidebarItem
@@ -145,6 +191,27 @@ interface SidebarUserFooterProps {
 }
 
 function SidebarUserFooter({ userName, userRole, userAvatar }: SidebarUserFooterProps) {
+  const router = useRouter();
+  const [signingOut, setSigningOut] = React.useState(false);
+
+  // Same authenticated logout flow as the top navbar: revoke the refresh token
+  // server-side, clear the stored session, and route back to sign-in. Best
+  // effort on the server call — the local session is always cleared.
+  const handleSignOut = async (event: React.MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await authApi.logout(getRefreshToken() ?? undefined);
+    } catch {
+      // Best-effort server logout; always clear locally.
+      clearTokens();
+    }
+    // Clear the selected tenant so no stale organization context survives.
+    setOrganizationId(null);
+    router.push('/login');
+  };
+
   return (
     <div className="navbar-footer">
       <ul className="navbar-nav">
@@ -162,7 +229,7 @@ function SidebarUserFooter({ userName, userRole, userAvatar }: SidebarUserFooter
               Settings
             </a>
             <div className="dropdown-divider" />
-            <a className="dropdown-item" href="/login">
+            <a className="dropdown-item" href="/login" onClick={handleSignOut}>
               <span className="dropdown-item-icon"><LogoutGlyph /></span>
               Sign out
             </a>
@@ -289,6 +356,65 @@ const ICON_PATHS: Record<string, React.ReactNode> = {
       <path stroke="none" d="M0 0h24v24H0z" fill="none" />
       <path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.066 2.573c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.573 1.066c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.066 -2.573c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1.008 .613 2.21 .037 2.573 -1.066z" />
       <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  'file-text': (
+    <>
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+      <path d="M17 21h-10a2 2 0 0 1 -2 -2v-14a2 2 0 0 1 2 -2h7l5 5v11a2 2 0 0 1 -2 2z" />
+      <path d="M9 9l1 0" />
+      <path d="M9 13l6 0" />
+      <path d="M9 17l6 0" />
+    </>
+  ),
+  cards: (
+    <>
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M3.604 7.197l7.138 -3.109a.96 .96 0 0 1 1.27 .527l4.924 11.902a1 1 0 0 1 -.514 1.304l-7.137 3.109a.96 .96 0 0 1 -1.271 -.527l-4.924 -11.903a1 1 0 0 1 .514 -1.304z" />
+      <path d="M15 4h1a1 1 0 0 1 1 1v3.5" />
+      <path d="M20 6c.264 .112 .52 .217 .768 .315a1 1 0 0 1 .53 1.311l-2.298 5.374" />
+    </>
+  ),
+  heartbeat: (
+    <>
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M19.5 13.572l-7.5 7.428l-2.896 -2.868m-6.117 -8.104a5 5 0 0 1 9.013 -3.022a5 5 0 1 1 7.5 6.572" />
+      <path d="M3 13h5l2 -3l2 6l2 -4l1.5 1h4.5" />
+    </>
+  ),
+  'chart-bar': (
+    <>
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M3 20h18" />
+      <path d="M7 20v-7" />
+      <path d="M12 20v-11" />
+      <path d="M17 20v-4" />
+    </>
+  ),
+  activity: (
+    <>
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M3 12h4l3 8l4 -16l3 8h4" />
+    </>
+  ),
+  'door-enter': (
+    <>
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M13 12v.01" />
+      <path d="M3 21h18" />
+      <path d="M5 21v-16a2 2 0 0 1 2 -2h6a2 2 0 0 1 2 2v16" />
+      <path d="M17 10l2 2l-2 2" />
+      <path d="M21 12h-6" />
+    </>
+  ),
+  cash: (
+    <>
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <rect x="3" y="6" width="18" height="12" rx="2" />
+      <circle cx="12" cy="12" r="2" />
+      <path d="M6 12h.01" />
+      <path d="M18 12h.01" />
     </>
   ),
 };
