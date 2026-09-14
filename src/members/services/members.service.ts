@@ -149,6 +149,7 @@ export class MembersService {
         'MEMBER_CREATED',
         JSON.stringify({ memberId: saved.id, localId: saved.local_id, organizationId }),
         saved.global_uuid,
+        manager, // transaction-scoped: MEMBER_CREATED commits/rolls back with the member row
       );
 
       return saved;

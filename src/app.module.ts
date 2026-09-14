@@ -2,19 +2,35 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CacheModule } from '@nestjs/cache-manager';
+import { ScheduleModule } from '@nestjs/schedule';
 import { IdentityModule } from './identity/identity.module';
 import { MembersModule } from './members/members.module';
+import { MembershipsModule } from './memberships/memberships.module';
 import { TenancyModule } from './tenancy/tenancy.module';
+import { AiModule } from './ai/ai.module';
+import { isModelPriced } from './ai/config/ai-pricing';
+import {
+  AI_COST_LIMIT_MAX_MONTHLY_USD,
+  DEFAULT_AI_COST_LIMIT_MONTHLY_USD,
+  resolveAiLimit,
+} from './ai/config/ai-usage-limits';
 import { AuthModule } from './shared/auth/auth.module';
 import { CryptoModule } from './shared/crypto/crypto.module';
+import { HealthModule } from './shared/health/health.module';
+import { FinanceModule } from './finance/finance.module';
+import { AttendanceModule } from './attendance/attendance.module';
+import { WorkersModule } from './shared/workers/workers.module';
 
 /**
  * Production environment validation.
  *
  * Fails fast at startup when critical secrets are missing or set to known
  * development defaults.  Development/test environments are not blocked.
+ *
+ * Exported purely for unit testing (see `app.module.spec.ts`); the only
+ * consumer at runtime is `ConfigModule.forRoot({ validate })`.
  */
-function validateEnv(config: Record<string, unknown>): Record<string, unknown> {
+export function validateEnv(config: Record<string, unknown>): Record<string, unknown> {
   const isProduction = config.NODE_ENV === 'production';
   if (isProduction) {
     if (!config.JWT_SECRET || config.JWT_SECRET === 'dev-secret-change-me') {
@@ -34,6 +50,40 @@ function validateEnv(config: Record<string, unknown>): Record<string, unknown> {
         'MFA_ENCRYPTION_KEY must be set in production. ' +
           'Generate one with: openssl rand -base64 32',
       );
+    }
+    // AI is opt-in and fail-closed: enabling it in production requires a real
+    // provider configured with a key. The deterministic mock provider (which
+    // fabricates output) and a key-less OpenAI provider are both rejected here,
+    // at boot, rather than on the first user request.
+    if (config.AI_ENABLED === 'true') {
+      const aiProvider = String(config.AI_PROVIDER ?? '').trim().toLowerCase();
+      if (aiProvider === 'mock') {
+        throw new Error('AI_PROVIDER=mock must not be used in production.');
+      }
+      if (aiProvider === 'openai' && !config.AI_API_KEY) {
+        throw new Error(
+          'AI_API_KEY must be set in production when AI_ENABLED=true and AI_PROVIDER=openai.',
+        );
+      }
+      // Cost control must be enforceable for the model that is actually
+      // configured: an unpriced model records a NULL cost and would silently
+      // bypass the monthly budget. Fail at boot instead, unless the operator
+      // explicitly disabled the cost limit (AI_COST_LIMIT_MONTHLY_USD=0).
+      const monthlyCostLimit = resolveAiLimit(
+        config.AI_COST_LIMIT_MONTHLY_USD === undefined
+          ? undefined
+          : String(config.AI_COST_LIMIT_MONTHLY_USD),
+        DEFAULT_AI_COST_LIMIT_MONTHLY_USD,
+        0,
+        AI_COST_LIMIT_MAX_MONTHLY_USD,
+      );
+      const aiModel = String(config.AI_MODEL ?? '').trim() || 'gpt-4o';
+      if (aiProvider === 'openai' && monthlyCostLimit > 0 && !isModelPriced(aiModel)) {
+        throw new Error(
+          `AI_MODEL "${aiModel}" has no server-side price, so AI_COST_LIMIT_MONTHLY_USD cannot be enforced. ` +
+            'Add the model to src/ai/config/ai-pricing.ts or set AI_COST_LIMIT_MONTHLY_USD=0 to disable the limit explicitly.',
+        );
+      }
     }
   }
   return config;
@@ -100,9 +150,22 @@ function validateEnv(config: Record<string, unknown>): Record<string, unknown> {
     AuthModule,
     IdentityModule,
     MembersModule,
+    MembershipsModule,
     TenancyModule,
+    // Finance (Phase 1): invoices, payments, payment retry use case.
+    FinanceModule,
+    // Attendance (Phase 1): front-desk check-in/out + access decision audit.
+    AttendanceModule,
+    // Dynamic interval registration for the background workers.
+    ScheduleModule.forRoot(),
+    // Outbox drain, membership expiry, payment retry (all env-gated, off by default).
+    WorkersModule,
+    // AI foundation: provider abstraction, usage/audit telemetry, retention use case.
+    AiModule,
     // Global crypto infrastructure (at-rest AES-256-GCM for MFA secrets).
     CryptoModule,
+    // Unauthenticated liveness + build provenance (no tenant or config data).
+    HealthModule,
   ],
 })
 export class AppModule {}

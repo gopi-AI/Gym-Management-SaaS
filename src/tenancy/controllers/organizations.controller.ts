@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Param, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, ParseUUIDPipe, HttpCode, HttpStatus } from '@nestjs/common';
 import { OrganizationsService } from '../services/organizations.service';
 import { CreateOrganizationDto } from '../dto/create-organization.dto';
 import { UpdateOrganizationDto } from '../dto/update-organization.dto';
@@ -32,7 +32,9 @@ export class OrganizationsController {
   @Get(':id')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions({ resource: 'organization', action: 'read' })
-  async findOne(@Param('id') id: string): Promise<Organization | null> {
+  async findOne(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<Organization | null> {
     return this.organizationsService.findOne(id);
   }
 
@@ -46,7 +48,10 @@ export class OrganizationsController {
   @Patch(':id')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions({ resource: 'organization', action: 'update' })
-  async update(@Param('id') id: string, @Body() dto: UpdateOrganizationDto): Promise<Organization | null> {
+  async update(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: UpdateOrganizationDto,
+  ): Promise<Organization | null> {
     return this.organizationsService.update(id, dto);
   }
 }

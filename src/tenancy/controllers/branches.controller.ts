@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Body, Param, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, Param, ParseUUIDPipe, HttpCode, HttpStatus } from '@nestjs/common';
 import { BranchesService } from '../services/branches.service';
 import { CreateBranchDto } from '../dto/create-branch.dto';
 import { UpdateBranchDto } from '../dto/update-branch.dto';
@@ -28,7 +28,9 @@ export class BranchesController {
   @Get(':id')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions({ resource: 'branch', action: 'read' })
-  async findOne(@Param('id') id: string): Promise<Branch | null> {
+  async findOne(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<Branch | null> {
     return this.branchesService.findOne(id);
   }
 
@@ -42,7 +44,10 @@ export class BranchesController {
   @Patch(':id')
   @HttpCode(HttpStatus.OK)
   @RequirePermissions({ resource: 'branch', action: 'update' })
-  async update(@Param('id') id: string, @Body() dto: UpdateBranchDto): Promise<Branch | null> {
+  async update(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: UpdateBranchDto,
+  ): Promise<Branch | null> {
     return this.branchesService.update(id, dto);
   }
 }

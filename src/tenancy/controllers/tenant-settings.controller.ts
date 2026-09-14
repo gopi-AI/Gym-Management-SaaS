@@ -5,6 +5,7 @@ import {
   Param,
   Body,
   Patch,
+  ParseUUIDPipe,
   HttpCode,
   HttpStatus,
   BadRequestException,
@@ -27,7 +28,7 @@ export class TenantSettingsController {
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions({ resource: 'tenant-settings', action: 'create' })
   async createTenantSettings(
-    @Param('orgId') orgId: string,
+    @Param('orgId', new ParseUUIDPipe({ version: '4' })) orgId: string,
     @Body() dto: CreateTenantSettingsDto,
   ): Promise<TenantSettings> {
     // The route orgId is a REQUESTED context, not proof of authorization.
@@ -49,7 +50,7 @@ export class TenantSettingsController {
   @HttpCode(HttpStatus.OK)
   @RequirePermissions({ resource: 'tenant-settings', action: 'read' })
   async getTenantSettings(
-    @Param('orgId') orgId: string,
+    @Param('orgId', new ParseUUIDPipe({ version: '4' })) orgId: string,
   ): Promise<TenantSettings | null> {
     const authorizedOrgId = await this.tenantContextService.requireOrganizationAccess(orgId);
     return this.tenantSettingsService.findOne(authorizedOrgId);
@@ -59,7 +60,7 @@ export class TenantSettingsController {
   @HttpCode(HttpStatus.OK)
   @RequirePermissions({ resource: 'tenant-settings', action: 'update' })
   async updateTenantSettings(
-    @Param('orgId') orgId: string,
+    @Param('orgId', new ParseUUIDPipe({ version: '4' })) orgId: string,
     @Body() dto: UpdateTenantSettingsDto,
   ): Promise<TenantSettings | null> {
     const authorizedOrgId = await this.tenantContextService.requireOrganizationAccess(orgId);
