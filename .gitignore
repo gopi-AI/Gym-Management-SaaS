@@ -20,3 +20,7 @@ npm-debug.log*
 # Runtime artifacts
 *.pid
 *.seed
+
+# Generated / one-off artifacts
+frontend-precommit-review.txt
+result
