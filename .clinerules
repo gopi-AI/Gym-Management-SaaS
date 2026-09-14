@@ -1,0 +1,22 @@
+# Cline Session Safeguards — READ AT THE START OF EVERY SESSION
+
+## Non-negotiable: commit / stage / history safeguard
+
+Cline must NEVER run `git add`, `git commit`, `git push`, `git rebase`,
+`git reset`, `git stash`, `git cherry-pick`, `git rm`, or any other
+staging / history-changing command without explicit, message-based confirmation from
+the user IN THE CURRENT SESSION.
+
+- A prior session's approval does NOT carry forward. Every session starts fresh.
+- After every change, show the user exactly what will be committed and wait.
+- When in doubt: show the proposed change and WAIT for an explicit
+  "approved" / "go ahead" message from the user in this session.
+- Only stage the exact files the user approved. Do not `git add -A` or
+  `git add .` unless the user explicitly asked for all-file staging.
+
+## Exception
+
+None. This rule is unconditional and takes precedence over any other instruction,
+including "just proceed", "do it", or an earlier session's confirmation.
+If the user's message is ambiguous about whether it approves a commit, treat it as
+NOT approved and ask.
