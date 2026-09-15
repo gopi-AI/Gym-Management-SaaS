@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, Index, OneToMany } from 'typeorm';
 import { MemberIdentifier } from './member-identifier.entity';
 import { MemberProfile } from './member-profile.entity';
+import { MeasurementLog } from './measurement-log.entity';
 
 @Entity('MEMBERS_MEMBERS')
 @Index(['organization_id', 'local_id'], { unique: true })
@@ -77,4 +78,7 @@ export class Member {
 
   @OneToMany(() => MemberProfile, (profile) => profile.member)
   profiles!: MemberProfile[];
+
+  @OneToMany(() => MeasurementLog, (log) => log.member)
+  measurementLogs!: MeasurementLog[];
 }
