@@ -20,6 +20,7 @@ import { HealthModule } from './shared/health/health.module';
 import { FinanceModule } from './finance/finance.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { WorkoutsModule } from './workouts/workouts.module';
+import { PtModule } from './pt/pt.module';
 import { WorkersModule } from './shared/workers/workers.module';
 
 /**
@@ -160,6 +161,10 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     // Workouts (Phase 2): exercises, templates, plan assignments, sessions.
     // PT module (built next) depends on WorkoutsService.assignPlan().
     WorkoutsModule,
+    // Personal Training (Phase 2): trainers, packages, enrollments, sessions,
+    // commissions. Depends on Workouts (one-directional: PT -> assignPlan) and
+    // on Members for org-scoped member validation. Owns no exercise/plan tables.
+    PtModule,
     // Dynamic interval registration for the background workers.
     ScheduleModule.forRoot(),
     // Outbox drain, membership expiry, payment retry (all env-gated, off by default).

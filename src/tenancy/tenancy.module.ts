@@ -28,6 +28,12 @@ import { TenantContextInterceptor } from '../shared/tenant/tenant-context.interc
       useClass: TenantContextInterceptor,
     },
   ],
-  exports: [TenantContextService],
+  // Only the SERVICES are exported — never the repositories. This enforces
+  // the single-legal-write-path guarantee: no other module can bypass the
+  // service-layer logic by injecting a repository directly.
+  // `OrganizationsService` is exported because the PT module (Phase 2) needs the
+  // organization's default currency as the creation-time default for
+  // `PTPackage.currency` (§12 Q4) — read through the service, not a repository.
+  exports: [TenantContextService, OrganizationsService],
 })
 export class TenancyModule {}

@@ -81,6 +81,12 @@ const PERMISSIONS: Array<{ name: string; description: string; resource: string; 
   { name: 'ai:retention-analysis', description: 'Run AI retention analysis', resource: 'ai', action: 'retention-analysis' },
   { name: 'ai:plan-performance', description: 'Run AI membership plan performance analysis', resource: 'ai', action: 'plan-performance' },
   { name: 'ai:usage-read', description: 'View organization AI usage and cost', resource: 'ai', action: 'usage-read' },
+  { name: 'pt:read', description: 'List and view PT packages, trainers, enrollments, and sessions', resource: 'pt', action: 'read' },
+  { name: 'pt:create', description: 'Create PT packages, trainer profiles, and enrollments', resource: 'pt', action: 'create' },
+  { name: 'pt:update', description: 'Update PT packages, trainer profiles, and enrollments', resource: 'pt', action: 'update' },
+  { name: 'pt:delete', description: 'Delete PT packages and trainer profiles', resource: 'pt', action: 'delete' },
+  { name: 'pt:session-check-in', description: 'Mark session as completed (staff-facing)', resource: 'pt', action: 'session-check-in' },
+  { name: 'pt:commission-read', description: 'View trainer commissions', resource: 'pt', action: 'commission-read' },
 ];
 
 async function main(): Promise<void> {
