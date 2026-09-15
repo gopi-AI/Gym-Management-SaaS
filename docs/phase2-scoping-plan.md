@@ -685,9 +685,9 @@ All questions from the original draft have been reviewed. 28 are resolved across
 
 ### Document & Consent Management
 
-23. **Consent revocation audit**: **Yes — add `revoked_at` and `revocation_reason` columns to `MemberConsent`.** When a consent is revoked, `is_given` is set to `false`, `revoked_at` is timestamped, and `revocation_reason` is captured.
-    - **Rationale**: GDPR and most data-privacy regulations require an audit trail for consent withdrawal. Without revocation tracking, you lose the ability to prove *when* and *why* consent was withdrawn. The cost is two nullable columns.
-    - **Reflected in**: §6 entity table (`MemberConsent` — columns updated).
+23. **Consent revocation audit**: **Yes — add `revoked_at` and `revocation_reason` columns to `MemberConsent`.** When a consent is revoked, a **new row** is appended with `is_given = false`, `revoked_at` timestamped, and `revocation_reason` captured. Existing rows are never mutated — this preserves the full append-only audit trail.
+    - **Rationale**: GDPR and most data-privacy regulations require an audit trail for consent withdrawal. Without revocation tracking, you lose the ability to prove *when* and *why* consent was withdrawn. The cost is two nullable columns on an append-only ledger (no UPDATEs).
+    - **Reflected in**: §6 entity table (`MemberConsent` — columns updated); §10 implementation (`.clinerules`-approved append-only decision).
 
 24. **Document table**: **The proposed `MEMBERS_MEMBER_DOCUMENTS` table is accepted.** The distinction between a "document" and a "consent form" is:
     - `MemberConsent` = the **legal record of agreement** (boolean + type + timestamp), optionally referencing a signed document.

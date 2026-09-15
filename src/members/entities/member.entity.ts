@@ -2,6 +2,8 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateCol
 import { MemberIdentifier } from './member-identifier.entity';
 import { MemberProfile } from './member-profile.entity';
 import { MeasurementLog } from './measurement-log.entity';
+import { MemberConsent } from './consent-log.entity';
+import { MemberDocument } from './member-document.entity';
 
 @Entity('MEMBERS_MEMBERS')
 @Index(['organization_id', 'local_id'], { unique: true })
@@ -81,4 +83,10 @@ export class Member {
 
   @OneToMany(() => MeasurementLog, (log) => log.member)
   measurementLogs!: MeasurementLog[];
+
+  @OneToMany(() => MemberConsent, (consent) => consent.member)
+  consents!: MemberConsent[];
+
+  @OneToMany(() => MemberDocument, (document) => document.member)
+  documents!: MemberDocument[];
 }
