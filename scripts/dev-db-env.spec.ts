@@ -47,10 +47,29 @@ function makeEnvFile(overrides: Record<string, string | undefined> = {}): string
   return file;
 }
 
+/**
+ * Run the guard against a specific environment file.
+ *
+ * The child bash process inherits the parent environment, but the DB_* keys are
+ * stripped before spawning. The guard's contract is that $ENV_FILE is the SOLE
+ * source of truth for DB_*; if a sibling test file running in the same Jest
+ * worker leaked a DB_* value into `process.env`, the missing-key check in the
+ * script would see it as present and incorrectly succeed. Stripping them here makes
+ * each test deterministic regardless of worker scheduling — PATH / DOCKER_HOST etc.
+ * are still inherited so the `docker`-backed probe and command resolution work.
+ */
 function run(envFile: string, args: string[]) {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('DB_')) {
+      delete env[key];
+    }
+  }
+  env.DEV_DB_PUBLISHED_PORT = PUBLISHED_PORT;
+
   const result = spawnSync('bash', [SCRIPT, '--env-file', envFile, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, DEV_DB_PUBLISHED_PORT: PUBLISHED_PORT },
+    env,
   });
 
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
