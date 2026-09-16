@@ -21,6 +21,7 @@ import { FinanceModule } from './finance/finance.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { WorkoutsModule } from './workouts/workouts.module';
 import { PtModule } from './pt/pt.module';
+import { DietModule } from './diet/diet.module';
 import { WorkersModule } from './shared/workers/workers.module';
 
 /**
@@ -165,6 +166,8 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     // commissions. Depends on Workouts (one-directional: PT -> assignPlan) and
     // on Members for org-scoped member validation. Owns no exercise/plan tables.
     PtModule,
+    // Diet/Nutrition (Phase 2): diet plans, meal templates, assignments, logs.
+    DietModule,
     // Dynamic interval registration for the background workers.
     ScheduleModule.forRoot(),
     // Outbox drain, membership expiry, payment retry (all env-gated, off by default).
