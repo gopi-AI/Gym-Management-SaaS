@@ -76,6 +76,7 @@ pt:commission-read   — View trainer commissions
 - PT enrollments reference `Member` (Phase 1, `src/members/`)
 - PT sessions do NOT create attendance records — the member must check in independently (see §12 Q3)
 - PT module depends on Workouts module: `PT → WorkoutsService.assignPlan()` for workout plan linkage (see "Naming collision resolved" above)
+- Workout-plan assignment is an explicit, staff-invoked `assignWorkoutPlan()` operation — never an automatic effect of enrollment creation (`PTEnrollment` and `PTEnrollmentCreated.v1` carry no template reference)
 
 ### Phase 3+ dependencies
 
