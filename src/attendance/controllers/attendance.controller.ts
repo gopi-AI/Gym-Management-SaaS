@@ -13,6 +13,7 @@ import { AttendanceService } from '../services/attendance.service';
 import { AttendanceEventDto } from '../dto/attendance-event.dto';
 import { QueryAttendanceRecordsDto } from '../dto/query-attendance-records.dto';
 import { QueryAccessDecisionsDto } from '../dto/query-access-decisions.dto';
+import { QueryMemberHistoryDto, QueryMemberTrendsDto } from '../dto/attendance-trends.dto';
 import { RequirePermissions } from '../../shared/auth/permissions.guard';
 
 /**
@@ -66,5 +67,47 @@ export class AttendanceController {
   @RequirePermissions({ resource: 'attendance', action: 'read' })
   async findAccessDecisions(@Query() query: QueryAccessDecisionsDto) {
     return this.attendanceService.findAccessDecisions(query);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Attendance Trends (Phase 2, §8) — reuses `attendance:read`
+  // ---------------------------------------------------------------------------
+
+  @Get('members/:memberId/history')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions({ resource: 'attendance', action: 'read' })
+  async getMemberHistory(
+    @Param('memberId', new ParseUUIDPipe({ version: '4' })) memberId: string,
+    @Query() query: QueryMemberHistoryDto,
+  ) {
+    return this.attendanceService.getMemberAttendanceHistory(memberId, query);
+  }
+
+  @Get('members/:memberId/trends')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions({ resource: 'attendance', action: 'read' })
+  async getMemberTrends(
+    @Param('memberId', new ParseUUIDPipe({ version: '4' })) memberId: string,
+    @Query() query: QueryMemberTrendsDto,
+  ) {
+    return this.attendanceService.getMemberCheckInTrends(memberId, query.period);
+  }
+
+  @Get('members/:memberId/streak')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions({ resource: 'attendance', action: 'read' })
+  async getMemberStreak(
+    @Param('memberId', new ParseUUIDPipe({ version: '4' })) memberId: string,
+  ) {
+    return this.attendanceService.getMemberAttendanceStreak(memberId);
+  }
+
+  @Get('members/:memberId/summary')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions({ resource: 'attendance', action: 'read' })
+  async getMemberSummary(
+    @Param('memberId', new ParseUUIDPipe({ version: '4' })) memberId: string,
+  ) {
+    return this.attendanceService.getMemberSummaryForHeader(memberId);
   }
 }

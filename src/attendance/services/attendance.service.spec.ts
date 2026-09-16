@@ -305,4 +305,142 @@ describe('AttendanceService', () => {
       expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
     });
   });
+  // ---------------------------------------------------------------------------
+  // Phase 2 Attendance Trends (§8) — streak correctness with concrete dated data
+  // ---------------------------------------------------------------------------
+  //
+  // "Calendar day" = UTC day. A qualifying day is any UTC calendar day with ≥1 check-in.
+  // Both the member→org validation (dataSource) and the record query (recordRepository
+  // createQueryBuilder) are mocked per test.
+
+  /** Build the record-repo createQueryBuilder chain resolving `getMany()` to `records`. */
+  function mockRecordQueryBuilder(records: AttendanceRecord[]) {
+    const qb = {
+      select: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      skip: jest.fn().mockReturnThis(),
+      take: jest.fn().mockReturnThis(),
+      getMany: jest.fn().mockResolvedValue(records),
+      getManyAndCount: jest.fn(),
+    };
+    return qb;
+  }
+
+  /** A minimal attendance record with only the fields the trend queries read. */
+  function rec(checkInIso: string): AttendanceRecord {
+    return {
+      id: '00000000-0000-4000-8000-000000000000',
+      organization_id: orgId,
+      branch_id: null,
+      member_id: memberId,
+      check_in_time: new Date(checkInIso),
+      check_out_time: null,
+      check_in_method: 'manual',
+      check_out_method: null,
+      checked_in_by: null,
+    };
+  }
+
+  describe('getMemberAttendanceStreak', () => {
+    // A fixed "today" so the today/yesterday rule is deterministic. Never check in
+    // on this date in the data to exercise the "yesterday still counts" path.
+    const TODAY = '2026-09-16';
+    const YESTERDAY = '2026-09-15';
+
+    beforeEach(() => {
+      jest.useFakeTimers().setSystemTime(new Date(`${TODAY}T12:00:00.000Z`));
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('zero check-ins ever => currentStreak 0, longestStreak 0, lastVisitDate null', async () => {
+      mockRecordRepo.createQueryBuilder.mockReturnValueOnce(mockRecordQueryBuilder([]));
+
+      const result = await service.getMemberAttendanceStreak(memberId);
+
+      expect(result).toEqual({
+        memberId,
+        currentStreak: 0,
+        longestStreak: 0,
+        lastVisitDate: null,
+      });
+      // Org + member scoping must be applied.
+      const qb = mockRecordRepo.createQueryBuilder.mock.results[0].value;
+      expect(qb.where).toHaveBeenCalledWith('record.organization_id = :organizationId', {
+        organizationId: orgId,
+      });
+      expect(qb.andWhere).toHaveBeenCalledWith('record.member_id = :memberId', { memberId });
+    });
+
+    it('5 consecutive days ending yesterday, none today => currentStreak 5 (yesterday still counts)', async () => {
+      // Check-ins on 2026-09-11 through 2026-09-15 (5 days), none today (09-16).
+      const records = ['11', '12', '13', '14', '15'].map(
+        (d) => `2026-09-${d}T09:00:00.000Z`,
+      );
+      mockRecordRepo.createQueryBuilder.mockReturnValueOnce(mockRecordQueryBuilder(records.map(rec)));
+
+      const result = await service.getMemberAttendanceStreak(memberId);
+
+      // Today (09-16) has no check-in yet, but yesterday (09-15) does, so the
+      // streak is 5 and not broken.
+      expect(result.currentStreak).toBe(5);
+      expect(result.longestStreak).toBe(5);
+      expect(result.lastVisitDate).toBe('2026-09-15');
+    });
+
+    it('resets across a gap: days 1-3, skip day 4, day 5 => current=1, longest=3', async () => {
+      // Check-ins on Sep 11, 12, 13 (run of 3), skip Sep 14, re-check-in Sep 15.
+      const records = ['11', '12', '13', '15'].map((d) => `2026-09-${d}T08:00:00.000Z`);
+      mockRecordRepo.createQueryBuilder.mockReturnValueOnce(mockRecordQueryBuilder(records.map(rec)));
+
+      const result = await service.getMemberAttendanceStreak(memberId);
+
+      // The post-gap run is just Sep 15 (current); the pre-gap run of 3 is the longest.
+      expect(result.currentStreak).toBe(1);
+      expect(result.longestStreak).toBe(3);
+      expect(result.lastVisitDate).toBe('2026-09-15');
+    });
+
+    it('multiple check-ins on one day count as a single qualifying day', async () => {
+      // Two check-ins on Sep 15 (e.g. morning gym + afternoon gym), then a gap before
+      // that: the qualifying-run length equals the run of distinct days, not events.
+      const records = ['15', '15', '14'].map((d) => `2026-09-${d}T0${d === '14' ? 8 : 9}:00:00.000Z`);
+      mockRecordRepo.createQueryBuilder.mockReturnValueOnce(mockRecordQueryBuilder(records.map(rec)));
+
+      const result = await service.getMemberAttendanceStreak(memberId);
+
+      // Sep 14 + Sep 15 (unordered input, duplicate day) => 2 qualifying days, not 3.
+      expect(result.currentStreak).toBe(2);
+      expect(result.longestStreak).toBe(2);
+    });
+
+    it('scopes to the member within the org (cross-member isolation via member_id filter)', async () => {
+      mockRecordRepo.createQueryBuilder.mockReturnValueOnce(mockRecordQueryBuilder([]));
+
+      await service.getMemberAttendanceStreak(memberId);
+
+      const qb = mockRecordRepo.createQueryBuilder.mock.results[0].value;
+      expect(qb.andWhere).toHaveBeenCalledWith('record.member_id = :memberId', { memberId });
+      // ensureMemberBelongsToOrg ran against the data source.
+      expect(mockDataSource.createQueryBuilder).toHaveBeenCalled();
+    });
+
+    it('rejects a member that does not belong to the authorized organization', async () => {
+      mockDataSource.createQueryBuilder = jest.fn(() => ({
+        select: jest.fn().mockReturnThis(),
+        from: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        getRawOne: jest.fn().mockResolvedValue(null),
+      }));
+
+      await expect(service.getMemberAttendanceStreak(memberId)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(mockRecordRepo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+  });
+
 });

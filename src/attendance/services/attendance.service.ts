@@ -13,10 +13,19 @@ import { AttendanceAccessDecision } from '../entities/attendance-access-decision
 import { AttendanceEventDto } from '../dto/attendance-event.dto';
 import { QueryAttendanceRecordsDto } from '../dto/query-attendance-records.dto';
 import { QueryAccessDecisionsDto } from '../dto/query-access-decisions.dto';
+import {
+  QueryMemberHistoryDto,
+  TrendPeriod,
+  CheckInTrendSeries,
+  CheckInTrendPoint,
+  MemberStreakResult,
+  MemberHistoryPoint,
+  MemberAttendanceSummary,
+} from '../dto/attendance-trends.dto';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
 import { MembershipsService } from '../../memberships/services/memberships.service';
-import { endOfRange } from '../../shared/utils/date-range';
+import { endOfRange, startOfRange } from '../../shared/utils/date-range';
 import {
   ATTENDANCE_DECISION_REASONS,
   ATTENDANCE_EVENT_KINDS,
@@ -79,6 +88,99 @@ interface AttendanceEventInput {
 
 /** PostgreSQL SQLSTATE for a unique-constraint violation. */
 const UNIQUE_VIOLATION_CODE = '23505';
+
+/** `YYYY-MM-DD` label of `date`'s UTC calendar day. */
+function utcDayKey(date: Date): string {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(
+    date.getUTCDate(),
+  ).padStart(2, '0')}`;
+}
+
+/** `YYYY-MM-DD` label `days` UTC days before `date`. */
+function utcDayOffset(date: Date, days: number): string {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days));
+  return utcDayKey(d);
+}
+
+/**
+ * Length of the longest run of consecutive calendar days in a sorted (ascending)
+ * array of `YYYY-MM-DD` keys. Returns 0 for an empty array.
+ */
+function longestRun(days: string[]): number {
+  if (days.length === 0) return 0;
+  let best = 1;
+  let run = 1;
+  for (let i = 1; i < days.length; i++) {
+    if (isNextDay(days[i - 1], days[i])) {
+      run += 1;
+      if (run > best) best = run;
+    } else {
+      run = 1;
+    }
+  }
+  return best;
+}
+
+/** True when `b` is the calendar day immediately after `a` (both `YYYY-MM-DD`). */
+function isNextDay(a: string, b: string): boolean {
+  return utcDayOffset(new Date(`${a}T00:00:00.000Z`), 1) === b;
+}
+
+/**
+ * The member's current streak given their distinct qualifying UTC days (ascending).
+ *
+ * Counts consecutive qualifying days ending today — or yesterday, when today has no
+ * check-in yet (a day is not "broken" until it is over with no check-in). A day
+ * with zero check-ins breaks the streak. Returns 0 when there is no current run.
+ */
+function currentStreak(days: string[]): number {
+  if (days.length === 0) return 0;
+  const now = new Date();
+  const today = utcDayKey(now);
+  const yesterday = utcDayOffset(now, -1);
+  const last = days[days.length - 1];
+
+  let anchor: string;
+  if (days.includes(today)) anchor = today;
+  else if (days.includes(yesterday)) anchor = yesterday;
+  else return 0;
+
+  // Anchor must be the most recent visit (streak always ends at the latest visit).
+  if (anchor !== last) return 0;
+
+  let streak = 1;
+  let cursor = anchor;
+  const set = new Set(days);
+  while (set.has(utcDayOffset(new Date(`${cursor}T00:00:00.000Z`), -1))) {
+    cursor = utcDayOffset(new Date(`${cursor}T00:00:00.000Z`), -1);
+    streak += 1;
+  }
+  return streak;
+}
+
+/**
+ * Builds an ascending array of period points spanning `from`..`now` (inclusive).
+ * `bucketKind` 'day' yields one point per calendar day; 'month' yields one per
+ * calendar month. Used by `getMemberCheckInTrends`.
+ */
+function buildPeriodPoints(now: Date, from: Date, bucketKind: 'day' | 'month'): CheckInTrendPoint[] {
+  const points: CheckInTrendPoint[] = [];
+  const fromDay = utcDayKey(from);
+  const todayDay = utcDayKey(now);
+  let cursor = from;
+  while (utcDayKey(cursor) <= todayDay) {
+    const label = bucketKind === 'month' ? utcDayKey(cursor).slice(0, 7) : utcDayKey(cursor);
+    points.push({ label, checkInDays: 0, totalCheckIns: 0 });
+    cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), cursor.getUTCDate() + 1));
+  }
+  // De-duplicate monthly labels (a month point may repeat as we advance day-by-day).
+  const seen = new Set<string>();
+  return points.filter((p) => {
+    if (seen.has(p.label)) return false;
+    seen.add(p.label);
+    return true;
+  });
+}
 
 @Injectable()
 export class AttendanceService {
@@ -272,6 +374,173 @@ export class AttendanceService {
       .getManyAndCount();
 
     return { data, total, page, limit };
+  }
+// ---------------------------------------------------------------------------
+  // Phase 2 Attendance Trends (docs/phase2-scoping-plan.md §8)
+  // ---------------------------------------------------------------------------
+  // PURE QUERY additions on existing Phase 1 `ATTENDANCE_ATTENDANCE_RECORDS` data: no new
+  // entities, tables or migrations. A "qualifying day" is any calendar day with at least one
+  // check-in; a day with zero check-ins breaks a streak; multiple check-ins on the same day count
+  // as one qualifying day. "Calendar day" means UTC (the codebase-wide convention). All reads are
+  // scoped to the authorized organization AND validated member.
+
+  /**
+   * Paginated check-in history (`GET /v1/attendance/members/:memberId/history`).
+   *
+   * Aggregates attendance records into per-calendar-day points, newest first.
+   * `from`/`to` are optional inclusive bounds on `check_in_time` (date-only = whole days).
+   */
+  async getMemberAttendanceHistory(
+    memberId: string,
+    query: QueryMemberHistoryDto,
+  ): Promise<{ data: MemberHistoryPoint[]; total: number; page: number; limit: number }> {
+    const organizationId = await this.resolveAuthorizedOrg();
+    await this.ensureMemberBelongsToOrg(memberId, organizationId);
+
+    const page = query.page && query.page > 0 ? query.page : 1;
+    const limit = query.limit && query.limit > 0 ? query.limit : 20;
+
+    const qb = this.recordRepository
+      .createQueryBuilder('record')
+      .where('record.organization_id = :organizationId', { organizationId })
+      .andWhere('record.member_id = :memberId', { memberId });
+
+    if (query.from) qb.andWhere('record.check_in_time >= :from', { from: startOfRange(query.from) });
+    if (query.to) qb.andWhere('record.check_in_time <= :to', { to: endOfRange(query.to) });
+
+    const [records, total] = await qb
+      .select(['record.check_in_time', 'record.check_out_time'])
+      .orderBy('record.check_in_time', 'DESC')
+      .skip((page - 1) * limit)
+      .take(Math.min(limit, 366))
+      .getManyAndCount();
+
+    const byDay = new Map<string, MemberHistoryPoint>();
+    for (const record of records) {
+      const day = utcDayKey(record.check_in_time);
+      const iso = record.check_in_time.toISOString();
+      const existing = byDay.get(day);
+      if (existing) {
+        existing.checkInCount += 1;
+        if (iso < existing.firstCheckIn!) existing.firstCheckIn = iso;
+        if (iso > existing.lastCheckIn!) existing.lastCheckIn = iso;
+      } else {
+        byDay.set(day, { date: day, checkInCount: 1, firstCheckIn: iso, lastCheckIn: iso });
+      }
+    }
+
+    const data = Array.from(byDay.values()).sort((a, b) => (a.date < b.date ? 1 : -1));
+    return { data, total, page, limit };
+  }
+/**
+   * Check-in trends (`GET /v1/attendance/members/:memberId/trends`).
+   *
+   * Buckets the member's check-ins over the trailing window (`week`=7, `month`=31,
+   * `quarter`=93 calendar days), daily for week/month, monthly for quarter. Each
+   * point reports check-in events AND distinct qualifying days in the bucket.
+   */
+  async getMemberCheckInTrends(memberId: string, period: TrendPeriod): Promise<CheckInTrendSeries> {
+    const organizationId = await this.resolveAuthorizedOrg();
+    await this.ensureMemberBelongsToOrg(memberId, organizationId);
+
+    const windowDays = period === 'quarter' ? 93 : period === 'week' ? 7 : 31;
+    const bucketKind: 'day' | 'month' = period === 'quarter' ? 'month' : 'day';
+
+    const now = new Date();
+    const from = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (windowDays - 1)),
+    );
+
+    const records = await this.recordRepository
+      .createQueryBuilder('record')
+      .select(['record.check_in_time'])
+      .where('record.organization_id = :organizationId', { organizationId })
+      .andWhere('record.member_id = :memberId', { memberId })
+      .andWhere('record.check_in_time >= :from', { from })
+      .orderBy('record.check_in_time', 'ASC')
+      .getMany();
+
+    const points = buildPeriodPoints(now, from, bucketKind);
+    const pointByLabel = new Map(points.map((p) => [p.label, p]));
+    for (const record of records) {
+      const day = utcDayKey(record.check_in_time);
+      const label = bucketKind === 'month' ? day.slice(0, 7) : day;
+      const point = pointByLabel.get(label);
+      if (point) point.totalCheckIns += 1;
+    }
+    if (bucketKind === 'month') {
+      const distinct = new Set(records.map((r) => utcDayKey(r.check_in_time)));
+      for (const point of points) {
+        point.checkInDays = Array.from(distinct).filter((d) => d.startsWith(point.label)).length;
+      }
+    } else {
+      for (const point of points) point.checkInDays = point.totalCheckIns > 0 ? 1 : 0;
+    }
+
+    return { memberId, period, points };
+  }
+
+  /**
+   * Streak summary (`GET /v1/attendance/members/:memberId/streak`).
+   *
+   * - `currentStreak`: consecutive qualifying days ending today (or yesterday, when today has
+   *   no check-in yet — a day is not "broken" until it's over with no check-in). 0 when none.
+   * - `longestStreak`: longest historical run of consecutive qualifying days.
+   * - `lastVisitDate`: most recent qualifying day (`YYYY-MM-DD`), null when never visited.
+   */
+  async getMemberAttendanceStreak(memberId: string): Promise<MemberStreakResult> {
+    const organizationId = await this.resolveAuthorizedOrg();
+    await this.ensureMemberBelongsToOrg(memberId, organizationId);
+
+    const records = await this.recordRepository
+      .createQueryBuilder('record')
+      .select(['record.check_in_time'])
+      .where('record.organization_id = :organizationId', { organizationId })
+      .andWhere('record.member_id = :memberId', { memberId })
+      .orderBy('record.check_in_time', 'ASC')
+      .getMany();
+
+    const days = Array.from(new Set(records.map((r) => utcDayKey(r.check_in_time)))).sort();
+    return {
+      memberId,
+      currentStreak: currentStreak(days),
+      longestStreak: longestRun(days),
+      lastVisitDate: days.length > 0 ? days[days.length - 1] : null,
+    };
+  }
+
+  /**
+   * Summary for the 360 header (`GET /v1/attendance/members/:memberId/summary`).
+   */
+  async getMemberSummaryForHeader(memberId: string): Promise<MemberAttendanceSummary> {
+    const organizationId = await this.resolveAuthorizedOrg();
+    await this.ensureMemberBelongsToOrg(memberId, organizationId);
+
+    const now = new Date();
+    const today = utcDayKey(now);
+    const from = new Date(`${today.slice(0, 7)}-01T00:00:00.000Z`);
+
+    const records = await this.recordRepository
+      .createQueryBuilder('record')
+      .select(['record.check_in_time'])
+      .where('record.organization_id = :organizationId', { organizationId })
+      .andWhere('record.member_id = :memberId', { memberId })
+      .andWhere('record.check_in_time >= :from', { from })
+      .orderBy('record.check_in_time', 'DESC')
+      .getMany();
+
+    let lastCheckIn: string | null = null;
+    let todayCheckedIn = false;
+    const monthDays = new Set<string>();
+    for (const record of records) {
+      const iso = record.check_in_time.toISOString();
+      if (lastCheckIn === null) lastCheckIn = iso;
+      const day = utcDayKey(record.check_in_time);
+      monthDays.add(day);
+      if (day === today) todayCheckedIn = true;
+    }
+
+    return { memberId, lastCheckIn, todayCheckedIn, totalVisitsThisMonth: monthDays.size };
   }
 
   /**
