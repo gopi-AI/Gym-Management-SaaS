@@ -28,4 +28,7 @@ export class OutboxEntity {
 
   @Column({ type: 'varchar', length: 100, nullable: true })
   lockedBy!: string | null;
+
+  @Column({ type: 'boolean', default: false })
+  deadLettered!: boolean;
 }

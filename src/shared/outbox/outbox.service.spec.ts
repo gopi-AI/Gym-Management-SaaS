@@ -10,6 +10,9 @@ describe('OutboxService — EventEnvelope persistence', () => {
     mockRepo = {
       create: jest.fn(),
       save: jest.fn(),
+      findOne: jest.fn(),
+      update: jest.fn(),
+      createQueryBuilder: jest.fn(),
     };
     service = new OutboxService(mockRepo as unknown as Repository<OutboxEntity>);
   });
@@ -167,6 +170,89 @@ describe('OutboxService — EventEnvelope persistence', () => {
       const createCall = txRepo.create.mock.calls[0][0] as { payload: string };
       expect(JSON.parse(createCall.payload).organizationId).toBe('org-123');
       expect(result).toBe(created);
+    });
+  });
+
+  describe('claimNextBatch — max-attempts ceiling', () => {
+    it('filters out rows that have reached the maxAttempts threshold', async () => {
+      const qb = {
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        limit: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      };
+      mockRepo.createQueryBuilder.mockReturnValue(qb);
+
+      await service.claimNextBatch(10, 30_000, 'worker-1', 5);
+
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'outbox.attempts < :maxAttempts',
+        { maxAttempts: 5 },
+      );
+      expect(qb.andWhere).toHaveBeenCalledWith(
+        'outbox.deadLettered = :deadLettered',
+        { deadLettered: false },
+      );
+    });
+  });
+
+  describe('markAsFailed — dead-letter escalation', () => {
+    let qb: Record<string, jest.Mock>;
+
+    beforeEach(() => {
+      qb = {
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue(undefined),
+      };
+      mockRepo.createQueryBuilder.mockReturnValue(qb);
+    });
+
+    it('increments attempts and releases the lock when below maxAttempts', async () => {
+      mockRepo.findOne.mockResolvedValue({
+        id: 'outbox-1',
+        attempts: 2,
+      } as OutboxEntity);
+
+      await service.markAsFailed('outbox-1', 5);
+
+      expect(qb.execute).toHaveBeenCalled();
+      expect(mockRepo.findOne).toHaveBeenCalledWith({ where: { id: 'outbox-1' } });
+      // attempts (2) < maxAttempts (5) → NOT dead-lettered
+      expect(mockRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('marks dead-lettered when attempts >= maxAttempts after increment', async () => {
+      mockRepo.findOne.mockResolvedValue({
+        id: 'outbox-1',
+        attempts: 5, // post-increment value: 5 >= 5
+      } as OutboxEntity);
+
+      await service.markAsFailed('outbox-1', 5);
+
+      expect(mockRepo.update).toHaveBeenCalledWith('outbox-1', {
+        processed: true,
+        deadLettered: true,
+        lockedAt: null,
+        lockedBy: null,
+      });
+    });
+  });
+
+  describe('markAsDeadLettered', () => {
+    it('sets processed=true, deadLettered=true, and releases lock', async () => {
+      mockRepo.update.mockResolvedValue(undefined);
+
+      await service.markAsDeadLettered('outbox-dl');
+
+      expect(mockRepo.update).toHaveBeenCalledWith('outbox-dl', {
+        processed: true,
+        deadLettered: true,
+        lockedAt: null,
+        lockedBy: null,
+      });
     });
   });
 });

@@ -24,6 +24,7 @@ import { PtModule } from './pt/pt.module';
 import { DietModule } from './diet/diet.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
 import { WorkersModule } from './shared/workers/workers.module';
+import { EventHandlerModule } from './shared/event-handler/event-handler.module';
 
 /**
  * Production environment validation.
@@ -175,6 +176,8 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     WorkersModule,
     // Loyalty (Phase 2): points accrual, expiry, rules, rewards (schema-only).
     LoyaltyModule,
+    // In-process event routing (transitional stand-in for the RabbitMQ target).
+    EventHandlerModule,
     // AI foundation: provider abstraction, usage/audit telemetry, retention use case.
     AiModule,
     // Global crypto infrastructure (at-rest AES-256-GCM for MFA secrets).

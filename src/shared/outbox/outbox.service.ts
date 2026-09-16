@@ -40,11 +40,14 @@ export class OutboxService {
    * Atomically claim a batch of unprocessed events for a worker.
    * Only events that are not already locked (or whose lock has expired)
    * are claimed, preventing duplicate processing across workers.
+   * Events that have exceeded the max-attempts ceiling (dead-lettered) are
+   * excluded so they never retry forever.
    */
   async claimNextBatch(
     limit: number,
     lockDurationMs: number,
     workerId: string,
+    maxAttempts = 10,
   ): Promise<OutboxEntity[]> {
     const lockExpiry = new Date(Date.now() + lockDurationMs);
     const now = new Date();
@@ -53,6 +56,8 @@ export class OutboxService {
       .createQueryBuilder('outbox')
       .where('outbox.processed = :processed', { processed: false })
       .andWhere('(outbox.lockedAt IS NULL OR outbox.lockedAt < :now)', { now })
+      .andWhere('outbox.attempts < :maxAttempts', { maxAttempts })
+      .andWhere('outbox.deadLettered = :deadLettered', { deadLettered: false })
       .orderBy('outbox.createdAt', 'ASC')
       .limit(limit)
       .getMany();
@@ -88,7 +93,9 @@ export class OutboxService {
     });
   }
 
-  async markAsFailed(id: string): Promise<void> {
+  async markAsFailed(id: string, maxAttempts = 10): Promise<void> {
+    // Atomically increment attempts; the SET clause uses a raw expression so
+    // TypeORM doesn't need to know the current value client-side.
     await this.outboxRepository
       .createQueryBuilder()
       .update(OutboxEntity)
@@ -99,6 +106,26 @@ export class OutboxService {
       })
       .where('id = :id', { id })
       .execute();
+
+    // Read back the new attempt count to decide whether to dead-letter.
+    const row = await this.outboxRepository.findOne({ where: { id } });
+    if (row && row.attempts >= maxAttempts) {
+      await this.markAsDeadLettered(id);
+    }
+  }
+
+  /**
+   * Permanently mark a row as dead-lettered so it is excluded from future
+   * claimNextBatch queries. This is a terminal state — the row is never
+   * retried.
+   */
+  async markAsDeadLettered(id: string): Promise<void> {
+    await this.outboxRepository.update(id, {
+      processed: true,
+      deadLettered: true,
+      lockedAt: null,
+      lockedBy: null,
+    });
   }
 
   /**
