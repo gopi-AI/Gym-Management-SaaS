@@ -20,6 +20,7 @@ export const WORKER_INTERVALS: Record<string, number> = {
   OUTBOX: 10_000,
   MEMBERSHIP_EXPIRY: 60 * 60 * 1000,
   PAYMENT_RETRY: 15 * 60 * 1000,
+  EXPIRY: 60 * 60 * 1000,
 };
 
 /** Default batch size per worker. */

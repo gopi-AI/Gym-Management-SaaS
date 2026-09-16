@@ -22,6 +22,7 @@ import { AttendanceModule } from './attendance/attendance.module';
 import { WorkoutsModule } from './workouts/workouts.module';
 import { PtModule } from './pt/pt.module';
 import { DietModule } from './diet/diet.module';
+import { LoyaltyModule } from './loyalty/loyalty.module';
 import { WorkersModule } from './shared/workers/workers.module';
 
 /**
@@ -172,6 +173,8 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     ScheduleModule.forRoot(),
     // Outbox drain, membership expiry, payment retry (all env-gated, off by default).
     WorkersModule,
+    // Loyalty (Phase 2): points accrual, expiry, rules, rewards (schema-only).
+    LoyaltyModule,
     // AI foundation: provider abstraction, usage/audit telemetry, retention use case.
     AiModule,
     // Global crypto infrastructure (at-rest AES-256-GCM for MFA secrets).

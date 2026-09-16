@@ -18,6 +18,10 @@ export class Organization {
   @Column({ type: 'varchar', length: 3 })
   currency!: string;
 
+  /** Loyalty points expiry period in days (default 365). See §12 Q18. */
+  @Column({ type: 'int', default: 365 })
+  points_expiry_days!: number;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
 
