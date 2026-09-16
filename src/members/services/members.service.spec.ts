@@ -4,6 +4,7 @@ import { NotFoundException } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { MembersService } from './members.service';
 import { Member } from '../entities/member.entity';
+import { MemberProfile } from '../entities/member-profile.entity';
 import { LocalIdService } from './local-id.service';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
@@ -11,6 +12,7 @@ import { OutboxService } from '../../shared/outbox/outbox.service';
 describe('MembersService', () => {
   let service: MembersService;
   let mockMemberRepo: Record<string, jest.Mock>;
+  let mockMemberProfileRepo: Record<string, jest.Mock>;
   let mockDataSource: Record<string, jest.Mock>;
   let mockTenantContext: Record<string, jest.Mock>;
   let mockLocalIdService: Record<string, jest.Mock>;
@@ -32,6 +34,8 @@ describe('MembersService', () => {
       update: jest.fn().mockResolvedValue({}),
       findAndCount: jest.fn().mockResolvedValue([[], 0]),
     };
+
+    mockMemberProfileRepo = {};
 
     // DataSource transaction mock: the real implementation calls
     // `manager.getRepository` for the domain entity (Member) and passes
@@ -68,6 +72,7 @@ describe('MembersService', () => {
       providers: [
         MembersService,
         { provide: getRepositoryToken(Member), useValue: mockMemberRepo },
+        { provide: getRepositoryToken(MemberProfile), useValue: mockMemberProfileRepo },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         { provide: TenantContextService, useValue: mockTenantContext },
         { provide: LocalIdService, useValue: mockLocalIdService },
