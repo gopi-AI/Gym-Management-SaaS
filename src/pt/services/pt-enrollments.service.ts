@@ -3,6 +3,8 @@ import {
   BadRequestException,
   ConflictException,
   NotFoundException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, FindOptionsWhere, Repository } from 'typeorm';
@@ -54,6 +56,7 @@ export class PtEnrollmentsService {
     private readonly dataSource: DataSource,
     private readonly tenantContextService: TenantContextService,
     private readonly outboxService: OutboxService,
+    @Inject(forwardRef(() => MembersService))
     private readonly membersService: MembersService,
     private readonly workoutsService: WorkoutsService,
   ) {}

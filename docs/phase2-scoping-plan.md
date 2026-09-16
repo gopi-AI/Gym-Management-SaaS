@@ -705,7 +705,7 @@ All questions from the original draft have been reviewed. 28 are resolved across
 26. **Quick actions logic**: **Computed from member state — dynamically shown/hidden based on current state.** Rules:
     - "Check-in" — shown only if the member has **not** checked in today AND has an active membership.
     - "Renew" — shown only if the membership expires in ≤30 days.
-    - "Book PT" — shown if the member has an active `PTEnrollment` with `sessions_remaining > 0`.
+    - "Book PT" — shown if the member has an active `PTEnrollment` with `sessions_remaining > 0`, **or if the member has no PT enrollment at all** (to prompt a new member to start one). Not shown when there IS an active `PTEnrollment` but it has `sessions_remaining === 0` (the member is mid-program; leftover sessions/checkout flow handles the next block of sessions).
     - "Log Workout" — always shown.
     - "Log Meal" — always shown.
     - **Rationale**: Static quick actions waste screen real estate and confuse staff (why show "Check-in" if the member is already checked in?). Computed actions make the dashboard context-aware and useful.

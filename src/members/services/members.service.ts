@@ -3,6 +3,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { Repository, Like, DataSource } from 'typeorm';
 import { Member } from '../entities/member.entity';
+import { MemberProfile } from '../entities/member-profile.entity';
 import { OutboxEntity } from '../../shared/outbox/outbox.entity';
 import { CreateMemberDto } from '../dto/create-member.dto';
 import { UpdateMemberDto } from '../dto/update-member.dto';
@@ -16,6 +17,8 @@ export class MembersService {
   constructor(
     @InjectRepository(Member)
     private readonly memberRepository: Repository<Member>,
+    @InjectRepository(MemberProfile)
+    private readonly memberProfileRepository: Repository<MemberProfile>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly localIdService: LocalIdService,
@@ -77,6 +80,41 @@ export class MembersService {
     const organizationId = await this.getOrganizationId();
     return this.memberRepository.findOne({
       where: { local_id: localId, organization_id: organizationId, is_active: true },
+    });
+  }
+
+  /**
+   * Get a member's profile (current health/metrics), org-scoped.
+   *
+   * `MemberProfile.weight`, `body_fat` and `height` are the LATEST-VALUE cache —
+   * denormalized from the most recent `MeasurementLog` row by the dual-write path in
+   * `MeasurementLogsService.create()` (§12 Q13). The Member 360 header reads these
+   * cached current values here (O(1)) rather than re-querying the time-series
+   * table on every header load.
+   *
+   * Returns `null` when the member has no profile row yet (a null/empty state, not
+   * an error — the 360 header surfaces it as such).
+   */
+  /**
+   * Get a member's profile (current health/metrics), org-scoped.
+   *
+   * `MemberProfile.weight`, `body_fat` and `height` are the LATEST-VALUE cache —
+   * denormalized from the most recent `MeasurementLog` row by the dual-write path in
+   * `MeasurementLogsService.create()` (§12 Q13). The Member 360 header reads these
+   * cached current values here (O(1)) rather than re-querying the time-series
+   * table on every header load.
+   *
+   * Returns `null` when the member has no profile row yet (a null/empty state, not
+   * an error — the 360 header surfaces it as such).
+   *
+   * Org-scoping is implicit: `findOne(memberId)` throws NotFoundException when the
+   * member doesn't belong to the caller's org, so a cross-org member id cannot leak
+   * the profile.
+   */
+  async getProfile(memberId: string): Promise<MemberProfile | null> {
+    await this.findOne(memberId);
+    return this.memberProfileRepository.findOne({
+      where: { member_id: memberId },
     });
   }
 

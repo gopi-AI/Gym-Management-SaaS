@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TenancyModule } from '../tenancy/tenancy.module';
 import { OutboxModule } from '../shared/outbox/outbox.module';
@@ -49,7 +49,7 @@ import { TrainerCommissionsService } from './services/trainer-commissions.servic
     ]),
     OutboxModule,
     TenancyModule,
-    MembersModule,
+    forwardRef(() => MembersModule),
     WorkoutsModule,
   ],
   providers: [

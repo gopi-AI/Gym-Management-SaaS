@@ -101,7 +101,14 @@ describe('PtModule', () => {
       const imports = moduleMetadata('imports', PtModule);
 
       expect(imports).toContain(WorkoutsModule);
-      expect(imports).toContain(MembersModule);
+      // MembersModule is imported via forwardRef to break the (now mutual)
+      // MembersModule ↔ PtModule cycle that the Member 360 service introduced.
+      const resolved = imports.map((entry) =>
+        typeof entry === 'object' && entry !== null && 'forwardRef' in entry
+          ? (entry as { forwardRef: () => unknown }).forwardRef()
+          : entry,
+      );
+      expect(resolved).toContain(MembersModule);
     });
   });
 
