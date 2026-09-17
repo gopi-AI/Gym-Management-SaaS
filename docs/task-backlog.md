@@ -236,6 +236,29 @@ This document contains the implementation tasks broken down by phase, with depen
   - Phase 0 compile-time errors fixed during validation: `BooleanColumn` → `@Column({ type: 'boolean' })`, missing `Injectable`/`CreateDateColumn` imports, incorrect tenancy/identity import paths, missing `IdentityRolePermission` relations/service logic, and `auth.service.ts` syntax correction.
 - **Risks**: Local ID counter race conditions, identifier conflicts (mitigated with locking and unique index)
 
+### P1-09: PATCH /v1/members/{id} returns 404 after a successful deactivation *(Open — defect)*
+- **Objective**: Fix `MembersService.update()` so that deactivating a member via `PATCH /v1/members/{id}` with `{"is_active": false}` reports success instead of 404, and so an already-deactivated member can be re-activated through the same endpoint.
+- **Dependencies**: P1-01 (Member CRUD) — defect in that ticket's scope; invalidates P1-01's "✅ API validation and error handling" acceptance criterion for this path.
+- **Files/modules affected**:
+  - src/members/services/members.service.ts
+  - src/members/services/members.service.spec.ts
+- **Database changes**: None
+- **API changes**: `PATCH /v1/members/{id}` behaviour corrected. No route or DTO change — `is_active` is already accepted by `UpdateMemberDto` (src/members/dto/update-member.dto.ts:65-67).
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Coverage for `update(id, { is_active: false })` asserting a successful return. The current spec cannot observe the defect: it stubs `findOne` twice, both returning an *active* member (src/members/services/members.service.spec.ts:215), which masks the post-write re-read.
+  - Coverage that a member deactivated via PATCH can be re-activated via PATCH.
+- **Acceptance criteria**:
+  - `PATCH` with `is_active: false` returns the updated member (HTTP 200), not 404.
+  - No committed write is ever reported to the caller as a failure.
+  - A member deactivated via PATCH can be re-activated via PATCH.
+- **Defect detail**:
+  - `update()` ends with `return this.findOne(id)` (src/members/services/members.service.ts:231) while `findOne()` filters `is_active: true` (src/members/services/members.service.ts:71). When the DTO carries `is_active: false`, the spread `...dto` (src/members/services/members.service.ts:212) writes `is_active = false`, the write commits and `MEMBER_UPDATED` is emitted, and only then does the post-write re-read throw `NotFoundException` (src/members/services/members.service.ts:73-75).
+  - Re-activation is blocked by the same root cause: the pre-check requires `is_active: true` (src/members/services/members.service.ts:203), so an already-deactivated member returns 404 before any update is attempted.
+  - Not reachable via `DELETE`: `MembersService.softDelete()` (src/members/services/members.service.ts:234) is correct — it guards on `affected === 0` before any re-read — but `MembersController` registers no DELETE route, so PATCH is the only deactivation path and the defect is unavoidable through the API.
+- **Risks**: A caller receiving 404 for a committed write may retry or treat the member as missing while the record is actually deactivated; deactivation is irreversible through the API today.
+
 ### P1-02: Membership Plans and Sales
 - **Objective**: Implement membership plan creation and sales to members.
 - **Dependencies**: P1-01
