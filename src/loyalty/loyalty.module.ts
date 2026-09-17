@@ -8,6 +8,7 @@ import { LoyaltyAccount } from './entities/loyalty-account.entity';
 import { LoyaltyTransaction } from './entities/loyalty-transaction.entity';
 import { LoyaltyRule } from './entities/loyalty-rule.entity';
 import { LoyaltyReward } from './entities/loyalty-reward.entity';
+import { Organization } from '../tenancy/entities/organization.entity';
 import { LoyaltyAccrualService } from './services/loyalty-accrual.service';
 import { LoyaltyExpiryService } from './services/loyalty-expiry.service';
 import { LoyaltyExpiryWorker } from './workers/loyalty-expiry.worker';
@@ -49,6 +50,7 @@ import {
       LoyaltyTransaction,
       LoyaltyRule,
       LoyaltyReward,
+      Organization,
     ]),
     OutboxModule,
     TenancyModule,
