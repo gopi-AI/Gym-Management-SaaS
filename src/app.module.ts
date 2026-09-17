@@ -1,8 +1,12 @@
 import { Module } from '@nestjs/common';
+import { APP_FILTER } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { CacheModule } from '@nestjs/cache-manager';
 import { ScheduleModule } from '@nestjs/schedule';
+import { LoggerModule } from 'nestjs-pino';
+import { SentryModule, SentryGlobalFilter } from '@sentry/nestjs/setup';
+import { tenantAsyncLocal } from './shared/tenant/tenant-context.store';
 import { IdentityModule } from './identity/identity.module';
 import { MembersModule } from './members/members.module';
 import { MembershipsModule } from './memberships/memberships.module';
@@ -96,6 +100,24 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
 
 @Module({
   imports: [
+    // Structured (pino) logging for the whole app. This replaces Nest's default
+    // console logger with JSON output, including per-request context (reqId via
+    // pino-http middleware). Local/stdout only — no external service required.
+    // For human-readable logs in development, pipe the output through pino-pretty
+    // (`| npx pino-pretty`).
+    LoggerModule.forRoot({
+      pinoHttp: {
+        // In production, omit the transport entirely for raw JSON (consumed by log
+        // shippers). In development, pass --transport or pipe through pino-pretty.
+        // Custom per-request props (from headers / tenant context).
+        // The tenant async-local-store may already be populated by the
+        // TenantContextInterceptor; otherwise organisationId is absent (no crash).
+        customProps: () => ({
+          organizationId: tenantAsyncLocal?.getStore()?.organizationId ?? undefined,
+        }),
+      },
+    }),
+    SentryModule.forRoot(),
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: ['.env.local', '.env'],
@@ -184,6 +206,17 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     CryptoModule,
     // Unauthenticated liveness + build provenance (no tenant or config data).
     HealthModule,
+  ],
+  providers: [
+    // Sentry's catch-all exception filter. When SENTRY_DSN is unset (the
+    // instrumentation in src/instrument.ts becomes a no-op), this filter simply
+    // behaves like Nest's default and does NOT contact any service — it never crashes
+    // and never logs anything about being absent. No existing exception filter exists
+    // in src/shared/ to integrate with, so this is the single global filter.
+    {
+      provide: APP_FILTER,
+      useClass: SentryGlobalFilter,
+    },
   ],
 })
 export class AppModule {}
