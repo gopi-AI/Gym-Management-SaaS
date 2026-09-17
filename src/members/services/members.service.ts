@@ -183,10 +183,13 @@ export class MembersService {
 
       const saved = await memberRepo.save(member);
 
-      await this.outboxService.saveEvent(
+      await this.outboxService.saveEventEnvelope(
         'MEMBER_CREATED',
-        JSON.stringify({ memberId: saved.id, localId: saved.local_id, organizationId }),
+        'v1',
+        organizationId,
+        { memberId: saved.id, localId: saved.local_id, organizationId },
         saved.global_uuid,
+        undefined,
         manager, // transaction-scoped: MEMBER_CREATED commits/rolls back with the member row
       );
 
@@ -217,9 +220,11 @@ export class MembersService {
       updates,
     );
 
-    await this.outboxService.saveEvent(
+    await this.outboxService.saveEventEnvelope(
       'MEMBER_UPDATED',
-      JSON.stringify({ memberId: id, organizationId }),
+      'v1',
+      organizationId,
+      { memberId: id, organizationId },
       member.global_uuid,
     );
 
@@ -243,9 +248,11 @@ export class MembersService {
       throw new NotFoundException('Member not found');
     }
 
-    await this.outboxService.saveEvent(
+    await this.outboxService.saveEventEnvelope(
       'MEMBER_DEACTIVATED',
-      JSON.stringify({ memberId: id, organizationId }),
+      'v1',
+      organizationId,
+      { memberId: id, organizationId },
       member.global_uuid,
     );
   }

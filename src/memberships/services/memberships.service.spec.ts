@@ -320,7 +320,7 @@ describe('MembershipsService', () => {
       expect(mockMembershipRepo.update).toHaveBeenCalledWith(
         expect.anything(), expect.objectContaining({ status: 'paused' }),
       );
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith('MembershipPaused', expect.any(String), 'm1', expect.objectContaining({ getRepository: expect.any(Function) }));
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith('MembershipPaused', 'v1', orgId, expect.any(Object), 'm1', undefined, expect.objectContaining({ getRepository: expect.any(Function) }));
     });
 
     it('should resume a paused membership', async () => {
@@ -332,7 +332,7 @@ describe('MembershipsService', () => {
       expect(mockMembershipRepo.update).toHaveBeenCalledWith(
         expect.anything(), expect.objectContaining({ status: 'active' }),
       );
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith('MembershipResumed', expect.any(String), 'm1', expect.objectContaining({ getRepository: expect.any(Function) }));
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith('MembershipResumed', 'v1', orgId, expect.any(Object), 'm1', undefined, expect.objectContaining({ getRepository: expect.any(Function) }));
     });
 
     it('should freeze an active membership', async () => {
@@ -340,7 +340,7 @@ describe('MembershipsService', () => {
         .mockResolvedValueOnce(membership)
         .mockResolvedValueOnce({ ...membership, status: 'frozen', frozen_at: new Date() });
       const result = await service.freeze('m1');
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith('MembershipFreezeStarted', expect.any(String), 'm1', expect.objectContaining({ getRepository: expect.any(Function) }));
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith('MembershipFreezeStarted', 'v1', orgId, expect.any(Object), 'm1', undefined, expect.objectContaining({ getRepository: expect.any(Function) }));
     });
 
     it('should unfreeze a frozen membership', async () => {
@@ -349,7 +349,7 @@ describe('MembershipsService', () => {
         .mockResolvedValueOnce(frozenMembership)
         .mockResolvedValueOnce({ ...frozenMembership, status: 'active' });
       const result = await service.unfreeze('m1');
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith('MembershipFreezeEnded', expect.any(String), 'm1', expect.objectContaining({ getRepository: expect.any(Function) }));
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith('MembershipFreezeEnded', 'v1', orgId, expect.any(Object), 'm1', undefined, expect.objectContaining({ getRepository: expect.any(Function) }));
     });
 
     it('extends end_date by the whole days frozen when unfreezing', async () => {
@@ -370,8 +370,9 @@ describe('MembershipsService', () => {
         expect.anything(), expect.objectContaining({ status: 'active', end_date: '2026-10-06' }),
       );
       // The events remain the same regardless of the extended term.
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith(
-        'MembershipFreezeEnded', expect.any(String), 'm1',
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
+        'MembershipFreezeEnded', 'v1', orgId, expect.any(Object), 'm1',
+        undefined,
         expect.objectContaining({ getRepository: expect.any(Function) }),
       );
     });
@@ -381,7 +382,7 @@ describe('MembershipsService', () => {
         .mockResolvedValueOnce(membership)
         .mockResolvedValueOnce({ ...membership, status: 'cancelled', cancelled_at: new Date() });
       const result = await service.cancel('m1', { reason: 'Leaving gym' });
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith('MembershipCancelled', expect.any(String), 'm1', expect.objectContaining({ getRepository: expect.any(Function) }));
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith('MembershipCancelled', 'v1', orgId, expect.any(Object), 'm1', undefined, expect.objectContaining({ getRepository: expect.any(Function) }));
     });
 
     it('writes lifecycle events through the open transaction manager (atomicity regression)', async () => {
@@ -389,10 +390,10 @@ describe('MembershipsService', () => {
         .mockResolvedValueOnce(membership)
         .mockResolvedValueOnce({ ...membership, status: 'paused' });
       await service.pause('m1', { reason: 'Vacation' });
-      const args = mockOutboxService.saveEvent.mock.calls[0];
-      // 4th argument = the EntityManager of the surrounding transaction.
-      expect(args[3]).toBeDefined();
-      expect(typeof args[3].getRepository).toBe('function');
+      const args = mockOutboxService.saveEventEnvelope.mock.calls[0];
+      // 7th argument = the EntityManager of the surrounding transaction.
+      expect(args[6]).toBeDefined();
+      expect(typeof args[6].getRepository).toBe('function');
     });
 
     it('should throw BadRequestException for invalid transition', async () => {
@@ -469,9 +470,10 @@ describe('MembershipsService', () => {
 
     /** The single payload the service wrote to the outbox for `eventType`. */
     function emittedPayload(eventType: string): Record<string, unknown> {
-      const call = mockOutboxService.saveEvent.mock.calls.find((c) => c[0] === eventType);
+      const call = mockOutboxService.saveEventEnvelope.mock.calls.find((c) => c[0] === eventType);
       if (!call) throw new Error(`no ${eventType} event was written to the outbox`);
-      return JSON.parse(call[1] as string) as Record<string, unknown>;
+      // saveEventEnvelope signature: (eventType, eventVersion, organizationId, payload, ...)
+      return call[3] as Record<string, unknown>;
     }
 
     const membership = {
@@ -508,13 +510,14 @@ describe('MembershipsService', () => {
       expect(payload.remainingDays).toBe(expectedRemaining);
       expect(resumedKeysMatchContract).toBe(true);
       expect(EVENT_VERSIONS.V1).toBe('v1');
-      // The outbox row keeps the membership as correlation id and the transaction's manager.
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith(
-        'MembershipResumed', expect.any(String), 'm1',
+      // The outbox row keeps the membership as correlation id and the transaction's manager,
+      // and is now written as a full EventEnvelope (eventVersion = v1).
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
+        'MembershipResumed', 'v1', orgId, expect.any(Object), 'm1',
+        undefined,
         expect.objectContaining({ getRepository: expect.any(Function) }),
       );
-      // NOTE: lifecycle events go through OutboxService.saveEvent, which persists the bare
-      // payload — not an EventEnvelope (MembershipStarted/Expired use saveEventEnvelope).
+      // The inner payload has no envelope-outer fields — those live on the wrapper.
       expect(payload).not.toHaveProperty('eventVersion');
       expect(payload).not.toHaveProperty('eventId');
     });
@@ -608,7 +611,7 @@ describe('MembershipsService', () => {
         mockMembershipRepo.findOne.mockResolvedValue({ ...membership, status: fromStatus } as Membership);
         await (service as any)[method]('m1');
       }
-      expect(mockOutboxService.saveEvent.mock.calls.map((c) => c[0])).toEqual([
+      expect(mockOutboxService.saveEventEnvelope.mock.calls.map((c) => c[0])).toEqual([
         'MembershipPaused', 'MembershipResumed', 'MembershipFreezeStarted',
         'MembershipFreezeEnded', 'MembershipCancelled', 'MembershipExpired',
       ]);
@@ -756,5 +759,58 @@ describe('MembershipsService', () => {
       expect(result).toEqual({ scanned: 1, expired: 0, membershipIds: [] });
       expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
     });
+// --------------------------------------------------------------------------
+  // Envelope conformance (lifecycle transition events are now routable)
+  // --------------------------------------------------------------------------
+
+  describe('lifecycle transition envelope conformance', () => {
+    const membership = {
+      id: 'm1', organization_id: orgId, member_id: 'member-1', status: 'active',
+      end_date: '2026-10-01',
+    } as Membership;
+
+    beforeEach(() => {
+      mockMembershipRepo.update.mockResolvedValue({});
+      mockHistoryRepo.create.mockImplementation((dto: any) => dto);
+      mockHistoryRepo.save.mockResolvedValue({});
+    });
+
+    it('each lifecycle event is written as a full EventEnvelope (version v1, org, correlationId)', async () => {
+      // pause
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce({ ...membership, status: 'paused' });
+      await service.pause('m1', { reason: 'Vacation' });
+
+      const pauseCall = mockOutboxService.saveEventEnvelope.mock.calls[0];
+      expect(pauseCall[0]).toBe('MembershipPaused');
+      expect(pauseCall[1]).toBe('v1');
+      expect(pauseCall[2]).toBe(orgId);
+      expect(pauseCall[4]).toBe('m1'); // correlationId = membership id
+      expect(pauseCall[6]).toBeDefined(); // manager
+
+      // cancel
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce({ ...membership, status: 'cancelled' });
+      await service.cancel('m1', { reason: 'Leaving' });
+      const cancelCall = mockOutboxService.saveEventEnvelope.mock.calls[1];
+      expect(cancelCall[0]).toBe('MembershipCancelled');
+      expect(cancelCall[1]).toBe('v1');
+      expect(cancelCall[2]).toBe(orgId);
+      expect(cancelCall[4]).toBe('m1');
+
+      // expire via transitionState
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce({ ...membership, status: 'expired' });
+      await service.expire('m1');
+      const expireCall = mockOutboxService.saveEventEnvelope.mock.calls[2];
+      expect(expireCall[0]).toBe('MembershipExpired');
+      expect(expireCall[1]).toBe('v1');
+      expect(expireCall[2]).toBe(orgId);
+      expect(expireCall[4]).toBe('m1');
+    });
+  });
   });
 });

@@ -93,11 +93,20 @@ mockOutboxService = {
       expect(createdArgs.is_given).toBe(true);
       expect(createdArgs.consent_type).toBe(ConsentType.GDPR);
 
-      // Outbox event written inside the same transaction
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith(
+      // Outbox event written inside the same transaction as a full EventEnvelope
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
         'MemberConsentGiven.v1',
-        expect.any(String),
+        'v1',
+        orgId,
+        {
+          consentId: 'consent-1',
+          memberId,
+          consentType: ConsentType.GDPR,
+          givenAt: '2026-09-15T10:00:00Z',
+          expiresAt: null,
+        },
         memberId,
+        undefined,
         expect.anything(), // transaction manager
       );
     });
@@ -141,11 +150,20 @@ mockOutboxService = {
       expect(revokeRow.revoked_at).toBeDefined();
       expect(revokeRow.revocation_reason).toBe('Member requested withdrawal');
 
-      // Revocation outbox event written inside the same transaction
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith(
+      // Revocation outbox event written inside the same transaction as a full EventEnvelope
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
         'MemberConsentRevoked.v1',
-        expect.any(String),
+        'v1',
+        orgId,
+        {
+          consentId: 'consent-revoke-1',
+          memberId,
+          consentType: ConsentType.GDPR,
+          revokedAt: '2026-09-16T10:00:00Z',
+          reason: 'Member requested withdrawal',
+        },
         memberId,
+        undefined,
         expect.anything(), // transaction manager
       );
     });
@@ -266,5 +284,59 @@ it('grant -> revoke -> grant: three rows, current status is the final grant', as
       const result = await service.getCurrentStatus(memberId, ConsentType.GDPR);
       expect(result).toBeNull();
     });
+// --------------------------------------------------------------------------
+  // Envelope conformance (the migrated events are now routable)
+  // --------------------------------------------------------------------------
+
+  describe('envelope conformance', () => {
+    it('MemberConsentGiven.v1 is written as a full EventEnvelope that parseEnvelope would accept', async () => {
+      mockConsentRepo.findOne.mockResolvedValue(null);
+      await service.grant(memberId, grantDto);
+
+      const [eventType, eventVersion, organizationId, payload, correlationId] =
+        mockOutboxService.saveEventEnvelope.mock.calls[0];
+      expect(eventType).toBe('MemberConsentGiven.v1');
+      expect(eventVersion).toBe('v1');
+      expect(organizationId).toBe(orgId);
+      expect(typeof correlationId).toBe('string');
+      // Payload data is preserved unchanged
+      expect((payload as Record<string, unknown>).consentId).toBe('consent-1');
+      expect((payload as Record<string, unknown>).memberId).toBe(memberId);
+    });
+
+    it('MemberConsentRevoked.v1 is written as a full EventEnvelope that parseEnvelope would accept', async () => {
+      mockConsentRepo.findOne.mockResolvedValue({
+        id: 'consent-grant-1',
+        member_id: memberId,
+        consent_type: ConsentType.GDPR,
+        is_given: true,
+        given_at: new Date('2026-09-15T10:00:00Z'),
+        created_at: new Date('2026-09-15T10:00:00Z'),
+      });
+      mockConsentRepo.save.mockResolvedValueOnce({
+        id: 'consent-revoke-1',
+        member_id: memberId,
+        consent_type: ConsentType.GDPR,
+        is_given: false,
+        revoked_at: new Date('2026-09-16T10:00:00Z'),
+        revocation_reason: 'Member requested withdrawal',
+      });
+      await service.revoke(memberId, revokeDto);
+
+      const [eventType, eventVersion, organizationId, payload, correlationId] =
+        mockOutboxService.saveEventEnvelope.mock.calls.find(
+          (c: unknown[]) => c[0] === 'MemberConsentRevoked.v1',
+        ) || [];
+      expect(eventType).toBe('MemberConsentRevoked.v1');
+      expect(eventVersion).toBe('v1');
+      expect(organizationId).toBe(orgId);
+      expect(typeof correlationId).toBe('string');
+      // Payload data is preserved unchanged
+      const p = payload as Record<string, unknown>;
+      expect(p.consentId).toBe('consent-revoke-1');
+      expect(p.memberId).toBe(memberId);
+      expect(p.reason).toBe('Member requested withdrawal');
+    });
+  });
   });
 });

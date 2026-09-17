@@ -499,7 +499,15 @@ export class MembershipsService {
       await historyRepo.save(history);
       const eventPayload = this.buildLifecycleEventPayload(transitionName, membership, dto, effectiveEndDate);
       if (eventPayload) {
-        await this.outboxService.saveEvent(eventPayload.eventType, JSON.stringify(eventPayload.payload), membership.id, manager);
+        await this.outboxService.saveEventEnvelope(
+          eventPayload.eventType,
+          MEMBERSHIP_EVENT_VERSION,
+          organizationId,
+          eventPayload.payload,
+          membership.id,
+          undefined,
+          manager,
+        );
       }
       return membershipRepo.findOne({ where: { id, organization_id: organizationId } as any }) as Promise<Membership>;
     });

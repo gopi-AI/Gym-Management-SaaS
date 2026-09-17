@@ -66,6 +66,7 @@ describe('MembersService', () => {
 
     mockOutboxService = {
       saveEvent: jest.fn().mockResolvedValue({ id: 'outbox-1' }),
+      saveEventEnvelope: jest.fn().mockResolvedValue({ id: 'outbox-1' }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -98,10 +99,13 @@ describe('MembersService', () => {
 
       expect(mockDataSource.transaction).toHaveBeenCalledTimes(1);
       expect(mockMemberRepo.save).toHaveBeenCalledTimes(1);
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith(
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
         'MEMBER_CREATED',
-        expect.any(String),
+        'v1',
+        orgId,
+        { memberId: 'member-1', localId: 1, organizationId: orgId },
         'uuid-1',
+        undefined,
         expect.objectContaining({ getRepository: expect.any(Function) }),
       );
 
@@ -125,7 +129,7 @@ describe('MembersService', () => {
       await expect(service.create({ ...memberPayload })).rejects.toThrow('DB_CONNECTION_LOST');
 
       // The outbox write was NEVER CALLED because the member save threw first.
-      expect(mockOutboxService.saveEvent).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
       expect(mockMemberRepo.save).toHaveBeenCalledTimes(1);
     });
 
@@ -152,7 +156,7 @@ describe('MembersService', () => {
         ...memberPayload,
       });
       // The outbox write itself fails AFTER the member was saved.
-      mockOutboxService.saveEvent.mockRejectedValue(new Error('OUTBOX_WRITE_FAILED'));
+      mockOutboxService.saveEventEnvelope.mockRejectedValue(new Error('OUTBOX_WRITE_FAILED'));
 
       // The whole transaction aborts -> create() rejects.
       await expect(service.create({ ...memberPayload })).rejects.toThrow('OUTBOX_WRITE_FAILED');
@@ -160,10 +164,13 @@ describe('MembersService', () => {
       // The member save WAS reached (it succeeded before the outbox call)...
       expect(mockMemberRepo.save).toHaveBeenCalledTimes(1);
       // ...and the outbox write WAS attempted (proving it runs inside the txn)...
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith(
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
         'MEMBER_CREATED',
-        expect.any(String),
+        'v1',
+        orgId,
+        { memberId: 'member-1', localId: 1, organizationId: orgId },
         'uuid-1',
+        undefined,
         expect.objectContaining({ getRepository: expect.any(Function) }),
       );
       // ...yet NO member row is committed: the transaction aborted, rolling back
@@ -210,9 +217,11 @@ describe('MembersService', () => {
 
       await service.update('m1', { first_name: 'Jane' });
 
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith(
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
         'MEMBER_UPDATED',
-        expect.stringContaining('m1'),
+        'v1',
+        orgId,
+        { memberId: 'm1', organizationId: orgId },
         'uuid-1',
       );
     });
@@ -230,11 +239,68 @@ describe('MembersService', () => {
         { id: 'm1', organization_id: orgId, is_active: true },
         { is_active: false },
       );
-      expect(mockOutboxService.saveEvent).toHaveBeenCalledWith(
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
         'MEMBER_DEACTIVATED',
-        expect.stringContaining('m1'),
+        'v1',
+        orgId,
+        { memberId: 'm1', organizationId: orgId },
         'uuid-1',
       );
     });
+// --------------------------------------------------------------------------
+  // Envelope conformance (the migrated events are now routable)
+  // --------------------------------------------------------------------------
+
+  describe('envelope conformance', () => {
+    it('MEMBER_CREATED is written as a full EventEnvelope that parseEnvelope would accept', async () => {
+      mockMemberRepo.findOne.mockResolvedValue(null); // no duplicate contact
+      mockMemberRepo.save.mockResolvedValue({
+        id: 'member-1', local_id: 1, global_uuid: 'uuid-1', organization_id: orgId,
+        ...memberPayload,
+      });
+      await service.create({ ...memberPayload, date_of_birth: '1990-01-01' });
+
+      const [eventType, eventVersion, organizationId, payload] =
+        mockOutboxService.saveEventEnvelope.mock.calls[0];
+      expect(eventType).toBe('MEMBER_CREATED');
+      expect(eventVersion).toBe('v1');
+      expect(organizationId).toBe(orgId);
+      // Payload data unchanged: same fields as pre-migration
+      const p = payload as Record<string, unknown>;
+      expect(p.memberId).toBe('member-1');
+      expect(p.localId).toBe(1);
+      expect(p.organizationId).toBe(orgId);
+    });
+
+    it('MEMBER_UPDATED is written as a full EventEnvelope that parseEnvelope would accept', async () => {
+      const existing = { id: 'm1', global_uuid: 'uuid-1', organization_id: orgId, is_active: true } as Member;
+      mockMemberRepo.findOne.mockResolvedValueOnce(existing).mockResolvedValueOnce(existing);
+      mockMemberRepo.update.mockResolvedValue({ affected: 1 });
+
+      await service.update('m1', { first_name: 'Jane' });
+
+      const [eventType, eventVersion, organizationId, payload] =
+        mockOutboxService.saveEventEnvelope.mock.calls[0];
+      expect(eventType).toBe('MEMBER_UPDATED');
+      expect(eventVersion).toBe('v1');
+      expect(organizationId).toBe(orgId);
+      const p = payload as Record<string, unknown>;
+      expect(p.memberId).toBe('m1');
+    });
+
+    it('MEMBER_DEACTIVATED is written as a full EventEnvelope that parseEnvelope would accept', async () => {
+      const existing = { id: 'm1', global_uuid: 'uuid-1', organization_id: orgId, is_active: true } as Member;
+      mockMemberRepo.findOne.mockResolvedValue(existing);
+      mockMemberRepo.update.mockResolvedValue({ affected: 1 });
+
+      await service.softDelete('m1');
+
+      const [eventType, eventVersion, organizationId, payload] =
+        mockOutboxService.saveEventEnvelope.mock.calls[0];
+      expect(eventType).toBe('MEMBER_DEACTIVATED');
+      expect(eventVersion).toBe('v1');
+      expect(organizationId).toBe(orgId);
+    });
+  });
   });
 });

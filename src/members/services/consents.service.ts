@@ -60,16 +60,19 @@ export class ConsentsService {
       const saved = await repo.save(consent);
 
       // Emit consent event inside the same transaction (GDPR audit trail)
-      await this.outboxService.saveEvent(
+      await this.outboxService.saveEventEnvelope(
         'MemberConsentGiven.v1',
-        JSON.stringify({
+        'v1',
+        organizationId,
+        {
           consentId: saved.id,
           memberId,
           consentType: dto.consent_type,
           givenAt: dto.given_at,
           expiresAt: dto.expires_at ?? null,
-        }),
+        },
         memberId,
+        undefined,
         manager,
       );
 
@@ -119,16 +122,19 @@ export class ConsentsService {
       const saved = await repo.save(consent);
 
       // Emit revocation event inside the same transaction
-      await this.outboxService.saveEvent(
+      await this.outboxService.saveEventEnvelope(
         'MemberConsentRevoked.v1',
-        JSON.stringify({
+        'v1',
+        organizationId,
+        {
           consentId: saved.id,
           memberId,
           consentType: dto.consent_type,
           revokedAt: dto.revoked_at,
           reason: dto.revocation_reason ?? null,
-        }),
+        },
         memberId,
+        undefined,
         manager,
       );
 
