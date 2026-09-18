@@ -444,7 +444,7 @@ These are the platform-defined reports created as seed data. They are marked `is
 | **Membership Sales by Plan** | Membership value sold, grouped by plan and currency — contracted value, not collected revenue (see note below) | `Membership` | plan_id, total_value (`SUM(price_at_signup)`), currency_at_signup — `GROUP BY plan_id, currency_at_signup` | date_range |
 | **Outstanding Invoices** | Unpaid invoices aging | `Invoice` | invoice_date, due_date, days_overdue (derived, no grace period — `GREATEST(0, EXTRACT(EPOCH FROM (now() - due_date)) / 86400)::int`), amount | branch |
 | **Payment Method Mix** | Payment method distribution | `Payment` | payment_method, count, total | date_range |
-| **Refund Report** | Refunds over time | `Refund` | refund_date, amount, reason | date_range |
+| **Refund Report** *(not seedable — see note below)* | Refunds over time | `Refund` | refund_date, amount, reason | date_range |
 
 > **Definition — "overdue" has no grace period (explicit decision)**: an invoice counts as overdue the moment `due_date` passes while its status is **non-terminal** (`draft`, `sent`, `partially_paid`). There is no grace window. `overdue` is a **derived condition, never a stored status** — the `FINANCE_INVOICES.status` machine is `draft → sent → partially_paid → paid`, plus `void`, so a `= 'overdue'` predicate would silently match nothing. Adding a grace period later is a **scope change, not a bug fix**.
 
@@ -463,6 +463,14 @@ These are the platform-defined reports created as seed data. They are marked `is
 > This is **correct behaviour, not a defect**: each row's total is genuinely denominated in that row's own currency, and summing rows across currencies is meaningless without an FX conversion at a defined rate and date — which this report does not attempt, and for which Phase 6.0 has no basis. The consequence a consumer must respect is that **`plan_id` alone is not a unique key for this report**: results must be grouped and labelled by `(plan_id, currency_at_signup)` together, and a UI that renders one line per `plan_id` will silently drop or mislabel the rows of any re-denominated plan. Dropping `currency_at_signup` to force one row per plan is explicitly **not** the resolution — it would reintroduce the invalid ungrouped column above and, worse, blend amounts from two currencies into one number. `currency_at_signup` is retained precisely because it is the historical, at-signup fact.
 >
 > Verified by execution: with a plan sold once at USD (`40.00`) and once at EUR (`10.00`), `GROUP BY plan_id, currency_at_signup` returns exactly two rows (`USD 40.00`, `EUR 10.00`), while the same plan's memberships naïve-summed across both currencies to `50.00`.
+
+> **Definition — the "Refund Report" row is catalogued but not seedable, because its declared source entity does not exist (explicit decision)**: the row declares the source `Refund` with Key Columns `refund_date, amount, reason`. No `Refund` entity exists — `src/**` declares no `Refund` class (the finance module ships `Invoice`, `InvoiceItem`, `Payment`, and `InvoiceNumberCounter` only), and the deployed schema contains no refund table. §1.2's Finance row names both `Refund` and `PaymentAllocation`, and §1.2's preamble asserts that "Every module below has **TypeORM entities + migrations** already deployed" — for these two names that assertion does not hold. Refund support is tracked as a **future** deliverable (P3-02 "Refunds and Credit Notes", docs/task-backlog.md), not as shipped schema.
+>
+> **Consequence**: this row cannot be seeded. `ReportExecutorService` validates the `source` and its columns against current entity metadata at execution time (§3.1.1, §13), so a seeded `Refund Report` schema would be created successfully and then fail on **every** execution — an `is_system = true` row that can never produce a result. It is therefore excluded from the P6-07 seed set (§12) and from Migration 3's "all predefined reports from §6" (§11), rather than seeded as a row that cannot run.
+>
+> **This is a different resolution from "Revenue by Plan" and "Active vs. Churned" (§6.1, §6.2), for a specific reason**: those rows were **redefined** to fit the executor's single-source contract because an equivalent single-source shape existed over real columns. No equivalent shape exists here — no deployed entity carries refund data — so the row is **excluded** instead of rewritten. When a `Refund` entity ships (P3-02), this row becomes seedable and rejoins the P6-07 seed set; its source and columns are then determined by that entity, not by this row's current text.
+>
+> The four other rows in this section (`Revenue Summary`, `Membership Sales by Plan`, `Outstanding Invoices`, `Payment Method Mix`) are unaffected: each declares a single source that exists, with every declared Key Column present on it or derivable from it.
 
 ### 6.3 Attendance Reports
 
@@ -831,6 +839,12 @@ export class CreateReportSchemasTable1700000000000 implements MigrationInterface
 // INSERT all predefined reports from §6 into "REPORTS_REPORT_SCHEMAS",
 // one row per report, for each organization, or use a DB-level
 // post-deployment hook that runs once.
+//
+// EXCEPTION — "Refund Report" (§6.2) is deliberately NOT seeded: its declared
+// source entity `Refund` does not exist, so a seeded row would pass creation
+// and then fail on every execution (ReportExecutorService validates source and
+// columns against entity metadata — §3.1.1, §13). See the §6.2 note. The seed
+// set is therefore the 12 executable rows of the 13 scoped to P6-07 (§12).
 ```
 
 ---
@@ -850,6 +864,8 @@ This section catalogues the deliverables by phase. Effort estimates are intentio
 | P6-05: Report catalog UI (list + create/edit forms) | P6-01 |
 | P6-06: Job status viewer + download UI | P6-02, P6-04 |
 | P6-07: Seed system report schemas (member, finance, attendance) | P6-01 |
+
+> **Definition — P6-07 seeds 12 of the 13 catalog rows in its scope, not 13 (explicit decision)**: its scope is the member, finance, and attendance sections (§6.1 + §6.2 + §6.3 = 13 rows). Twelve pass the executor's contract — a single source entity that exists, with every declared Key Column present on it or derivable from it (§3.1.1) — and **one does not**: **Refund Report** (§6.2), whose source `Refund` does not exist. That row is excluded rather than seeded as a schema that cannot execute; see the §6.2 note. The exclusion is a property of the catalog, not of this task: the seed set is the set of *executable* rows, and it grows by one when a `Refund` entity ships.
 
 ### Phase 6.1 — Dashboards
 
