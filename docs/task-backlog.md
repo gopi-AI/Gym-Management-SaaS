@@ -747,6 +747,150 @@ This document contains the implementation tasks broken down by phase, with depen
   - Not reachable through shipped code today: no migration creates any materialized view (`grep -rn 'CREATE MATERIALIZED VIEW' src/` returns nothing) and `src/attendance/` performs no date bucketing, so no running query produces a wrong bucket yet. The defect lands with the P6-15 migration if the view is written as documented.
 - **Risks**: Daily check-in counts, unique-member counts, and any dashboard or export built on `reports_mv_daily_attendance` would disagree with front-desk records for check-ins near local midnight. Because the view is a snapshot, a wrong bucket is fixed at refresh time and is not self-correcting once written.
 
+### P6-21: Refund Report is catalogued with a source entity that does not exist *(Open — defect)*
+- **Objective**: Resolve the `Refund Report` catalog row (§6.2 of `docs/phase6-scoping-plan.md`), whose declared source `Refund` is not a deployed entity, so it cannot be seeded by P6-07 or executed by `ReportExecutorService`.
+- **Dependencies**: P6-07 (seed system report schemas) and P6-01. Not a blocker for either — the row is already excluded from the P6-07 seed set and from Migration 3 by explicit notes in §12 and §11. This ticket tracks the underlying catalog defect and is closed by whichever resolution is chosen.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§6.2 catalog row + its note; §12 P6-07 scope note; §11 Migration 3 comment)
+  - src/finance/ (only if the chosen resolution implements refund storage — that work belongs to P3-02, not here)
+- **Database changes**: None in this ticket. A `Refund` entity/table is P3-02 scope.
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - A catalog-integrity test that resolves every `is_system` seed row's `query_definition.source` against the TypeORM entity metadata and fails on any unresolvable source. This is the general form of the defect and would have caught it at seed time rather than execution time.
+- **Acceptance criteria**:
+  - No catalog row in §6 declares a `source` that no entity provides.
+  - Every row in the P6-07 seed set can be executed end-to-end against a migrated database.
+- **Defect detail**:
+  - §6.2's row declares `Source = Refund` with Key Columns `refund_date, amount, reason` (docs/phase6-scoping-plan.md:447). No `Refund` class is declared anywhere in `src/**`, and the deployed schema contains no refund table — `information_schema.tables` returns 0 rows matching `%refund%` or `%allocation%`.
+  - The row is currently handled by **exclusion, not redefinition**: §6.2 carries a note stating it is catalogued but not seedable, and §12's P6-07 note records that the seed set is 12 of the 13 rows in P6-07's scope (docs/phase6-scoping-plan.md:467, :868). That keeps an unexecutable row out of the seed; it does not make the row correct.
+  - §1.2 compounds the defect: its Finance row lists `Refund` and `PaymentAllocation` among "Key Entities", under a preamble asserting "Every module below has **TypeORM entities + migrations** already deployed" (docs/phase6-scoping-plan.md:24, :30). Neither name has an entity or a table. The §1.2 side is filed as P6-24 rather than fixed here.
+  - Two tickets in this file also assert refund storage that does not exist: P3-02 lists "refunds table (completed in P1-04)" (docs/task-backlog.md:433), and P1-04 lists `payment_allocations table` and `refunds table` among its Database changes. P3-02 is itself still open, so the "completed in P1-04" claim is false in both directions. See the note after P6-26.
+  - Resolutions, in the order this ticket recommends them: **(A)** implement the `Refund` entity as part of P3-02, point the row at it, and return it to the P6-07 seed set; or **(B)** delete the row from §6.2 until a refund source exists, since a catalog row with no executable source is not a report. Option (B) is the smaller change and removes a misleading entry; option (A) is what makes refunds reportable at all. This ticket does not prescribe which — it records that the current state (a catalogued, unseedable row plus three false schema claims) is not a resolution.
+- **Risks**: A consumer reading §1.2 or §6.2 as a description of deployed schema will plan work against a `Refund` table that does not exist; and any future seed job that ignores the §6.2/§12 exclusions would insert a system schema that fails on every execution.
+
+### P6-22: "Budget Utilization" report is sourced from a service and process configuration, not a queryable entity *(Open — defect)*
+- **Objective**: Resolve the `Budget Utilization` catalog row (§6.8 of `docs/phase6-scoping-plan.md`), whose declared source is `AiUsageService` budget state rather than a TypeORM entity, so `ReportExecutorService` has nothing to resolve.
+- **Dependencies**: P6-01, P6-03. Related to P6-23 (the same §6.8 section's entity-name defect) but independent of it.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§6.8 catalog row)
+  - src/ai/ (only if the chosen resolution persists budget state — see the resolutions below)
+  - src/reports/ (the executor, if the contract is extended)
+- **Database changes**: Only under resolution (B) or (C) — a persisted per-organization budget table. None under (A).
+- **API changes**: Only under resolution (C). None under (A) or (B).
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Under (A) or (B): the row resolves to a real entity and executes end-to-end.
+  - Under (C): the dashboard reads the budget endpoint rather than a report job.
+  - Regardless of resolution: a catalog-integrity test asserting every seeded row's `source` resolves to an entity (shared with P6-21).
+- **Acceptance criteria**:
+  - No catalog row declares a source that is neither an entity nor a documented non-entity data source.
+  - "Budget consumed vs. remaining" is obtainable by a documented, non-invented path.
+- **Defect detail**:
+  - §6.8's row declares `Source = AiUsageService budget state` with Key Columns `period, budget, consumed, remaining_pct` (docs/phase6-scoping-plan.md:526). `AiUsageService` is a NestJS service, not an entity — it is not in the TypeORM registry and cannot be a `QueryDefinition.source` (§3.1.1 declares `source: string` resolved against entity metadata; §13:776 states validation is "against current entity metadata").
+  - **The three "budget" values are not a single source, and one of them is not per-organization data at all**:
+    - `budget` comes from `AiUsageLimitService.resolveLimits()`, which reads three **process-level environment variables** — `AI_RATE_LIMIT_RPM`, `AI_RATE_LIMIT_TPD`, `AI_COST_LIMIT_MONTHLY_USD` (.env.example:86-95) — bounded by `resolveAiLimit()` against hard maxima (src/ai/config/ai-usage-limits.ts:17-23). `resolveLimits()` takes **no organization argument** (src/ai/services/ai-usage-limit.service.ts:249), so the same configured ceiling applies to every tenant. There is no per-organization budget anywhere: no entity or migration declares a budget column.
+    - `consumed` comes from **Redis counters**, keyed `ai:budget:{organizationId}:{YYYY-MM-DD}` (daily tokens) and `ai:cost:{organizationId}:{YYYY-MM}` (monthly cost) (src/ai/config/ai-usage-limits.ts:30-31, :107-123). These are fast, expiring counters, not durable rows.
+    - `remaining_pct` is arithmetic over the two, computed at read time by `AiUsageService.summarize()` (src/ai/services/ai-usage.service.ts:56-95).
+  - Consequence: the row is **not executable as a report**, and unlike P6-21 the fix is not "point it at a missing entity". `period` is not a column of anything, and the row would also need to declare which budget it means — the daily token budget and the monthly cost budget are different counters on different windows, so a single row cannot represent both without a dimension the row does not have.
+  - Resolutions, all real and none invented: **(A)** drop the row and let the existing `GET /v1/ai/usage` summary serve it — that endpoint already returns `quota` with `tokens_remaining_today` and `cost_remaining_this_month_usd` (src/ai/dto/ai-usage-response.dto.ts:47-54), which is exactly "budget consumed vs. remaining"; **(B)** persist a per-organization budget table and make the row a genuine single-source query over it, which would also make the current process-wide ceiling per-tenant; or **(C)** keep the row as a dashboard widget fed by the usage endpoint rather than a report job. (A) is the smallest change and removes a row that duplicates an existing endpoint; (B) is the only one that changes behaviour, since today one tenant's ceiling is every tenant's ceiling.
+  - This ticket does not prescribe which resolution. It records that the row as written names a service, mixes a process-level constant with a Redis counter, and has no executable source.
+- **Risks**: "Budget consumed vs. remaining" is listed in the catalog as a reportable measure with no reportable source, so a dashboard built from the catalog would either fail at execution or silently reimplement the usage endpoint. Separately, an operator may read §6.8 as implying per-organization budgets, when the ceiling is currently process-wide configuration.
+
+### P6-23: Catalog and §1.2 name a non-existent entity `AiUsageRecord` (the real class is `AiUsage`) *(Open — defect)*
+- **Objective**: Correct the five references to `AiUsageRecord` in the Phase 6 plan so the catalog names the entity that actually exists, `AiUsage`.
+- **Dependencies**: None. Independent of P6-22, which concerns the `Budget Utilization` row in the same §6.8 section.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md — five occurrences: §1.2's AI Usage row (:36), §6.8's preamble (:521), and §6.8's `AI Cost by Operation` (:525), `Token Usage Trend` (:527) and `Top Consumers (Users)` (:528) rows.
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Covered by the catalog-integrity test proposed in P6-21, which resolves every seeded `source` against entity metadata and would fail on `AiUsageRecord`.
+- **Acceptance criteria**:
+  - The plan contains no reference to a class named `AiUsageRecord`.
+  - Every `source` value for the §6.8 rows resolves to a declared entity.
+- **Defect detail**:
+  - The deployed entity is `AiUsage`: `@Entity('AI_USAGE')`, `export class AiUsage` (src/ai/entities/ai-usage.entity.ts:18-19). No class named `AiUsageRecord` exists — `grep -rn 'AiUsageRecord' src/` returns nothing; all five occurrences are in the plan document.
+  - Scope is exactly five substitutions in one file, with no code, migration or test change: §1.2 (:36), the §6.8 preamble (:521), and three catalog rows (:525, :527, :528). The §6.8 `Budget Utilization` row is unaffected because it names `AiUsageService` instead — that row's defect is P6-22.
+  - **Do not rename `AiUsageRecording`** (src/ai/services/ai-usage-limit.service.ts:85, :131). It is a distinct interface describing the counter-update payload passed to `recordUsage()`, and it is correctly named; a blanket search-and-replace on `AiUsage` would wrongly rewrite it.
+  - This is the same defect class as P6-21, P6-24, P6-25 and P6-26 — a catalog name with no corresponding entity — but it is the only one that is purely mechanical, because the entity exists and only the name in the document is wrong.
+  - Consequence if unfixed: P6-07 seeds `query_definition.source` from the catalog text, and `ReportExecutorService` validates the source against entity metadata (§3.1.1; docs/phase6-scoping-plan.md:784), so these rows would be seeded as system schemas that fail validation on every execution — the same failure mode as the `Refund Report` row.
+- **Risks**: Low severity, but it propagates: copying the catalog verbatim into seed data produces unexecutable system schemas, and a developer searching for `AiUsageRecord` in `src/` finds nothing, which costs time before the name mismatch is noticed.
+
+### P6-24: §1.2's data-source inventory lists a non-existent column and two non-existent entities *(Open — defect)*
+- **Objective**: Make §1.2's "Existing Structured Data Sources" table describe what is actually deployed, so the plan's inventory of reportable fields can be relied on.
+- **Dependencies**: P6-21 — the `Refund` half of this defect is the §1.2 side of the same gap and is resolved by whichever option P6-21 chooses. It is cross-referenced here rather than duplicated.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§1.2 preamble :24; Memberships row :29; Finance row :30)
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Covered by the catalog-integrity test proposed in P6-21, extended to resolve every "Key Entities" name in §1.2 against classes declared in `src/**`.
+- **Acceptance criteria**:
+  - Every entity name in §1.2's "Key Entities" column corresponds to a class declared in `src/**`.
+  - No entry presents a read-time-derived value as a stored column.
+  - §1.2's preamble assertion — "Every module below has **TypeORM entities + migrations** already deployed" (:24) — is true of every name in the table.
+- **Defect detail**:
+  - Three names in the table contradict that preamble:
+    - **`plan_name`** (Memberships row, :29) — not a column of `Membership`. `Membership` carries `plan_id`, which is nullable (src/memberships/entities/membership.entity.ts:25); the name lives on `MembershipPlan.name` (src/memberships/entities/membership-plan.entity.ts:20). §1.2 therefore lists a **derived** value as a stored column. The correct pattern is already in use: `RetentionService` resolves the name at read time instead of joining — `plan_name: membership.plan_id ? planById.get(membership.plan_id)?.name ?? null : null` (src/ai/services/retention.service.ts:118) — and §6.2 prescribes exactly this for the report catalog. This is the only one of the three that is a column-level error rather than a missing entity.
+    - **`Refund`** (Finance row, :30) — no entity and no table. **Cross-reference P6-21** for the report-side consequence and the resolution options; not duplicated here. If P6-21 chooses to implement the entity, this row becomes accurate and needs no edit; if it chooses deletion, this row's "Key Entities" list must drop `Refund`.
+    - **`PaymentAllocation`** (Finance row, :30) — no entity and no table, and **no catalog row depends on it**, so unlike `Refund` there is no report-side failure. `payment_allocations` is nonetheless claimed as delivered by P1-04 and listed as a finance table in docs/domain-map.md:96. Because `Payment` already carries `invoice_id` directly (src/finance/entities/payment.entity.ts:51), the allocation table may be genuinely unnecessary rather than merely unbuilt — that judgement belongs to whoever owns the finance schema, and this ticket deliberately does not make it.
+  - See the note following P6-26 for the P1-04/P3-02 claims about these same tables.
+- **Risks**: §1.2 is the inventory the phase is planned against — it is what makes "these fields are reportable" a checkable claim. A derived field presented as a column and two entities that do not exist weaken that: report work can be scoped against `Refund`, `PaymentAllocation` or `Membership.plan_name` and the gap discovered only at implementation time.
+
+### P6-25: §6.7 "Active Loyalty Accounts" declares a `status` column that `LoyaltyAccount` does not have *(Open — defect)*
+- **Objective**: Resolve the `Active Loyalty Accounts` catalog row (§6.7 of `docs/phase6-scoping-plan.md`), whose declared source `LoyaltyAccount` has no `status` column and no time dimension, so the row as written cannot be executed.
+- **Dependencies**: P6-01, P6-03. Not in P6-07's scope — P6-07 seeds the member, finance and attendance sections only (§12), so this row is not part of that seed set. Filed here so the §6.7 defect is recorded before the section is seeded.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§6.7 catalog row :517)
+  - src/loyalty/ (only under resolution (C) or (D), which change loyalty schema)
+- **Database changes**: None under (A) or (B); a column addition under (C) or (D).
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Coverage that the row's `source` and every declared Key Column resolve against entity metadata (shared with P6-21).
+  - Under (A): coverage that the count is produced by the membership-domain query and matches `Membership` status counts.
+- **Acceptance criteria**:
+  - The row's Key Columns all exist on its declared source, or the row is redefined/removed.
+  - "Active loyalty accounts over time" is obtainable by a documented path, and the definition of "active" is stated rather than implied.
+- **Defect detail**:
+  - §6.7's row declares `Source = LoyaltyAccount` with Key Columns `status, count` (docs/phase6-scoping-plan.md:517). `LoyaltyAccount` has **no `status` column**: its full column set is `id, organization_id, member_id, balance, lifetime_points_earned, lifetime_points_redeemed, tier, created_at, updated_at` (src/loyalty/entities/loyalty-account.entity.ts:26-59). The nearest column is `tier`, and the entity's own docblock records that it "exists but is NULL/unused in Phase 2" (:20, :50-52) — so it is not a substitute, and it is nullable besides.
+  - The row also has a **time-axis mismatch** independent of the missing column. Its Description is "Account activity over time" with a `date_range` filter, but `LoyaltyAccount` carries only `created_at` and `updated_at` (:54-58) — there is no per-period activity fact on it. Per-period activity lives on `LoyaltyTransaction`, which is the next two rows' source. So even if a `status` column existed, the account row could not produce a time series from its own columns.
+  - **Tenant-scoping complication** for any attempt to widen the source to `LoyaltyTransaction`: that entity has **no `organization_id` column** — its full column set is `id, account_id, transaction_type, points, remaining_points, reference_type, reference_id, description, expires_at, created_at` (src/loyalty/entities/loyalty-transaction.entity.ts:27-72), and the migration creates no such column (src/migrations/1788965263250-AddLoyaltySchema.ts:47). `ReportExecutorService` applies tenant scoping by appending a filter on the source entity's `organization_id` automatically (§3.1.1), so a `LoyaltyTransaction`-sourced row has no column for that filter to bind to. Organization is reachable only by joining `LoyaltyAccount` (`account_id` → `LoyaltyAccount.id`, whose `organization_id` is at :32), and `QueryDefinition` has no `joins` key. **This is the same single-source contract limitation that forced the §6.1 and §6.2 redefinitions**, and it applies to §6.7's first two rows as well — they are not in this ticket's scope, but whoever resolves this should know the section has a section-wide scoping problem, not one bad row.
+  - Resolutions: **(A)** define "active loyalty account" from the memberships domain instead — an account is active if its member holds an active membership — and source the row from `Membership` with a join-free predicate, which matches how §6.1 defines activity; **(B)** drop the row and let `Points Issued/Burned` (which has a real source and real columns) carry the section; **(C)** add a persisted, maintained `status` column to `LoyaltyAccount`; or **(D)** add `organization_id` to `LoyaltyTransaction` and redefine the row over transactions. (A) or (B) need no schema change; (C) or (D) change loyalty schema and belong to that module's owner.
+  - This ticket does not prescribe which resolution. It records that the row declares a column that does not exist, and that the obvious substitute sources each hit a separate structural limit.
+- **Risks**: "Active loyalty accounts" is a headline loyalty metric with no definition and no executable source. A reader would reasonably infer that `LoyaltyAccount` tracks account status, and an implementation would either fail column validation or invent an "active" definition ad hoc — which is exactly the class of ambiguity the §6.1 and §6.2 notes exist to prevent.
+
+### P6-26: §6.4 "Most Used Exercise Templates" declares a `template_name` column that `WorkoutSessionExercise` does not have *(Open — defect)*
+- **Objective**: Resolve the `Most Used Exercise Templates` catalog row (§6.4 of `docs/phase6-scoping-plan.md`), whose declared source `WorkoutSessionExercise` has no template reference and no `template_name` column.
+- **Dependencies**: P6-01, P6-03. Not in P6-07's scope — P6-07 seeds the member, finance and attendance sections only (§12). Filed here so the §6.4 defect is recorded before the section is seeded.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§6.4 catalog row :491)
+- **Database changes**: None — the fix is a source change to an existing entity's column, not a schema change.
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Coverage that the row's `source` and every declared Key Column resolve against entity metadata (shared with P6-21).
+- **Acceptance criteria**:
+  - The row's Key Columns all exist on its declared source, or the row is redefined to name a source that provides them.
+  - "Most used exercise templates" is answerable from the row's declared source.
+- **Defect detail**:
+  - §6.4's row declares `Source = WorkoutSessionExercise` with Key Columns `template_name, session_count` (docs/phase6-scoping-plan.md:491). `WorkoutSessionExercise` has **no template reference and no name**: its full column set is `id, session_id, exercise_id, sets_completed, reps_completed, weight_used, rpe, notes, created_at` (src/workouts/entities/workout-session-exercise.entity.ts:22-57). It has no `template_id`, no `template_name`, and no relation to `WorkoutTemplate` or `WorkoutTemplateExercise` — its only relation is to `WorkoutSession` via `session_id` (:51-53). The row therefore asks a template question of an exercise-level table.
+  - **The data exists, one hop away, and the fix is a source change**: `WorkoutSession` *does* carry `template_id` — nullable (src/workouts/entities/workout-session.entity.ts:33) — and `WorkoutSession` is the section's source for the other three rows. So the row is answerable as `COUNT(*) GROUP BY template_id` over `WorkoutSession`, which is a single-source query needing no contract change. Only the **name** is out of reach: `WorkoutTemplate.name` (src/workouts/entities/workout-template.entity.ts:29) sits two hops away (`WorkoutSession.template_id` → `WorkoutTemplate.id`), and `QueryDefinition` has no `joins` key — so the same read-time-lookup treatment §6.2 prescribes for `MembershipPlan.name` applies here: group by `template_id` as the stable key and resolve the name in the read layer, not in the query.
+  - Two further constraints the redefined row must respect: `template_id` is **nullable**, so sessions logged without a template need a defined bucket — the same treatment §6.1 gives nullable `branch_id` and §6.2 gives nullable `plan_id`; and the row's **Description** ("Template popularity ranking") is about templates while the current source and columns are about exercises, so the row's description, source and columns currently disagree with each other and only one of the three can be right.
+  - Resolutions: **(A)** redefine the row as a single-source query over `WorkoutSession` grouped by `template_id`, with the name resolved at read time and a bucket for null `template_id` — this is the §6.2 pattern applied to the same problem; or **(B)** keep the source as `WorkoutSessionExercise` and change the measure to per-exercise popularity (`exercise_id`), which is answerable from that entity as written but answers a different question than the row's name asks. (A) is recommended, because it makes the row answer its own description.
+  - This ticket does not edit the §6.4 row — the correction is left to whoever picks it up, so that the resolution is a single considered change rather than a ticket-time edit.
+- **Risks**: A dashboard tile for "Most Used Exercise Templates" cannot be built from the row as written; an implementer would either fail column validation or quietly substitute exercise popularity, which would render a different metric under the template heading.
+
+> **Related — P1-04 and P3-02 assert finance tables that no migration creates**: P1-04 lists `payment_allocations table` and `refunds table` among its Database changes, and P3-02 lists "refunds table (completed in P1-04)" (:433). No migration creates either table, and no entity declares either — `information_schema.tables` returns 0 rows matching `%refund%` or `%allocation%`, and neither class exists in `src/**`. Because P3-02 is itself still open, the "completed in P1-04" claim is false in both directions: the table was not delivered by P1-04, and P3-02 has not closed the gap. P1-04's other listed tables (`invoices`, `invoice_items`, `payments`) **are** deployed, so the overstatement is confined to those two names. This is recorded here rather than as its own ticket because the underlying gap is already tracked — `Refund` by P6-21 and `PaymentAllocation` by P6-24 — and the remaining question, whether the finance schema should have these tables at all, belongs to P3-02's owner. It is called out because a reader of P1-04/P3-02 would otherwise believe refund and allocation storage exists, and build report or reconciliation work on it.
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
