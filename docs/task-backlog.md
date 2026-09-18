@@ -911,6 +911,30 @@ This document contains the implementation tasks broken down by phase, with depen
 
 > **Related — P1-04 and P3-02 assert finance tables that no migration creates**: P1-04 lists `payment_allocations table` and `refunds table` among its Database changes, and P3-02 lists "refunds table (completed in P1-04)" (:433). No migration creates either table, and no entity declares either — `information_schema.tables` returns 0 rows matching `%refund%` or `%allocation%`, and neither class exists in `src/**`. Because P3-02 is itself still open, the "completed in P1-04" claim is false in both directions: the table was not delivered by P1-04, and P3-02 has not closed the gap. P1-04's other listed tables (`invoices`, `invoice_items`, `payments`) **are** deployed, so the overstatement is confined to those two names. This is recorded here rather than as its own ticket because the underlying gap is already tracked — `Refund` by P6-21 and `PaymentAllocation` by P6-24 — and the remaining question, whether the finance schema should have these tables at all, belongs to P3-02's owner. It is called out because a reader of P1-04/P3-02 would otherwise believe refund and allocation storage exists, and build report or reconciliation work on it.
 
+### P6-27: `reports_mv_daily_revenue` buckets invoices by session-zone day, not by any stated convention *(Open — defect)*
+- **Objective**: Make `reports_mv_daily_revenue` (§7.2 of `docs/phase6-scoping-plan.md`) convert `invoice_date` to `date` by an explicitly chosen zone instead of inheriting the session `TimeZone`, which nothing pins.
+- **Dependencies**: P6-03 (Materialized Views for Reporting) — the ticket that creates the views, and whose Database changes list "Monthly revenue by organization". Related to P6-20, whose fix settles the day-grain convention this row must either follow or deliberately diverge from.
+- **Files/modules affected**:
+  - src/migrations/ (the migration that will contain `reports_mv_daily_revenue`)
+- **Database changes**: None — view definition only.
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - An invoice whose UTC date differs from its bucket date (e.g. `2026-01-01T23:30:00Z` for an organization configured `Asia/Tokyo`) must land on the chosen date.
+  - Boundary coverage on both sides of the chosen zone's midnight.
+- **Acceptance criteria**:
+  - The view's `date` is derived from a stated zone, not from the session default.
+  - `SELECT` and `GROUP BY` use the identical converted expression.
+- **Defect detail**:
+  - §7.2's view casts a `timestamptz` straight to `date`: `invoice_date::date AS date,` (docs/phase6-scoping-plan.md:559) and `GROUP BY organization_id, branch_id, invoice_date::date;` (:567). `invoice_date` is `TIMESTAMP WITH TIME ZONE NOT NULL` (src/migrations/1788965263234-CreateFinanceSchema.ts:44; `@Column({ type: 'timestamptz' })`, src/finance/entities/invoice.entity.ts:56-57), so the cast resolves against the session `TimeZone` exactly as P6-20's does.
+  - This is the same defect as P6-20 in the same file, and it is latent for the same reason — no migration creates any materialized view. It is filed separately rather than folded into P6-20 because the zone convention for revenue is a different question from the one for attendance, and the two views are consumed by different reports.
+  - **The convention is the decision, and it is genuinely open.** Revenue sits between P6-20's answer and the churn/active-monthly views' answer: it is a day-grain view like attendance, and is likely to be read on the same dashboard, which argues for the organization's local day; but its consumers are financial summaries, which argues for the single stable axis the month-grain views chose with `UTC`. **What is not open is leaving it to the session default.** The recommendation is to follow P6-20 and bucket by the organization's local day, so that every day-grain view shares one convention and a dashboard showing daily attendance beside daily revenue cannot disagree about which day a row belongs to. If the accounting-period argument wins instead, the row must say `AT TIME ZONE 'UTC'` explicitly. Either way the conversion must be written, not inherited.
+  - If the organization's local day is chosen, the `TENANCY_ORGANIZATIONS` join and the `timezone`-validation guard described in P6-20 apply here unchanged.
+  - `invoice_date` is set at issuance, so unlike churn/active-monthly this view has no `now()`-relative drift; the question is purely which calendar day an already-fixed instant belongs to.
+  - Not reachable through shipped code today, as in P6-20: `grep -rn 'CREATE MATERIALIZED VIEW' src/` returns nothing.
+- **Risks**: A daily revenue figure that silently disagrees with the local operating day it is reconciled against, because the bucket came from a container default. The view is a snapshot, so a wrong bucket is not self-correcting.
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
