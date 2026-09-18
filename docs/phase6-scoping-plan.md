@@ -235,7 +235,7 @@ interface FilterClause {
 
 > **Rationale vs. raw SQL**: A structured definition allows the executor to validate columns against a known allowlist (preventing access to columns not in the entity's reporting schema), apply tenant-scoping (`organization_id = :orgId`) automatically, and generate parameterized queries.
 
-> **Known contradiction with §16 (surfaced, not resolved)**: The §16 examples place raw SQL *expressions* in `columns` — e.g. `"COUNT(*)"`, `"SUM(total_amount)"`, and a date-truncation expression. Arbitrary expressions cannot be checked against a column allowlist, so the safety guarantee stated above holds only for plain column references and a fixed set of allowlisted aggregates. Either the executor must restrict `columns` to that subset (in which case the §16 examples must be rewritten to match), or this allowlist guarantee must be explicitly weakened. This is an open decision — it is deliberately left visible here rather than silently dropped.
+> **Known contradiction with §17 (surfaced, not resolved)**: The §17 examples place raw SQL *expressions* in `columns` — e.g. `"COUNT(*)"`, `"SUM(total_amount)"`, and a date-truncation expression. Arbitrary expressions cannot be checked against a column allowlist, so the safety guarantee stated above holds only for plain column references and a fixed set of allowlisted aggregates. Either the executor must restrict `columns` to that subset (in which case the §17 examples must be rewritten to match), or this allowlist guarantee must be explicitly weakened. This is an open decision — it is deliberately left visible here rather than silently dropped.
 
 ### 3.2 `REPORTS_REPORT_JOBS` (new table)
 
@@ -269,19 +269,7 @@ CREATE INDEX idx_report_jobs_created_at  ON "REPORTS_REPORT_JOBS"(created_at DES
 >
 > This is deliberately a *queue-depth* guard, not a *concurrency* limit: execution concurrency is unchanged and remains serialized to one job globally — see §5.1/§5.2, which this note does not alter. The guard exists to stop one tenant from filling the backlog that a single worker must drain.
 
-### 3.3 `REPORTS_USER_REPORT_FAVORITES` (optional — Phase 6.2)
-
-```sql
-CREATE TABLE "REPORTS_USER_REPORT_FAVORITES" (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id           UUID NOT NULL REFERENCES "IDENTITY_USERS"(id) ON DELETE CASCADE,
-    report_schema_id  UUID NOT NULL REFERENCES "REPORTS_REPORT_SCHEMAS"(id) ON DELETE CASCADE,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (user_id, report_schema_id)
-);
-```
-
-### 3.4 `REPORTS_MATERIALIZED_VIEWS` (in the DB plan as an ERD node only — the migration still has to be written)
+### 3.3 `REPORTS_MATERIALIZED_VIEWS` (in the DB plan as an ERD node only — the migration still has to be written)
 
 This table appears in `docs/database-plan.md` **only as a Mermaid ERD node** — that file contains no SQL DDL for it. A repository-wide search finds no migration that creates it, so **the table does not exist in the database today** and its physical name is undefined until a migration is written. Phase 6 **adopts** it as the registry of materialized-view definitions that §4.3's endpoints and §7.4's refresh flow operate against, and therefore has to **create it** (§7.4's registration `INSERT`s have nowhere to write until it exists). It is reproduced here so §3 is self-contained.
 
@@ -297,6 +285,8 @@ CREATE TABLE "REPORTS_MATERIALIZED_VIEWS" (
 > **Note**: the DB-plan shape carries no `organization_id` — this is a **platform-level registry** of view definitions, not tenant-scoped data. Tenant isolation is enforced by each materialized view's own `organization_id` grouping, not by this table.
 
 > **Open gap — this table has no migration**: the shape above is a hand-translation of the `REPORTS_MATERIALIZED_VIEWS` node in `docs/database-plan.md`'s **Mermaid ERD** (that file contains no SQL for it — the node sits inside a ```` ```mermaid ```` fence). `grep -rln "REPORTS_MATERIALIZED_VIEWS" src/` returns nothing, so **no migration creates this table** and its physical name is undefined until one is written. §7.4's registration step depends on that migration existing. The quoted `"REPORTS_MATERIALIZED_VIEWS"` form above is the name that migration must use, matching every other table in the project (51/51 `CREATE TABLE` statements in `src/migrations/` quote an `UPPER_SNAKE` name, as does every `@Entity()` in `src/`).
+
+> **Deferred material moved out of this section**: `REPORTS_USER_REPORT_FAVORITES` is **not** part of the committed Phase 6.0 data model and is no longer listed in §3. It is defined in §15 ("Deferred to Phase 6.2"), so that this section lists committed schema only.
 
 ---
 
@@ -326,11 +316,11 @@ CREATE TABLE "REPORTS_MATERIALIZED_VIEWS" (
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/report/materialized-views` | List materialized views (from `REPORTS_MATERIALIZED_VIEWS` — §3.4) |
+| `GET` | `/v1/report/materialized-views` | List materialized views (from `REPORTS_MATERIALIZED_VIEWS` — §3.3) |
 | `POST` | `/v1/report/materialized-views/{id}/refresh` | Trigger refresh |
 | `GET` | `/v1/report/materialized-views/{id}/data` | Query materialized view |
 
-> `{id}` is `REPORTS_MATERIALIZED_VIEWS.id` (§3.4) — the registry table carried in the DB plan as an ERD node, which Phase 6 must create before these endpoints can resolve anything. The view's SQL identifier is resolved from that row's `name`.
+> `{id}` is `REPORTS_MATERIALIZED_VIEWS.id` (§3.3) — the registry table carried in the DB plan as an ERD node, which Phase 6 must create before these endpoints can resolve anything. The view's SQL identifier is resolved from that row's `name`.
 
 ### 4.4 Dashboards
 
@@ -645,7 +635,7 @@ GROUP BY m.organization_id, date_trunc('month', gs.month)::date;
 
 ### 7.4 Registration and Refresh Configuration
 
-**Design change (Decision A1)**: materialized views are **registered as rows in the `REPORTS_MATERIALIZED_VIEWS` table (§3.4)**, not declared through an in-code `MaterializedViewConfig` interface. The database is the source of truth for which views exist, so adding or describing a view is a migration + a row, not a shape the application code declares.
+**Design change (Decision A1)**: materialized views are **registered as rows in the `REPORTS_MATERIALIZED_VIEWS` table (§3.3)**, not declared through an in-code `MaterializedViewConfig` interface. The database is the source of truth for which views exist, so adding or describing a view is a migration + a row, not a shape the application code declares.
 
 | Concern | Where it lives now |
 |---|---|
@@ -657,7 +647,7 @@ GROUP BY m.organization_id, date_trunc('month', gs.month)::date;
 
 The refresh worker treats a `REPORTS_MATERIALIZED_VIEWS` row as its unit of work: resolve the row, run `REFRESH MATERIALIZED VIEW <name>`, then stamp `last_refreshed = now()`. §4.3's endpoints address that same row by `id`; the SQL identifier comes from the row's `name`.
 
-Registration is a migration step — one row per view, using the physical table name (§3.4), and the `name` value must equal the view's SQL identifier exactly:
+Registration is a migration step — one row per view, using the physical table name (§3.3), and the `name` value must equal the view's SQL identifier exactly:
 
 ```sql
 INSERT INTO "REPORTS_MATERIALIZED_VIEWS" (name, description)
@@ -879,9 +869,31 @@ This section catalogues the deliverables by phase. Effort estimates are intentio
 
 ---
 
-## 15. Appendix: Dashboard Wireframes and Component Specifications
+## 15. Deferred to Phase 6.2 (Not Part of the Committed Phase 6.0 Data Model)
 
-### 15.1 Dashboard Hub Layout
+The table in this section is **defined for reference only**. It is **not** part of Phase 6.0's committed data model, **no migration in this phase creates it**, and **no endpoint in §4 reads or writes it**. It ships only if and when **P6-17 (User favorites / pinning)** — the "Phase 6.2 — Performance & Advanced (Stretch)" tier in §12 — is picked up.
+
+It is recorded here, outside §3, so that §3 stays a list of **committed** schema. The deferral is signalled at heading level rather than by a parenthetical on a table heading, matching the convention already used for non-committed material in §7 ("Materialized View Strategy (Phase 6.2 — Stretch Goal)").
+
+### 15.1 `REPORTS_USER_REPORT_FAVORITES`
+
+```sql
+CREATE TABLE "REPORTS_USER_REPORT_FAVORITES" (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id           UUID NOT NULL REFERENCES "IDENTITY_USERS"(id) ON DELETE CASCADE,
+    report_schema_id  UUID NOT NULL REFERENCES "REPORTS_REPORT_SCHEMAS"(id) ON DELETE CASCADE,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, report_schema_id)
+);
+```
+
+> **Why deferred rather than merely optional**: the table's only consumer is P6-17, which already sits in the stretch tier — no Phase 6.0 or 6.1 task depends on it, and nothing in `src/` declares it (no entity, no migration). Its FK target `"REPORTS_REPORT_SCHEMAS"` is a committed Phase 6.0 table (§3.1), so the relationship is stable whenever this is built. The table is absent from `docs/database-plan.md`'s ERD; this section is its only definition.
+
+---
+
+## 16. Appendix: Dashboard Wireframes and Component Specifications
+
+### 16.1 Dashboard Hub Layout
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -902,7 +914,7 @@ This section catalogues the deliverables by phase. Effort estimates are intentio
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 15.2 Shared UI Components
+### 16.2 Shared UI Components
 
 | Component | Props | Reuse in Existing UI |
 |---|---|---|
@@ -914,7 +926,7 @@ This section catalogues the deliverables by phase. Effort estimates are intentio
 
 ---
 
-## 16. Appendix: Query Definition JSON Examples
+## 17. Appendix: Query Definition JSON Examples
 
 ### Simple Count Query
 
