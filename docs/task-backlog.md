@@ -965,6 +965,17 @@ This document contains the implementation tasks broken down by phase, with depen
   - Consequence if unfixed: P6-19 would be built against an API that does not exist. Its author would either invent endpoints ad hoc or read entities directly through a reporting path — and §6.7's rows cannot substitute, because two of the three declare sources that cannot be executed (P6-25 and its section-wide `organization_id` scoping problem).
 - **Risks**: A dashboard page with no data source is discovered as missing during Phase 6.1 implementation rather than before it, and the shortest path at that point is to compute loyalty metrics in the frontend or to hand-roll inconsistent aggregates — which is what §6.7 exists to prevent.
 
+### P6-29: Decide whether `REPORTS_MATERIALIZED_VIEWS` stores refresh cadence, or cadence stays in code permanently *(Open — decision)*
+- **Objective**: Record whether §7.4's cadence/trigger/debounce/enabled settings are added to `REPORTS_MATERIALIZED_VIEWS` or stay in code/config, so the table's role as the source of truth for registered views is either complete or explicitly bounded.
+- **Dependencies**: P6-03 (creates the views) and P6-15; the §3.3 shape is the plan's, and its migration does not exist yet.
+- **Files/modules affected**: docs/phase6-scoping-plan.md (§3.3 shape, §7.3, §7.4); src/migrations/ (only under option A).
+- **Database changes**: Under (A), four nullable columns; none under (B).
+- **API changes**: Under (A), the §4.3 materialized-view endpoints gain writable cadence fields; none under (B).
+- **Tests**: Under (A), a non-default cadence/reason row is honoured by the worker. Under (B), none.
+- **Acceptance criteria**: §7.4's "Where it lives now" table and reality agree, and adding a view is a single documented path.
+- **Decision detail**: Decision A1 made this table the source of truth for which views exist, but its shape holds only identity and last refresh — cadence and trigger are in §7.3, debounce in a Redis lock. Options: **(A)** extend the table (runtime-editable cadence, event-trigger flag, debounce seconds, enabled) — a DB-plan shape change, with the worker reading per-row config and an operator able to disable a view without a deploy; or **(B)** keep cadence in code permanently and amend §7.4 to state that the table is a registry only, so the boundary is explicit. (B) is smaller; (A) is what makes §7.4's own "runtime-editable" question answerable.
+- **Risks**: Registered views whose refresh behaviour is invisible in the registry invites the assumption that editing a row controls refresh cadence; a misread operator would expect a change to take effect and see none.
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
