@@ -941,6 +941,30 @@ This document contains the implementation tasks broken down by phase, with depen
   - Not reachable through shipped code today, as in P6-20: `grep -rn 'CREATE MATERIALIZED VIEW' src/` returns nothing.
 - **Risks**: A daily revenue figure that silently disagrees with the local operating day it is reconciled against, because the bucket came from a container default. The view is a snapshot, so a wrong bucket is not self-correcting.
 
+### P6-28: Loyalty dashboard has no backend read path — the loyalty module exposes no read or aggregate method *(Open — defect)*
+- **Objective**: Provide the read/aggregate path the P6-19 loyalty dashboard needs, since `src/loyalty/` today exposes no way to read an account, a balance or a transaction series.
+- **Dependencies**: P6-08 (Dashboard hub API) and P6-19 (the loyalty dashboard page, a plan §12 row with no backlog ticket of its own). Related to P6-25 — that ticket resolves a *catalog row* in §6.7; this one resolves the *module's read surface*. They are deliberately separate: fixing P6-25's row would not make a single loyalty figure readable, because it presupposes the reporting system rather than the domain API.
+- **Files/modules affected**:
+  - src/loyalty/ (a controller and read/aggregate service methods — neither exists today)
+  - docs/phase6-scoping-plan.md (§12 P6-19's dependency row, only if the dashboard's source is recorded there)
+- **Database changes**: None — `LOYALTY_ACCOUNTS`, `LOYALTY_TRANSACTIONS`, `LOYALTY_RULES` and `LOYALTY_REWARDS` all exist.
+- **API changes**: Yes — the read endpoints the dashboard consumes. Whether these belong under `/v1/report/dashboards/loyalty` (P6-08's route) or as loyalty-module routes is the design decision.
+- **Frontend changes**: None here — P6-19 owns the page.
+- **Worker changes**: None
+- **Tests**:
+  - Each new read method returns tenant-scoped data only, and rejects a cross-tenant `member_id`/`account_id`.
+  - Balance/history aggregates match the `LOYALTY_TRANSACTIONS` ledger for a fixture account.
+- **Acceptance criteria**:
+  - Every figure P6-19's dashboard renders is served by a stated endpoint with a stated shape.
+  - No loyalty figure is computed in the browser from raw entity rows.
+- **Defect detail**:
+  - `src/loyalty/` declares **no controller**: `grep -rn 'Controller|@Get|@Post' src/loyalty/` returns nothing, and `loyalty.module.ts` has no `controllers:` key. The module's only exported surface is `LoyaltyAccrualService`, `LoyaltyExpiryService` and `TypeOrmModule`.
+  - Neither service offers a read method. `LoyaltyAccrualService` exposes `handleCheckIn` and `handleWorkoutLogged` (event handlers) and private helpers (`getOrCreateAccount`, `awardForTrigger`, `reachedDailyCap`); `LoyaltyExpiryService` exposes `sweepExpiredTransactions` and `expireTransaction`. Every repository query in the module is a write-path lookup (e.g. `ruleRepository.findOne`, account `findOne` for accrual), none is a report read.
+  - Nothing outside the module reads loyalty data either: `grep -rn 'LoyaltyAccount|LoyaltyTransaction' src/` matches only files under `src/loyalty/`, plus module wiring and the migration.
+  - **The same gap already exists one phase earlier**: P2-08 "Loyalty Points and Transactions API" specifies `GET /v1/members/{memberId}/points/balance`, `GET /v1/members/{memberId}/points/transactions` and `POST /v1/members/{memberId}/points/adjust` (docs/task-backlog.md), and **no route exists** for any of them — `grep -rn 'points/balance|points/transactions|points/adjust' src/ apps/` returns nothing. P2-08 is still open. The Phase 6 dashboard relies on a read path that P2-08 was to have delivered.
+  - Consequence if unfixed: P6-19 would be built against an API that does not exist. Its author would either invent endpoints ad hoc or read entities directly through a reporting path — and §6.7's rows cannot substitute, because two of the three declare sources that cannot be executed (P6-25 and its section-wide `organization_id` scoping problem).
+- **Risks**: A dashboard page with no data source is discovered as missing during Phase 6.1 implementation rather than before it, and the shortest path at that point is to compute loyalty metrics in the frontend or to hand-roll inconsistent aggregates — which is what §6.7 exists to prevent.
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
