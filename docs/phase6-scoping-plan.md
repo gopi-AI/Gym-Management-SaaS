@@ -168,7 +168,7 @@ apps/web/src/app/reports/
 ### 3.1 `REPORTS_REPORT_SCHEMAS` (already exists in DB plan DDL — needs finalization)
 
 ```sql
-CREATE TABLE reports_report_schemas (
+CREATE TABLE "REPORTS_REPORT_SCHEMAS" (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id   UUID NOT NULL REFERENCES "TENANCY_ORGANIZATIONS"(id) ON DELETE CASCADE,
     name              VARCHAR(200) NOT NULL,
@@ -184,8 +184,8 @@ CREATE TABLE reports_report_schemas (
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_report_schemas_org     ON reports_report_schemas(organization_id);
-CREATE INDEX idx_report_schemas_category ON reports_report_schemas(category);
+CREATE INDEX idx_report_schemas_org     ON "REPORTS_REPORT_SCHEMAS"(organization_id);
+CREATE INDEX idx_report_schemas_category ON "REPORTS_REPORT_SCHEMAS"(category);
 ```
 
 #### 3.1.1 `query_definition` Structure
@@ -240,10 +240,10 @@ interface FilterClause {
 ### 3.2 `REPORTS_REPORT_JOBS` (new table)
 
 ```sql
-CREATE TABLE reports_report_jobs (
+CREATE TABLE "REPORTS_REPORT_JOBS" (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id   UUID NOT NULL REFERENCES "TENANCY_ORGANIZATIONS"(id) ON DELETE CASCADE,
-    report_schema_id  UUID REFERENCES reports_report_schemas(id),
+    report_schema_id  UUID REFERENCES "REPORTS_REPORT_SCHEMAS"(id),
     status            VARCHAR(20) NOT NULL DEFAULT 'pending',
                       -- 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
     parameters        JSONB,
@@ -259,10 +259,10 @@ CREATE TABLE reports_report_jobs (
     created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX idx_report_jobs_org         ON reports_report_jobs(organization_id);
-CREATE INDEX idx_report_jobs_status      ON reports_report_jobs(status);
-CREATE INDEX idx_report_jobs_schema_id   ON reports_report_jobs(report_schema_id);
-CREATE INDEX idx_report_jobs_created_at  ON reports_report_jobs(created_at DESC);
+CREATE INDEX idx_report_jobs_org         ON "REPORTS_REPORT_JOBS"(organization_id);
+CREATE INDEX idx_report_jobs_status      ON "REPORTS_REPORT_JOBS"(status);
+CREATE INDEX idx_report_jobs_schema_id   ON "REPORTS_REPORT_JOBS"(report_schema_id);
+CREATE INDEX idx_report_jobs_created_at  ON "REPORTS_REPORT_JOBS"(created_at DESC);
 ```
 
 > **Queue-depth guard (pending jobs) — not an execution limit**: A single organization SHOULD NOT have more than `MAX_PENDING_JOBS` (configurable, default 2) **outstanding `pending` jobs** at any moment. Exceeding it returns `429 Too Many Requests` from the API path (before the job row is created). Use a Redis counter keyed by `organization_id`, decremented when a job reaches a terminal state (`completed` / `failed` / `cancelled`).
@@ -272,21 +272,21 @@ CREATE INDEX idx_report_jobs_created_at  ON reports_report_jobs(created_at DESC)
 ### 3.3 `REPORTS_USER_REPORT_FAVORITES` (optional — Phase 6.2)
 
 ```sql
-CREATE TABLE reports_user_report_favorites (
+CREATE TABLE "REPORTS_USER_REPORT_FAVORITES" (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id           UUID NOT NULL REFERENCES "IDENTITY_USERS"(id) ON DELETE CASCADE,
-    report_schema_id  UUID NOT NULL REFERENCES reports_report_schemas(id) ON DELETE CASCADE,
+    report_schema_id  UUID NOT NULL REFERENCES "REPORTS_REPORT_SCHEMAS"(id) ON DELETE CASCADE,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (user_id, report_schema_id)
 );
 ```
 
-### 3.4 `REPORTS_MATERIALIZED_VIEWS` (pre-existing in the DB plan — not created by Phase 6)
+### 3.4 `REPORTS_MATERIALIZED_VIEWS` (in the DB plan as an ERD node only — the migration still has to be written)
 
-This table is **already defined in `docs/database-plan.md`**. Phase 6 does not create it and does not modify it; it **adopts** it as the registry of materialized-view definitions that §4.3's endpoints and §7.4's refresh flow operate against. It is reproduced here so §3 is self-contained.
+This table appears in `docs/database-plan.md` **only as a Mermaid ERD node** — that file contains no SQL DDL for it. A repository-wide search finds no migration that creates it, so **the table does not exist in the database today** and its physical name is undefined until a migration is written. Phase 6 **adopts** it as the registry of materialized-view definitions that §4.3's endpoints and §7.4's refresh flow operate against, and therefore has to **create it** (§7.4's registration `INSERT`s have nowhere to write until it exists). It is reproduced here so §3 is self-contained.
 
 ```sql
-CREATE TABLE reports_materialized_views (
+CREATE TABLE "REPORTS_MATERIALIZED_VIEWS" (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name            VARCHAR(200) NOT NULL,
     description     TEXT,
@@ -295,6 +295,8 @@ CREATE TABLE reports_materialized_views (
 ```
 
 > **Note**: the DB-plan shape carries no `organization_id` — this is a **platform-level registry** of view definitions, not tenant-scoped data. Tenant isolation is enforced by each materialized view's own `organization_id` grouping, not by this table.
+
+> **Open gap — this table has no migration**: the shape above is a hand-translation of the `REPORTS_MATERIALIZED_VIEWS` node in `docs/database-plan.md`'s **Mermaid ERD** (that file contains no SQL for it — the node sits inside a ```` ```mermaid ```` fence). `grep -rln "REPORTS_MATERIALIZED_VIEWS" src/` returns nothing, so **no migration creates this table** and its physical name is undefined until one is written. §7.4's registration step depends on that migration existing. The quoted `"REPORTS_MATERIALIZED_VIEWS"` form above is the name that migration must use, matching every other table in the project (51/51 `CREATE TABLE` statements in `src/migrations/` quote an `UPPER_SNAKE` name, as does every `@Entity()` in `src/`).
 
 ---
 
@@ -328,7 +330,7 @@ CREATE TABLE reports_materialized_views (
 | `POST` | `/v1/report/materialized-views/{id}/refresh` | Trigger refresh |
 | `GET` | `/v1/report/materialized-views/{id}/data` | Query materialized view |
 
-> `{id}` is `REPORTS_MATERIALIZED_VIEWS.id` (§3.4) — the pre-existing registry table defined in the DB plan. The view's SQL identifier is resolved from that row's `name`.
+> `{id}` is `REPORTS_MATERIALIZED_VIEWS.id` (§3.4) — the registry table carried in the DB plan as an ERD node, which Phase 6 must create before these endpoints can resolve anything. The view's SQL identifier is resolved from that row's `name`.
 
 ### 4.4 Dashboards
 
@@ -418,6 +420,17 @@ These are the platform-defined reports created as seed data. They are marked `is
 | **Member Demographics** | Age/gender/location breakdown | `Member` | date_of_birth (age_group derived), gender, branch_id (location), count | date_range |
 | **Active vs. Churned** | Live vs. cancelled/expired memberships over time | `Membership` + `MembershipHistory` | status, month, count | date_range |
 | **Membership Tenure Distribution** | How long members stay | `Membership` | tenure_months, count | status |
+
+> **Definition — "active in a month" is the `>` boundary, plus a termination cutoff (explicit decision)**: a membership counts as active for a given month if it was active **at any point during that month**. Two conditions produce that set, and both are needed:
+>
+> 1. **Overlap with the contractual term.** The month window is `[month, month + 1 month)`; the membership's `[start_date, end_date]` must overlap it — the month's **last** day `>= start_date`, and (`end_date IS NULL` OR the month's **first** day `<= end_date`). A membership whose `end_date` is exactly the 1st of a month therefore **does** count for that month (it was active for one day of it).
+> 2. **Termination cutoff.** `end_date` is **not** rewritten when a membership is cancelled or expires — `MembershipsService.cancel()` writes only `status`, `cancelled_at` and `cancellation_reason` (`src/memberships/services/memberships.service.ts`), leaving the original contractual `end_date` intact. Relying on condition 1 alone would therefore count a cancelled membership as active until its original term end (e.g. a membership cancelled in month 2 of a 12-month term would count as active for all 12 months), and **unboundedly** when `end_date IS NULL`. The cutoff takes the earliest terminal transition from `MEMBERSHIPS_MEMBERSHIP_HISTORY` (`to_status IN ('cancelled','expired')`) and requires the month's **first** day `<=` that date, so the termination month still counts as active. A membership with no terminal transition gets no cutoff.
+>
+> **Cancellation before `end_date` is therefore handled as: the membership stays active through the end of the calendar month in which the cancellation occurred, and is counted as churned in that same month.** It does not stay active until the contractual `end_date`. Where cancellation falls **exactly on the 1st** of a month, that month counts as active (the boundary is inclusive at both ends) and is also the churn month. A membership that both starts and terminates inside one calendar month counts as active for that month (it was active on the days before the transition) and is counted as churned in it — verified by execution: a membership starting 2026-03-05 and cancelled 2026-03-20 yields `active_members = 1, churned_members = 1, churn_rate_pct = 100.00` for March 2026.
+>
+> Churn is attributed **per membership**, not per organization: the churn set joins on `membership_id` *and* month against the same `member_months` set that produces `active_members`. This matters — joining only on `(organization_id, month)` lets a terminal transition be counted in a month that the membership was never in (e.g. a termination whose `occurred_at` precedes the membership's own `start_date`), which produced `churned_members = 2` against `active_members = 1` — a **200% churn rate** — in an executed reproduction. Scoping the join to `membership_id` makes `churned_members` a subset of `active_members` by construction, so `churn_rate_pct` cannot exceed 100%.
+>
+> This one predicate is applied identically in `reports_mv_member_churn_monthly` and `reports_mv_membership_active_monthly` (§7.2), so the two can never disagree about which month a membership belongs to. Changing the boundary — to "active at month start", "active for the whole month", or dropping the termination cutoff — is a **scope/definition change, not a bug fix**: it silently rewrites every historical month's figures, exactly as the "overdue, no grace period" boundary does (§6.2).
 
 ### 6.2 Finance Reports
 
@@ -546,6 +559,73 @@ SELECT
     -- No cumulative-volume column: SUM(duration_minutes) was explicitly rejected per Q7 (see src/workouts/entities/workout-session.entity.ts); reinstating it requires an explicit re-decision on Q7 itself, not a silent MV addition.
 FROM "WORKOUTS_WORKOUT_SESSIONS"
 GROUP BY organization_id, member_id, session_date::date;
+
+-- 5. Monthly member churn per organization
+--    "Active in a month" is the §6.1 predicate: the membership's [start_date, end_date]
+--    overlaps the month, AND the month does not start after the membership's earliest
+--    terminal transition. Churn is attributed per *membership*, not per organization, so a
+--    transition can only ever be counted in a month that the membership is actually in.
+CREATE MATERIALIZED VIEW reports_mv_member_churn_monthly AS
+WITH member_months AS (
+    SELECT m.organization_id, m.member_id, m.id AS membership_id,
+           date_trunc('month', gs.month)::date AS month
+    FROM "MEMBERSHIPS_MEMBERSHIPS" m
+    CROSS JOIN LATERAL generate_series(
+        date_trunc('month', m.start_date::timestamp),
+        date_trunc('month', COALESCE(m.end_date, (now() AT TIME ZONE 'UTC')::date)::timestamp),
+        interval '1 month'
+    ) AS gs(month)
+    WHERE (gs.month + interval '1 month - 1 day')::date >= m.start_date
+      AND (m.end_date IS NULL OR gs.month::date <= m.end_date)
+      -- Termination cutoff: cancel()/expire never rewrite end_date (§6.1), so the month of
+      -- the earliest terminal transition is the last month that counts as active.
+      AND gs.month::date <= COALESCE(
+            (SELECT MIN(c.occurred_at AT TIME ZONE 'UTC')::date
+               FROM "MEMBERSHIPS_MEMBERSHIP_HISTORY" c
+              WHERE c.to_status IN ('cancelled', 'expired')
+                AND c.membership_id = m.id),
+            DATE '9999-12-31')
+),
+terminated AS (
+    SELECT DISTINCT h.membership_id,
+           date_trunc('month', h.occurred_at AT TIME ZONE 'UTC')::date AS month
+    FROM "MEMBERSHIPS_MEMBERSHIP_HISTORY" h
+    WHERE h.to_status IN ('cancelled', 'expired')
+)
+SELECT a.organization_id, a.month,
+       COUNT(DISTINCT a.member_id) AS active_members,
+       COUNT(DISTINCT CASE WHEN t.membership_id IS NOT NULL THEN a.member_id END) AS churned_members,
+       ROUND(COUNT(DISTINCT CASE WHEN t.membership_id IS NOT NULL THEN a.member_id END)::numeric
+             / NULLIF(COUNT(DISTINCT a.member_id), 0) * 100, 2) AS churn_rate_pct
+FROM member_months a
+LEFT JOIN terminated t
+       ON t.membership_id = a.membership_id AND t.month = a.month
+GROUP BY a.organization_id, a.month;
+
+-- 6. Monthly active memberships per organization
+--    Same §6.1 predicate as #5, so the two views can never disagree about which month a
+--    membership belongs to.
+CREATE MATERIALIZED VIEW reports_mv_membership_active_monthly AS
+SELECT m.organization_id,
+       date_trunc('month', gs.month)::date AS month,
+       COUNT(DISTINCT m.member_id) AS active_members,
+       COUNT(DISTINCT m.id)        AS active_memberships
+FROM "MEMBERSHIPS_MEMBERSHIPS" m
+CROSS JOIN LATERAL generate_series(
+    date_trunc('month', m.start_date::timestamp),
+    date_trunc('month', COALESCE(m.end_date, (now() AT TIME ZONE 'UTC')::date)::timestamp),
+    interval '1 month'
+) AS gs(month)
+WHERE (gs.month + interval '1 month - 1 day')::date >= m.start_date
+  AND (m.end_date IS NULL OR gs.month::date <= m.end_date)
+  AND gs.month::date <= COALESCE(
+        (SELECT MIN(c.occurred_at AT TIME ZONE 'UTC')::date
+           FROM "MEMBERSHIPS_MEMBERSHIP_HISTORY" c
+          WHERE c.to_status IN ('cancelled', 'expired')
+            AND c.membership_id = m.id),
+        DATE '9999-12-31')
+GROUP BY m.organization_id, date_trunc('month', gs.month)::date;
+
 ```
 
 ### 7.3 Refresh Strategy
@@ -556,12 +636,16 @@ GROUP BY organization_id, member_id, session_date::date;
 | `reports_mv_daily_revenue` | Every 6 hours + on invoice creation | Cron + outbox event |
 | `reports_mv_membership_summary` | Every 6 hours | Cron worker |
 | `reports_mv_daily_workouts` | Hourly + on session log | Cron + outbox event |
+| `reports_mv_member_churn_monthly` | Daily (off-peak) | Cron worker |
+| `reports_mv_membership_active_monthly` | Daily (off-peak) | Cron worker |
 
 > **Design**: Use the existing outbox pattern to enqueue refresh-on-demand: when an attendance/invoice/workout event is published, the outbox handler can trigger a materialized view refresh. However, **do not refresh per-event** — instead debounce to at most once per 5 minutes using a Redis lock. The primary refresh is cron-driven.
 
+> **Note — "on invoice creation" / "on session log" are aspirational today**: the trigger column above describes the intended design, not the current wiring. `EventHandlerRegistry` has exactly **one** registration (`AttendanceEventRecorded.v1` → loyalty), so no handler exists for `MembershipCancelled`/`MembershipExpired`, invoices, or workout sessions. Until those handlers are registered, the two new monthly views and the invoice/workout views refresh on cron only. Registering the membership-terminal handlers is what would let churn update on cancellation rather than waiting for the next cron cycle — it is **not** required for correctness, because a refresh recomputes the whole view from `MEMBERSHIPS_MEMBERSHIP_HISTORY`.
+
 ### 7.4 Registration and Refresh Configuration
 
-**Design change (Decision A1)**: materialized views are **registered as rows in the pre-existing `REPORTS_MATERIALIZED_VIEWS` table (§3.4)**, not declared through an in-code `MaterializedViewConfig` interface. The database is the source of truth for which views exist, so adding or describing a view is a migration + a row, not a shape the application code declares.
+**Design change (Decision A1)**: materialized views are **registered as rows in the `REPORTS_MATERIALIZED_VIEWS` table (§3.4)**, not declared through an in-code `MaterializedViewConfig` interface. The database is the source of truth for which views exist, so adding or describing a view is a migration + a row, not a shape the application code declares.
 
 | Concern | Where it lives now |
 |---|---|
@@ -573,7 +657,20 @@ GROUP BY organization_id, member_id, session_date::date;
 
 The refresh worker treats a `REPORTS_MATERIALIZED_VIEWS` row as its unit of work: resolve the row, run `REFRESH MATERIALIZED VIEW <name>`, then stamp `last_refreshed = now()`. §4.3's endpoints address that same row by `id`; the SQL identifier comes from the row's `name`.
 
-> **Open gap — cadence columns do not exist**: the DB-plan shape of `REPORTS_MATERIALIZED_VIEWS` is only `id, name, description, last_refreshed`. It has **no** column for refresh cadence, event-trigger flag, debounce seconds, or enabled/disabled — all of which the previous in-code interface carried. Those settings therefore remain in **code/config** (the §7.3 cron schedule and the Redis debounce). If the team wants them runtime-editable, `REPORTS_MATERIALIZED_VIEWS` must be **extended** with those columns — that is a change to a pre-existing DB-plan table and is deliberately **not** made here; it is flagged for a decision.
+Registration is a migration step — one row per view, using the physical table name (§3.4), and the `name` value must equal the view's SQL identifier exactly:
+
+```sql
+INSERT INTO "REPORTS_MATERIALIZED_VIEWS" (name, description)
+VALUES
+    ('reports_mv_member_churn_monthly',
+     'Monthly member churn per organization: active members, churned members and churn rate, bucketed by UTC calendar month.'),
+    ('reports_mv_membership_active_monthly',
+     'Monthly active membership counts per organization: distinct active members and active memberships, bucketed by UTC calendar month.');
+```
+
+The same migration must also register the four §7.2 views once they are implemented; they are omitted here only because their SQL predates this decision and has not yet been reconciled with it.
+
+> **Open gap — cadence columns do not exist**: the DB-plan shape of `REPORTS_MATERIALIZED_VIEWS` is only `id, name, description, last_refreshed`. It has **no** column for refresh cadence, event-trigger flag, debounce seconds, or enabled/disabled — all of which the previous in-code interface carried. Those settings therefore remain in **code/config** (the §7.3 cron schedule and the Redis debounce). If the team wants them runtime-editable, the table must be **extended** with those columns — that is a change to the DB-plan shape and is deliberately **not** made here; it is flagged for a decision.
 
 ---
 
@@ -663,7 +760,7 @@ enum ReportPermission {
 
 ## 11. Migration Plan
 
-### Migration 1: Create `reports_report_schemas` table
+### Migration 1: Create `"REPORTS_REPORT_SCHEMAS"` table
 
 ```typescript
 // 1700000000000-CreateReportSchemasTable.ts
@@ -674,7 +771,7 @@ export class CreateReportSchemasTable1700000000000 implements MigrationInterface
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TABLE reports_report_schemas (
+      CREATE TABLE "REPORTS_REPORT_SCHEMAS" (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         organization_id UUID NOT NULL REFERENCES "TENANCY_ORGANIZATIONS"(id) ON DELETE CASCADE,
         name            VARCHAR(200) NOT NULL,
@@ -689,18 +786,18 @@ export class CreateReportSchemasTable1700000000000 implements MigrationInterface
         updated_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
 
-      CREATE INDEX idx_report_schemas_org ON reports_report_schemas(organization_id);
-      CREATE INDEX idx_report_schemas_category ON reports_report_schemas(category);
+      CREATE INDEX idx_report_schemas_org ON "REPORTS_REPORT_SCHEMAS"(organization_id);
+      CREATE INDEX idx_report_schemas_category ON "REPORTS_REPORT_SCHEMAS"(category);
     `);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`DROP TABLE reports_report_schemas`);
+    await queryRunner.query(`DROP TABLE "REPORTS_REPORT_SCHEMAS"`);
   }
 }
 ```
 
-### Migration 2: Create `reports_report_jobs` table
+### Migration 2: Create `"REPORTS_REPORT_JOBS"` table
 
 ```typescript
 // 1700000000001-CreateReportJobsTable.ts
@@ -711,7 +808,7 @@ export class CreateReportSchemasTable1700000000000 implements MigrationInterface
 
 ```typescript
 // 1700000000002-SeedSystemReportSchemas.ts
-// INSERT all predefined reports from §6 into reports_report_schemas,
+// INSERT all predefined reports from §6 into "REPORTS_REPORT_SCHEMAS",
 // one row per report, for each organization, or use a DB-level
 // post-deployment hook that runs once.
 ```
