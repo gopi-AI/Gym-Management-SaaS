@@ -488,7 +488,17 @@ These are the platform-defined reports created as seed data. They are marked `is
 | **Workout Volume** | Total sessions logged over time | `WorkoutSession` | session_date, count | date_range, member |
 | **Avg Workout Duration** | Average duration trend | `WorkoutSession` | week, avg_duration_minutes | date_range |
 | **Plan Assignment Adherence** | Active vs expired plan assignments | `WorkoutPlanAssignment` | template_id, status, count | date_range |
-| **Most Used Exercise Templates** | Template popularity ranking | `WorkoutSessionExercise` | template_name, session_count | date_range |
+| **Most Used Exercise Templates** | Template popularity ranking | `WorkoutSession` | template_id, session_count (`COUNT(*)`, `GROUP BY template_id`) | date_range |
+
+> **Definition — "Most Used Exercise Templates" is redefined over `WorkoutSession`, because its declared source cannot answer the question its own name asks (explicit decision)**: the row declared `Source = WorkoutSessionExercise` with Key Columns `template_name, session_count`. Neither resolves. `WorkoutSessionExercise` has **no `template_name` column and no template reference at all** — its full column set is `id, session_id, exercise_id, sets_completed, reps_completed, weight_used, rpe, notes, created_at` (src/workouts/entities/workout-session-exercise.entity.ts:20-56) — and the row's Description ("Template popularity ranking") is about **templates**, while that entity records **exercises**. Source, columns and description disagreed with each other, and only one of the three could be right.
+>
+> **Decision**: the report is redefined as a single-source query over `WorkoutSession` — `COUNT(*)` grouped by `template_id` — with the template **name resolved at read time**. This is the pattern §6.2 already uses for `MembershipPlan.name`: `WorkoutSession.template_id` is a real, **nullable** `uuid` column (src/workouts/entities/workout-session.entity.ts:32-33), so it is the stable grouping key, while `WorkoutTemplate.name` is a **live, mutable** column that a rename would silently rewrite — grouping by the name would relabel historical sessions with the template's current name. The name is therefore resolved in the read layer (the `RetentionService` pattern: `id` → label lookup, not a join), and `template_id` remains the grouping key.
+>
+> **Null `template_id` needs a defined bucket**: it is nullable because a session can be logged without a template (free-form or ad-hoc). Those sessions are grouped under a single explicit "no template" bucket rather than dropped — the same treatment §6.1 gives nullable `branch_id` and §6.2 gives nullable `plan_id`. Dropping them would understate the total and make this ranking's denominator disagree with the §6.4 "Workout Volume" row above it.
+>
+> **The rejected alternative** was to keep the source as `WorkoutSessionExercise` and change the measure to per-**exercise** popularity (`exercise_id`), which is answerable from that entity as written. It is rejected because it answers a different question than the row's name asks: a reader selecting "Most Used Exercise Templates" would receive exercise counts under a template heading. That measure belongs in its own row if it is wanted, not substituted here.
+>
+> **The trade-off being accepted, stated so the measure is not misread**: `template_id` is a template *identifier*, so "most used" counts **sessions logged against a template**, not **exercises performed within a session**. Those differ for templates of different sizes — a 12-exercise template and a 3-exercise template each count once per session. That is the correct reading of "template popularity" (how often the template is used), and it is stated here rather than left to be inferred.
 
 ### 6.5 Diet Reports
 
