@@ -721,6 +721,32 @@ This document contains the implementation tasks broken down by phase, with depen
   - Analytics dashboard route
   - Widget components (charts, tables, metrics)
   - Date range selectors
+
+### P6-20: Attendance materialized view buckets check-ins by session-zone day, not organization-local day *(Open — defect)*
+- **Objective**: Make `reports_mv_daily_attendance` (§7.2 of `docs/phase6-scoping-plan.md`) bucket `check_in_time` into the organization's local calendar day, so a check-in near local midnight is not attributed to the wrong `date`.
+- **Dependencies**: P6-15 (Materialized view migration + refresh worker) — the view is currently only defined in the Phase 6 scoping plan; no migration creates it. This defect has to be fixed in the migration P6-15 writes, not after it ships.
+- **Files/modules affected**:
+  - src/migrations/ (the P6-15 migration that will contain `reports_mv_daily_attendance`)
+  - src/app.module.ts (only if the fix chosen is a connection-level session timezone pin rather than a per-row conversion)
+- **Database changes**: None — view definition only.
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - A check-in whose UTC date differs from its organization-local date (e.g. `2026-01-01T23:30:00Z` for an organization configured `Asia/Tokyo`) must be counted under the organization-local date.
+  - Boundary coverage on both sides of local midnight.
+- **Acceptance criteria**:
+  - `date` in `reports_mv_daily_attendance` is the organization-local calendar date of `check_in_time`.
+  - Two check-ins on the same local day cannot be split across two `date` values.
+- **Defect detail**:
+  - §7.2's view casts a `timestamptz` straight to `date`: `check_in_time::date AS date,` (docs/phase6-scoping-plan.md:508) and `GROUP BY organization_id, branch_id, check_in_time::date;` (docs/phase6-scoping-plan.md:514). The source column is `TIMESTAMP WITH TIME ZONE` (src/migrations/1788965263233-CreateAttendanceSchema.ts:69; `@Column({ type: 'timestamptz' })`, src/attendance/entities/attendance-record.entity.ts:49-50).
+  - Casting `timestamptz` to `date` resolves against the **session** `TimeZone`, and nothing pins it: the TypeORM connection sets no `timezone`/`PGTZ` option (src/app.module.ts:126-143) and no migration sets one. The effective zone is therefore the server/container default, which is unrelated to the organization's configured `timezone` column (src/tenancy/entities/organization.entity.ts:13).
+  - Failure mode: with a session zone of `UTC` and an organization in `Asia/Tokyo` (UTC+9), a check-in at `2026-01-01T23:30:00Z` is `2026-01-02` locally but is bucketed as `2026-01-01`. Any organization whose local day is offset from the session zone gets check-ins attributed to the wrong `date`.
+  - This is the bug class corrected in the revised `reports_mv_member_churn_monthly` / `reports_mv_membership_active_monthly`, which now convert explicitly with `occurred_at AT TIME ZONE 'UTC'` (docs/phase6-scoping-plan.md:573, :581) instead of relying on the session zone. The other two `::date` casts in §7.2 are not affected the same way: `session_date` is already a `date` column (src/migrations/1788965263242-CreateWorkoutTables.ts:120), while `invoice_date` is `timestamptz` (src/migrations/1788965263234-CreateFinanceSchema.ts:44) and is out of this ticket's scope.
+  - Open sub-question for whoever picks this up: the churn/active-monthly MVs pin `UTC`, whereas attendance is a daily operational metric where the organization's local day is arguably the meaningful boundary. Choosing the organization's `timezone` here would leave the two MV groups using different zone conventions — that is a definitional decision, not a mechanical fix, and should be made explicitly rather than inherited from the session default.
+  - Not reachable through shipped code today: no migration creates any materialized view (`grep -rn 'CREATE MATERIALIZED VIEW' src/` returns nothing) and `src/attendance/` performs no date bucketing, so no running query produces a wrong bucket yet. The defect lands with the P6-15 migration if the view is written as documented.
+- **Risks**: Daily check-in counts, unique-member counts, and any dashboard or export built on `reports_mv_daily_attendance` would disagree with front-desk records for check-ins near local midnight. Because the view is a snapshot, a wrong bucket is fixed at refresh time and is not self-correcting once written.
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
