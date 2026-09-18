@@ -318,7 +318,7 @@ Task backlog P3-04 lists `membership_discounts table (completed in P1-03)`. **Th
 
 A real boundary decision: `MembershipDiscount` is a **membership** concept (it attaches to `membership_id`, and the ERD places it in the `MEMBERSHIP_` schema), yet P3-04 is a **finance** task. Two clean options:
 
-- **Membership owns the discount definition; Finance owns its application.** `MembershipModule` exposes the active discount for a membership; `InvoicesService` consumes it as a line-item adjustment. One-directional dependency, mirroring the existing `PT → WorkoutsService.assignPlan()` naming-collision resolution.
+- **Membership owns the discount definition; Finance owns its application.** `MembershipsModule` exposes the active discount for a membership; `InvoicesService` consumes it as a line-item adjustment. One-directional dependency, mirroring the existing `PT → WorkoutsService.assignPlan()` naming-collision resolution.
 - **Finance owns everything.** Simpler to build, but puts a `MEMBERSHIP_`-prefixed table under finance ownership, contradicting the schema namespace.
 
 **Recommended default (subject to §15 Q8)**: the first option — it respects the existing schema namespaces and the one-directional dependency convention already established in Phase 2.
@@ -642,7 +642,7 @@ The domain map states CRM **“Uses Scheduling (for trials)”**, and the backlo
 ### Module boundary rules (mirroring the PT/Workouts precedent)
 
 1. **`CrmModule` exports services, never repositories.** Same encapsulation as `PtModule` — no other module can bypass CRM's invariants.
-2. **CRM owns no member or membership table.** `MembersModule` and `MembershipModule` are imported; `MembersService.create()` performs the write. One-directional (`CRM → Members`), matching the domain-map arrow exactly.
+2. **CRM owns no member or membership table.** `MembersModule` and `MembershipsModule` are imported; `MembersService.create()` performs the write. One-directional (`CRM → Members`), matching the domain-map arrow exactly.
 3. **The lead status funnel transitions in one place.** A single service method owns lead state changes so the funnel cannot be advanced by two code paths — mirroring `VALID_INVOICE_TRANSITIONS` and `PT_ENROLLMENT_STATUS_VALUES` as the canonical home for the value set.
 
 ### Event contracts
@@ -694,7 +694,7 @@ Per §14.7, both must register defaults in `WORKER_INTERVALS` / `WORKER_BATCH_SI
 ### Phase 3+ dependencies
 
 - **`CrmModule → MembersModule`** for `MembersService.create()`.
-- **`CrmModule → MembershipModule`** for trial/plan creation — **only if** §15 Q22 resolves in favour of creating a membership automatically.
+- **`CrmModule → MembershipsModule`** for trial/plan creation — **only if** §15 Q22 resolves in favour of creating a membership automatically.
 - **Blocked by Scheduling** for scheduled trial sessions (mitigated above).
 - **Feeds §14.3** — the conversion → membership-plan assignment risk.
 - **Publishes events consumed by the Notifications phase** (P5) for lead follow-up messages.
@@ -920,7 +920,7 @@ Inter-module wiring required when Phase 3 modules are added to `AppModule`. Dire
 | `InventoryModule` | `S3Module` | Import | Item images (§10). |
 | `CrmModule` | `TenantContextService` | Injection | Org-scoped CRM. |
 | `CrmModule` | `MembersModule` | **New import** | `MembersService.create()` on lead conversion (§8). |
-| `CrmModule` | `MembershipModule` | Import **if** §15 Q22 says yes | To create the trial membership at conversion. |
+| `CrmModule` | `MembershipsModule` | Import **if** §15 Q22 says yes | To create the trial membership at conversion. |
 | `CrmModule` | `S3Module` | Import | Lead attachments (§10). |
 | `PtModule` | `FinanceModule` | **New import** | Commission payout writes ledger entries (§6). |
 | `PtModule` | Finance refund/cancellation events | Consumer | Clawback trigger (§6). |
