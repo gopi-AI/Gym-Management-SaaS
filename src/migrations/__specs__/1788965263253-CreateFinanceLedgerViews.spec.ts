@@ -1,9 +1,9 @@
+import { CreateFinanceLedgerViews1788965263253 } from '../1788965263253-CreateFinanceLedgerViews';
 import {
-  CreateFinanceLedgerViews1788965263253,
   buildMemberOutstandingViewSql,
   buildOutstandingByStatusViewSql,
   buildRevenueByPeriodViewSql,
-} from '../1788965263253-CreateFinanceLedgerViews';
+} from '../../finance/ledger-views.constants';
 import {
   AGEING_BUCKET_ORDER,
   FINANCE_LEDGER_VIEWS,
