@@ -33,7 +33,7 @@ Every module below has **TypeORM entities + migrations** already deployed. The c
 | **Diet** (`diet/`) | `NutritionLog`, `DietPlanAssignment` | `organization_id`, `member_id` | log_date, meal_template, macro values (calories, protein_g, carbs_g, fat_g) | daily avg macros, meals logged, missing-macro ratio, plan adherence |
 | **PT** (`pt/`) | `PtEnrollment`, `PtSession`, `TrainerCommission` | `organization_id`, `branch_id` | trainer_id, session_date, status, package_price, currency | session count, commission earned, trainer utilization, revenue |
 | **Loyalty** (`loyalty/`) | `LoyaltyAccount`, `LoyaltyTransaction` | `organization_id`, `member_id` | transaction_type, points_change, reason | total points, points burned, redemption rate, active accounts |
-| **AI Usage** (`ai/`) | `AiUsageRecord` | `organization_id` | model, operation, cost, token count | total cost, avg cost/request, budget remaining, token trends |
+| **AI Usage** (`ai/`) | `AiUsage` | `organization_id` | model, request_type, estimated_cost_usd, token count | total cost, avg cost/request, budget remaining, token trends |
 
 ### 1.3 Reporting Gaps
 
@@ -518,14 +518,18 @@ These are the platform-defined reports created as seed data. They are marked `is
 
 ### 6.8 AI Usage Reports
 
-*(Data source is the existing `AiUsageRecord` entity, but these are **structured non-AI reports** — they simply aggregate numeric cost/token data, NOT an AI inference)*
+*(Data source is the existing `AiUsage` entity, but these are **structured non-AI reports** — they simply aggregate numeric cost/token data, NOT an AI inference)*
+
+> **Definition — the §6.8 rows' column names are corrected to the deployed entity's own vocabulary (explicit decision)**: the rows below previously named columns that `AiUsage` does not have. The entity's actual column set is `id, organization_id, user_id, request_type, provider, model, input_tokens, output_tokens, total_tokens, latency_ms, estimated_cost_usd, success, error_code, created_at` (src/ai/entities/ai-usage.entity.ts:18-62). Three of the names the rows used do not appear in it: there is **no `operation` column** (the vocabulary is `request_type`), **no `cost` column** (it is `estimated_cost_usd`), and **no `total_cost` column** (cost is per-request in `estimated_cost_usd`, so any period total is a read-time `SUM`). `ReportExecutorService.validate()` checks column names against current entity metadata (§10), so a row declaring `total_cost` would fail validation on every execution — the same failure mode as P6-21's row. The measures are unchanged; only the names are, and they now match what the entity stores. `user_id` is a real column and is retained.
+>
+> Note that `AI Cost by Operation`'s **display name** still says "Operation" while its source column is `request_type`; that is a label, not a defect, and it is left as written. `estimated_cost_usd` is **nullable** — it is `NULL` when the request could not be priced — so cost aggregates must state how they treat unpriced rows rather than letting `SUM` drop them silently (the existing `/v1/ai/usage` endpoint documents the same behaviour: "0 when unpriced").
 
 | Report Name | Description | Source | Key Columns | Filters |
 |---|---|---|---|---|
-| **AI Cost by Operation** | Total cost per AI operation over time | `AiUsageRecord` | operation, total_cost, request_count | date_range |
+| **AI Cost by Operation** | Total cost per AI operation over time | `AiUsage` | request_type, estimated_cost_usd (`SUM`), request_count (`COUNT(*)`) | date_range |
 | **Budget Utilization** | Budget consumed vs. remaining | `AiUsageService` budget state | period, budget, consumed, remaining_pct | date_range |
-| **Token Usage Trend** | Total tokens consumed per period | `AiUsageRecord` | period, total_tokens, total_cost | date_range |
-| **Top Consumers (Users)** | Users with highest AI consumption | `AiUsageRecord` | user_id, total_requests, total_cost | date_range |
+| **Token Usage Trend** | Total tokens consumed per period | `AiUsage` | period, total_tokens (`SUM`), estimated_cost_usd (`SUM`) | date_range |
+| **Top Consumers (Users)** | Users with highest AI consumption | `AiUsage` | user_id, total_requests (`COUNT(*)`), estimated_cost_usd (`SUM`) | date_range |
 
 ---
 
