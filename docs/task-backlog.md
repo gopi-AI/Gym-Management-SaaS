@@ -1047,6 +1047,27 @@ This document contains the implementation tasks broken down by phase, with depen
   - **The first acceptance criterion is marked Met for this row only, and that is not a formality.** Re-checking the whole column while applying this correction found two more absent names in *other* rows — `billing_cycle` (Memberships row; the real column is `MembershipPlan.billing_period`) and `package_price` (PT row; the real column is `PTPackage.price`), both 0-match across `src/**`. They are the same class of defect but sit outside this ticket's row, so they are not fixed here; they travel with the PT entity-name defect found during P6-24 and are tracked together as **P6-31**, filed in the same batch as this change.
 - **Risks**: A report author scoping work from §1.2 names a column that does not exist and meets either a validation failure at execution — the failure mode P6-21's row has — or, worse, a silently wrong sign convention for points. §1.2 is the plan's own inventory of "known reportable fields", so its accuracy is what makes that claim checkable.
 
+### P6-31: §1.2 and §6.6 spell the PT entities `PtEnrollment`/`PtSession`, which do not resolve — plus two §1.2 dimension names that exist nowhere *(Open — defect)*
+- **Objective**: Correct the two PT entity names where the plan uses them as resolvable identifiers, and the two remaining §1.2 "Reportable Dimension" names that no entity declares.
+- **Dependencies**: P6-24 — found while re-checking §1.2's rows there. Same defect class as P6-23 (a name with no corresponding entity) and P6-30 (a name with no corresponding column). Independent of P6-25 and P6-28.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§1.2 PT row :34; §6.6 catalog rows :520, :522, :523; §1.2 Memberships row :29 for the dimension)
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Covered by the catalog-integrity test proposed in P6-21 — it resolves every seeded row's `source` against entity metadata and would fail on `PtSession` at seed time rather than execution time. That test is the general guard for item 1 and is still worth writing.
+- **Acceptance criteria**:
+  - Every `source` value in §6.6 resolves to a class declared in `src/**`.
+  - §1.2's PT row names entities that exist under those names, and no §1.2 row declares a "Reportable Dimension" absent from all of its declared entities.
+- **Defect detail**:
+  - **Severity 1 — execution-blocking: the entity names do not resolve.** §1.2's PT row (:34) lists `PtEnrollment` and `PtSession`, and §6.6 declares `PtSession` as the **source** of three rows — `Trainer Session Count` (:520), `Session Completion Rate` (:522) and `Trainer Utilization` (:523). The declared classes are **`PTEnrollment`** and **`PTSession`** (`@Entity('PT_PT_ENROLLMENTS')`, `@Entity('PT_PT_SESSIONS')`, src/pt/entities/). Verified against the DataSource's entity metadata, not by eye: `PTSession` → `PT_PT_SESSIONS` and `PTEnrollment` → `PT_PT_ENROLLMENTS`, while **`PtSession` and `PtEnrollment` both return `MISSING`**. Because `ReportExecutorService` resolves a row's `source` against entity metadata (§3.1.1, §10), §6.6's three rows cannot execute — the same failure mode as P6-21's and P6-23's rows, where a seeded `is_system` schema fails on every run. `TrainerCommission` (:521) is spelled correctly and is unaffected.
+  - **Severity 2 — documentation accuracy: two dimension names exist nowhere.** §1.2's Memberships row (:29) lists `billing_cycle` and its PT row (:34) lists `package_price`; both are **0-match across `src/**`**. The real columns are `MembershipPlan.billing_period` and `PTPackage.price`. Neither is execution-blocking — §1.2 is inventory, not the seed source — but both are the same class as P6-30's `points_change`/`reason`: a "Reportable Dimension" naming a column that does not exist, which is precisely what the row tells a report author to query.
+  - **Why one ticket rather than two**: both were found in the same pass, sit in the same table's rows, and are pure identifier corrections with no design decision in either. Splitting them would yield two tickets differing only in severity, which the two labelled items above record instead.
+  - **Scope of the change**: five name substitutions in the plan — `PtEnrollment`/`PtSession` in the §1.2 PT row and `PtSession` in three §6.6 source columns — plus the two dimension names. `PtSession` appears nowhere else in `docs/` (the other hits are P6-24's ticket text and the §1.2 note, both of which name it *as* the defect).
+- **Risks**: §6.6's PT rows would be seeded as system report schemas that fail on every execution, and §1.2 would keep directing report authors at columns that do not exist.
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
