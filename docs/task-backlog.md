@@ -370,6 +370,14 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Worker changes**: None
 - **Tests**:
   - Diet plan retrieval
+  - Nutrition log storage
+  - Meal template usage
+- **Acceptance criteria**:
+  - Shows assigned diet plans
+  - Lists nutrition logs
+  - Meal template details available
+  - Nutritional summary (calories, macros)
+- **Risks**: Nutrition data inaccuracies, template mismatches
 ## Phase 3: Finance/Inventory/CRM
 
 ### P3-01: Financial Ledger Read Model
@@ -407,8 +415,10 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Files/modules affected**:
   - src/finance/ (refund and credit note service)
 - **Database changes**:
-  - refunds table (completed in P1-04)
-  - credit_notes table (completed in P1-04)
+  - refunds table (NOT built in P1-04 — the Phase 1 finance migration deliberately
+    created only invoices, invoice items, payments and the invoice-number counter;
+    refunds are created by this task)
+  - credit_notes table (NOT built in P1-04, for the same reason — created by this task)
 - **API changes**:
   - POST /v1/payments/{id}/refunds (enhanced)
 ### P3-05: Inventory Management
@@ -1284,40 +1294,58 @@ This document contains the implementation tasks broken down by phase, with depen
   - Refunds processed via gateway
 - **Risks**: Security vulnerabilities, financial losses
 
-### P3-04: Tax Handling and Discounts
-- **Objective**: Implement tax calculation and discount application.
+### P3-04: Tax Handling (tax-only; discounts split to P3-04b)
+- **Objective**: Implement tax calculation. Discounts are explicitly OUT of scope for
+  this item and tracked separately as P3-04b (see below).
 - **Dependencies**: P1-04
 - **Files/modules affected**:
-  - src/finance/ (tax and discount service)
+  - src/finance/ (tax rate configuration + tax calculation)
+  - src/members/ (tax-exemption flag on the member)
 - **Database changes**:
-  - tax_lines table (completed in P1-04)
-  - Potentially tax_rates table
-  - membership_discounts table (completed in P1-03)
+  - `FINANCE_TAX_RATES` (net-new; not in the ERD) — per-organization configurable rates
+  - `FINANCE_TAX_LINES` (NOT built in P1-04 — the Phase 1 finance migration created
+    only invoices, invoice items, payments and the invoice-number counter)
+  - `MEMBERS_MEMBERS.tax_exempt` + `tax_exempt_reason` (net-new columns)
+  - membership_discounts table — MOVED to P3-04b; it was NOT built in P1-03
 - **API changes**:
   - GET /v1/tax-rates
-  - POST /v1/tax-rates (admin)
-  - Enhance invoice creation with tax/discount
+  - POST /v1/tax-rates (admin — `finance:admin`, provisioned in migration 1788965263254)
+  - Enhance invoice creation with tax
 - **Frontend changes**: None
 - **Worker changes**: None
 - **Tests**:
   - Tax calculation accuracy
-  - Discount application rules
-  - Combined tax and discount scenarios
   - Tax-exempt handling
+  - Backwards compatibility (a line without a tax_code still yields tax_amount = 0.00)
 - **Acceptance criteria**:
-  - Taxes calculated correctly per jurisdiction
-  - Discounts applied before/after tax as configured
-  - Tax-exempt members handled
-  - Tax reporting data available
+  - Tax calculated correctly from the organization's configured rates
+  - Tax-exempt members are charged no tax, and the zero-rated result is still
+    recorded as an audit row
+  - Tax reporting data available (`FINANCE_TAX_LINES`)
 - **Risks**: Tax calculation errors, compliance issues
-  - Nutrition log storage
-  - Meal template usage
+
+### P3-04b: Membership Discounts (split out of P3-04)
+- **Objective**: Implement first-class discounting on memberships.
+- **Dependencies**: P3-04
+- **Files/modules affected**:
+  - src/memberships/ (discount definition — Membership owns it)
+  - src/finance/ (discount application on the invoice)
+- **Database changes**:
+  - membership_discounts table (NOT built in P1-03 — there is no `MembershipDiscount`
+    entity or discount service in the codebase; verified 2026-09-17)
+- **API changes**:
+  - POST /v1/memberships/{id}/discount
+  - Enhance invoice creation with discount application
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Discount application rules
+  - Combined tax and discount scenarios (including the configurable
+    discount-before-tax vs discount-after-tax order)
 - **Acceptance criteria**:
-  - Shows assigned diet plans
-  - Lists nutrition logs
-  - Meal template details available
-  - Nutritional summary (calories, macros)
-- **Risks**: Nutrition data inaccuracies, template mismatches
+  - Discounts applied before/after tax as configured
+  - Discount definitions owned by Membership, applied by Finance
+- **Risks**: Discount calculation errors, unintended revenue leakage
 
 ### P2-07: Measurements Tab API
 - **Objective**: Implement API for body measurements tracking tab.
