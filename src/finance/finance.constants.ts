@@ -60,6 +60,44 @@ export type PaymentStatus = (typeof PAYMENT_STATUS)[keyof typeof PAYMENT_STATUS]
 export const PAYMENT_METHODS = ['cash', 'card', 'bank_transfer', 'other'] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
+/**
+ * P3-02 — refund states (`FINANCE_REFUNDS.status`).
+ *
+ * Mirrors `PAYMENT_STATUS` because a refund is the inverse of a payment and the
+ * two are reported side by side. The lifecycle is `pending -> succeeded | failed`.
+ *
+ * In P3-02 every refund is written directly as `succeeded`: refunds are
+ * staff-initiated and recorded manually (see §15 Q5), so there is no provider call
+ * to wait on. `pending` exists in the value set — and in the schema — so P3-03 can
+ * drive a gateway-initiated refund through the same column without a migration.
+ */
+export const REFUND_STATUS = {
+  PENDING: 'pending',
+  SUCCEEDED: 'succeeded',
+  FAILED: 'failed',
+} as const;
+
+export type RefundStatus = (typeof REFUND_STATUS)[keyof typeof REFUND_STATUS];
+
+/**
+ * P3-02 — credit-note states (`FINANCE_CREDIT_NOTES.status`).
+ *
+ * Deliberately NOT the same value set as a refund. A credit note moves no money,
+ * so there is nothing for a provider to accept or reject: it is `issued` the
+ * moment it is written. `voided` exists so a mistaken credit note can be reversed
+ * without deleting an audit record — finance records are append-only in this
+ * codebase, and a deleted credit note would silently restore an invoice's balance.
+ */
+export const CREDIT_NOTE_STATUS = {
+  ISSUED: 'issued',
+  VOIDED: 'voided',
+} as const;
+
+export type CreditNoteStatus = (typeof CREDIT_NOTE_STATUS)[keyof typeof CREDIT_NOTE_STATUS];
+
+/** Credit-note states that still reduce an invoice balance. */
+export const ACTIVE_CREDIT_NOTE_STATUSES: string[] = [CREDIT_NOTE_STATUS.ISSUED];
+
 /** Current event version for finance events. Mirrors EVENT_VERSIONS.V1. */
 export const FINANCE_EVENT_VERSION = 'v1';
 
@@ -75,6 +113,11 @@ export const FINANCE_EVENT_TYPES = {
   INVOICE_CREATED: 'InvoiceCreated',
   PAYMENT_SUCCEEDED: 'PaymentSucceeded',
   PAYMENT_FAILED: 'PaymentFailed',
+  // P3-02. Unversioned, matching the finance convention above (the version is
+  // carried separately by FINANCE_EVENT_VERSION). Both names were already
+  // reserved in `docs/domain-map.md` line 96.
+  REFUND_ISSUED: 'RefundIssued',
+  CREDIT_NOTE_ISSUED: 'CreditNoteIssued',
 } as const;
 
 /** Human-readable message for each check-in / payment blocking state. */

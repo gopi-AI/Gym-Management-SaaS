@@ -167,6 +167,41 @@ DTO or HTTP endpoint in `src/memberships`, so nothing publishes it yet.**
     ]
   }
   ```
+- `RefundIssued.v1`
+  ```json
+  {
+    "refundId": "uuid",
+    "paymentId": "uuid",
+    "invoiceId": "uuid",
+    "amount": "decimal",
+    "reason": "string",
+    "refundDate": "timestamp",
+    "status": "string"
+  }
+  ```
+  A refund attaches to a **payment**, not an invoice; `invoiceId` is denormalised
+  from the refunded payment so consumers do not have to join back to it. `status`
+  is `succeeded` for every refund P3-02 writes, because P3-02 refunds are recorded
+  manually; `pending` is reserved for the gateway-initiated path P3-03 adds.
+- `CreditNoteIssued.v1`
+  ```json
+  {
+    "creditNoteId": "uuid",
+    "invoiceId": "uuid",
+    "netAmount": "decimal",
+    "taxAmount": "decimal",
+    "grossAmount": "decimal",
+    "reason": "string",
+    "issuedDate": "timestamp",
+    "status": "string"
+  }
+  ```
+  A credit note reduces an **invoice** without money moving. The net/tax/gross
+  breakdown is carried on the event because it is the tax reversal: `taxAmount` is
+  the portion of previously applied tax this note reverses, derived from the
+  invoice's own applied rate at creation time. `FINANCE_TAX_LINES` is never
+  modified by a credit note, so `taxAmount` here is the authoritative record of
+  the reversal.
 
 ### Attendance Events
 - `AttendanceEventRecorded.v1`

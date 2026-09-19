@@ -3,6 +3,8 @@ import { getDataSourceToken, getRepositoryToken, TypeOrmModule } from '@nestjs/t
 import { Invoice } from './entities/invoice.entity';
 import { InvoiceItem } from './entities/invoice-item.entity';
 import { Payment } from './entities/payment.entity';
+import { Refund } from './entities/refund.entity';
+import { CreditNote } from './entities/credit-note.entity';
 import { InvoiceNumberCounter } from './entities/invoice-number-counter.entity';
 import { TaxRate } from './entities/tax-rate.entity';
 import { TaxLine } from './entities/tax-line.entity';
@@ -10,11 +12,15 @@ import { InvoiceNumberService } from './services/invoice-number.service';
 import { InvoicesService } from './services/invoices.service';
 import { TaxRatesService } from './services/tax-rates.service';
 import { PaymentsService } from './services/payments.service';
+import { RefundsService } from './services/refunds.service';
+import { CreditNotesService } from './services/credit-notes.service';
 import { PaymentRetryService } from './services/payment-retry.service';
 import { PAYMENT_GATEWAY, PaymentGatewayPort, UnavailablePaymentGateway } from './services/payment-gateway.port';
 import { InvoicesController } from './controllers/invoices.controller';
 import { TaxRatesController } from './controllers/tax-rates.controller';
 import { PaymentsController } from './controllers/payments.controller';
+import { RefundsController } from './controllers/refunds.controller';
+import { CreditNotesController } from './controllers/credit-notes.controller';
 import { MemberOutstandingBalanceController } from './controllers/member-outstanding-balance.controller';
 import { FinancialReportsController } from './controllers/financial-reports.controller';
 import { LedgerService } from './services/ledger.service';
@@ -47,12 +53,16 @@ describe('FinanceModule wiring', () => {
           InvoiceNumberCounter,
           TaxRate,
           TaxLine,
+          Refund,
+          CreditNote,
         ]),
       ],
       controllers: [
         InvoicesController,
         TaxRatesController,
         PaymentsController,
+        RefundsController,
+        CreditNotesController,
         MemberOutstandingBalanceController,
         FinancialReportsController,
       ],
@@ -61,6 +71,8 @@ describe('FinanceModule wiring', () => {
         InvoicesService,
         TaxRatesService,
         PaymentsService,
+        RefundsService,
+        CreditNotesService,
         PaymentRetryService,
         LedgerService,
         UnavailablePaymentGateway,
@@ -87,6 +99,10 @@ describe('FinanceModule wiring', () => {
       .useValue({})
       .overrideProvider(getRepositoryToken(TaxLine))
       .useValue({})
+      .overrideProvider(getRepositoryToken(Refund))
+      .useValue({})
+      .overrideProvider(getRepositoryToken(CreditNote))
+      .useValue({})
       .compile();
   });
 
@@ -95,14 +111,18 @@ describe('FinanceModule wiring', () => {
     expect(module.get(InvoicesService)).toBeDefined();
     expect(module.get(TaxRatesService)).toBeDefined();
     expect(module.get(PaymentsService)).toBeDefined();
+    expect(module.get(RefundsService)).toBeDefined();
+    expect(module.get(CreditNotesService)).toBeDefined();
     expect(module.get(PaymentRetryService)).toBeDefined();
     expect(module.get(LedgerService)).toBeDefined();
   });
 
-  it('provides every finance controller, including the P3-01 ledger and P3-04 tax routes', () => {
+  it('provides every finance controller, including the P3-01 ledger, P3-04 tax and P3-02 refund/credit-note routes', () => {
     expect(module.get(InvoicesController)).toBeDefined();
     expect(module.get(TaxRatesController)).toBeDefined();
     expect(module.get(PaymentsController)).toBeDefined();
+    expect(module.get(RefundsController)).toBeDefined();
+    expect(module.get(CreditNotesController)).toBeDefined();
     expect(module.get(MemberOutstandingBalanceController)).toBeDefined();
     expect(module.get(FinancialReportsController)).toBeDefined();
   });

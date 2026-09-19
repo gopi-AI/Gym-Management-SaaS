@@ -8,17 +8,23 @@ import { InvoiceItem } from './entities/invoice-item.entity';
 import { TaxRate } from './entities/tax-rate.entity';
 import { TaxLine } from './entities/tax-line.entity';
 import { Payment } from './entities/payment.entity';
+import { Refund } from './entities/refund.entity';
+import { CreditNote } from './entities/credit-note.entity';
 import { InvoiceNumberCounter } from './entities/invoice-number-counter.entity';
 import { InvoiceNumberService } from './services/invoice-number.service';
 import { InvoicesService } from './services/invoices.service';
 import { TaxRatesService } from './services/tax-rates.service';
 import { PaymentsService } from './services/payments.service';
+import { RefundsService } from './services/refunds.service';
+import { CreditNotesService } from './services/credit-notes.service';
 import { PaymentRetryService } from './services/payment-retry.service';
 import { LedgerService } from './services/ledger.service';
 import { PAYMENT_GATEWAY, UnavailablePaymentGateway } from './services/payment-gateway.port';
 import { InvoicesController } from './controllers/invoices.controller';
 import { TaxRatesController } from './controllers/tax-rates.controller';
 import { PaymentsController } from './controllers/payments.controller';
+import { RefundsController } from './controllers/refunds.controller';
+import { CreditNotesController } from './controllers/credit-notes.controller';
 import { MemberOutstandingBalanceController } from './controllers/member-outstanding-balance.controller';
 import { FinancialReportsController } from './controllers/financial-reports.controller';
 
@@ -28,6 +34,9 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
  * (Phase 3 / P3-04): tax handling — `TaxRatesService` + `TaxRatesController`, and
  * tax resolution inside `InvoicesService.persistInvoice`. Discounts are NOT here:
  * they were split out of P3-04 into P3-04b.
+ * (Phase 3 / P3-02): refunds and credit notes — `RefundsService` +
+ * `CreditNotesService`. Both are intra-module: §13 requires no new import for
+ * them, and `PAYMENT_GATEWAY` is deliberately NOT used by refunds in P3-02.
  *
  * `PAYMENT_GATEWAY` is bound to `UnavailablePaymentGateway` because Phase 1 has
  * no payment provider — money is taken at the desk and recorded directly as a
@@ -43,6 +52,8 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
       InvoiceNumberCounter,
       TaxRate,
       TaxLine,
+      Refund,
+      CreditNote,
     ]),
     OutboxModule,
     TenancyModule,
@@ -62,6 +73,8 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
     InvoicesController,
     TaxRatesController,
     PaymentsController,
+    RefundsController,
+    CreditNotesController,
     MemberOutstandingBalanceController,
     FinancialReportsController,
   ],
@@ -70,6 +83,8 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
     InvoicesService,
     TaxRatesService,
     PaymentsService,
+    RefundsService,
+    CreditNotesService,
     PaymentRetryService,
     LedgerService,
     UnavailablePaymentGateway,
@@ -79,11 +94,16 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
   // generates its invoice inside the membership transaction (MembershipsModule).
   // TaxRatesService is exported so a later task (P3-04b discounts, §5 recurring
   // billing) can resolve rates without re-implementing the in-force rule.
+  // RefundsService/CreditNotesService are exported so P3-03 (gateway-initiated
+  // refunds) and P3-06 (commission clawback) can build on them rather than
+  // re-implementing the balance invariants.
   exports: [
     InvoiceNumberService,
     InvoicesService,
     TaxRatesService,
     PaymentsService,
+    RefundsService,
+    CreditNotesService,
     PaymentRetryService,
     LedgerService,
     TypeOrmModule,
