@@ -13,6 +13,14 @@ import {
 import { OUTSTANDING_INVOICE_STATUSES, PAYMENT_STATUS } from '../../finance/finance.constants';
 
 /**
+ * The era migration 1788965263253 renders. It created the payments-only views, so
+ * every builder call in this file passes this — otherwise the spec would assert
+ * the CURRENT SQL while claiming to verify 253, which is precisely how the
+ * fresh-database abort slipped through.
+ */
+const P301_ERA = { includeP302Terms: false } as const;
+
+/**
  * Verification of the P3-01 ledger read-model migration.
  *
  * This file lives in `src/migrations/__specs__/` on purpose: `src/migrations/*`
@@ -96,7 +104,7 @@ describe('CreateFinanceLedgerViews1788965263253', () => {
 
     it('renders the outstanding status list from OUTSTANDING_INVOICE_STATUSES', () => {
       const rendered = OUTSTANDING_INVOICE_STATUSES.map((status) => `'${status}'`).join(', ');
-      const memberView = buildMemberOutstandingViewSql();
+      const memberView = buildMemberOutstandingViewSql(P301_ERA);
 
       expect(memberView).toContain(`IN (${rendered})`);
       // paid/void must never be counted as money owed.
@@ -106,12 +114,12 @@ describe('CreateFinanceLedgerViews1788965263253', () => {
 
     it('counts only succeeded payments as money received', () => {
       expect(SQL_SUCCEEDED_PAYMENT).toBe(`'${PAYMENT_STATUS.SUCCEEDED}'`);
-      expect(buildMemberOutstandingViewSql()).toContain(SQL_SUCCEEDED_PAYMENT);
-      expect(buildRevenueByPeriodViewSql()).toContain(SQL_SUCCEEDED_PAYMENT);
+      expect(buildMemberOutstandingViewSql(P301_ERA)).toContain(SQL_SUCCEEDED_PAYMENT);
+      expect(buildRevenueByPeriodViewSql(P301_ERA)).toContain(SQL_SUCCEEDED_PAYMENT);
     });
 
     it('groups the by-status view by every ageing bucket the API can report', () => {
-      const sql = buildOutstandingByStatusViewSql();
+      const sql = buildOutstandingByStatusViewSql(P301_ERA);
 
       for (const bucket of AGEING_BUCKET_ORDER) {
         expect(sql).toContain(`'${bucket}'`);
@@ -120,12 +128,42 @@ describe('CreateFinanceLedgerViews1788965263253', () => {
     });
 
     it('derives the member balance from invoices and payments, never a denormalised column', () => {
-      const sql = buildMemberOutstandingViewSql();
+      const sql = buildMemberOutstandingViewSql(P301_ERA);
 
       expect(sql).toContain('"FINANCE_INVOICES"');
       expect(sql).toContain('"FINANCE_PAYMENTS"');
       // Phase 1 deliberately kept `amount_paid` off the invoice table.
       expect(sql).not.toMatch(/amount_paid/);
+    });
+
+    it('references NO P3-02 table: they do not exist yet at this point in the sequence', () => {
+      // THE REGRESSION TEST for the fresh-database abort.
+      //
+      // 253 sorts BELOW 258, which creates FINANCE_CREDIT_NOTES / FINANCE_REFUNDS.
+      // When P3-02 added credit and refund terms to the shared builders, this
+      // migration started rendering SQL against those tables and `migration:run`
+      // died on a fresh database with:
+      //
+      //   Failed, error: relation "FINANCE_CREDIT_NOTES" does not exist
+      //
+      // Every unit assertion still passed, because they only inspect the emitted
+      // strings. This one fails if the era is ever un-pinned.
+      const rendered = runner.statements.join('\n');
+
+      expect(rendered).not.toContain('FINANCE_CREDIT_NOTES');
+      expect(rendered).not.toContain('FINANCE_REFUNDS');
+      // Belt and braces: the builders must agree with what the migration emitted.
+      expect(buildMemberOutstandingViewSql(P301_ERA)).not.toContain('FINANCE_CREDIT_NOTES');
+      expect(buildMemberOutstandingViewSql(P301_ERA)).not.toContain('FINANCE_REFUNDS');
+      expect(buildRevenueByPeriodViewSql(P301_ERA)).not.toContain('FINANCE_REFUNDS');
+      expect(buildOutstandingByStatusViewSql(P301_ERA)).not.toContain('FINANCE_CREDIT_NOTES');
+    });
+
+    it('omits the total_credited column the P3-02 era adds', () => {
+      // Same reason as above: the column comes from a table that does not exist
+      // yet, so the P3-01-era view must not expose it.
+      expect(buildMemberOutstandingViewSql(P301_ERA)).not.toContain('total_credited');
+      expect(buildOutstandingByStatusViewSql(P301_ERA)).not.toContain('total_credited');
     });
 
     it('writes nothing to any base table', () => {
@@ -164,9 +202,9 @@ describe('CreateFinanceLedgerViews1788965263253', () => {
 
   it('up is re-runnable because every view is CREATE OR REPLACE', () => {
     const statements = [
-      buildMemberOutstandingViewSql(),
-      buildRevenueByPeriodViewSql(),
-      buildOutstandingByStatusViewSql(),
+      buildMemberOutstandingViewSql(P301_ERA),
+      buildRevenueByPeriodViewSql(P301_ERA),
+      buildOutstandingByStatusViewSql(P301_ERA),
     ];
 
     for (const statement of statements) {

@@ -73,9 +73,21 @@ export class CreateFinanceLedgerViews1788965263253 implements MigrationInterface
             CREATE INDEX "IDX_finance_invoices_org_member_status"
             ON "FINANCE_INVOICES" ("organization_id", "member_id", "status")
         `);
-    await queryRunner.query(buildMemberOutstandingViewSql());
-    await queryRunner.query(buildRevenueByPeriodViewSql());
-    await queryRunner.query(buildOutstandingByStatusViewSql());
+    // P3-01-era rendering. These three definitions predate FINANCE_CREDIT_NOTES
+    // and FINANCE_REFUNDS, and must NOT reference them: this migration sorts BELOW
+    // 1788965263258, which creates those tables, so a reference here aborts
+    // `migration:run` on a fresh database with
+    //   relation "FINANCE_CREDIT_NOTES" does not exist
+    // The credit-aware definitions arrive in a later migration
+    // (1788965263259), which replaces these views in place.
+    //
+    // Do NOT drop this option to "modernise" the SQL: replaying a migration must
+    // produce the statements it historically created. New view SQL goes behind a
+    // new option and a new migration.
+    const p301Era = { includeP302Terms: false };
+    await queryRunner.query(buildMemberOutstandingViewSql(p301Era));
+    await queryRunner.query(buildRevenueByPeriodViewSql(p301Era));
+    await queryRunner.query(buildOutstandingByStatusViewSql(p301Era));
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
