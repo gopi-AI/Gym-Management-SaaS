@@ -430,7 +430,7 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Files/modules affected**:
   - src/finance/ (refund and credit note service)
 - **Database changes**:
-  - refunds table (`FINANCE_REFUNDS`) — **create it**: P1-04 did not, despite listing it (see the note after P6-26), and P6-21's resolution (A) depends on this entity existing with `refund_date`, `amount`, `reason` and `organization_id`.
+  - refunds table (`FINANCE_REFUNDS`) — **already created by P6-01** with `refund_date`, `amount`, `reason` and `organization_id`; P1-04 did not deliver it despite listing it (see the note after P6-26). P3-02 extends it with the lifecycle columns rather than creating it.
   - credit_notes table — **create it**: likewise not delivered by P1-04.
 - **API changes**:
   - POST /v1/payments/{id}/refunds (enhanced)
@@ -793,6 +793,14 @@ This document contains the implementation tasks broken down by phase, with depen
   - **Three false schema claims are corrected in the same commit, because (A) is hollow without them**: P3-02's Database changes said the `refunds` table was "completed in P1-04", and P1-04 listed it as delivered. Neither created it, so **no ticket was scheduled to**. P3-02 now explicitly **creates** `refunds` and `credit_notes`, and P1-04's two entries are marked not delivered. The note after P6-26, which recorded those claims, is updated to match.
   - **What this closes, and what it does not**: it closes the `Refund` half of P6-24 — §1.2's Finance row is now accurate for that name, needed no edit there, and the new §1.2 note records it — leaving `plan_name` and `PaymentAllocation` open in P6-24. It does **not** make refunds readable or the row executable today: `src/reports/` is not implemented, so no §6 row is executable yet, affected or not. The catalog-integrity test under **Tests** remains the general guard and is still worth writing.
 - **Risks**: A consumer reading §1.2 or §6.2 as a description of deployed schema will plan work against a `Refund` table that does not exist; and any future seed job that ignores the §6.2/§12 exclusions would insert a system schema that fails on every execution.
+
+> **Note — `FINANCE_REFUNDS` and `REPORTS_MATERIALIZED_VIEWS` were built by P6-01, not by P3-02 or a later ticket**: both shipped with the rest of the Phase 6.0 schema (`1788965263256-CreateFinanceRefundsTable.ts`, `1788965263255-CreateMaterializedViewsTable.ts`), so three statements now describe an ownership split that did not happen.
+>
+> **(1)** P6-21's Applied block above calls the entity "P3-02's deliverable", and §6.2's callout carried a paragraph headed *"What remains outstanding, and it is P3-02's"*. The table and entity now exist, so that paragraph is superseded: the row is seedable from **deployed metadata**, not merely by decision. §6.2's paragraph has since been rewritten to say so.
+>
+> **(2)** P3-02's Database changes said to **create** the `refunds` table (`FINANCE_REFUNDS`); it already exists, so that line now says so and P3-02's remaining work is the refund **lifecycle** — the service, the API, and any columns beyond the catalog minimum, since the table deliberately carries only `organization_id`, `refund_date`, `amount`, `reason` and the audit stamps. `credit_notes` is a different matter and still needs creating.
+>
+> **(3)** §2.1's module tree lists two entities and no `types/` directory, because it predates §3.3's adoption of the materialized-view registry. The shipped layout has three entities (`report-schema`, `report-job`, `materialized-view`) plus `types/query-definition.ts`. **That tree is knowingly left stale** — the plan-side edit would insert three lines and shift every line below it, invalidating roughly twenty line-number citations across this file for a cosmetic diagram. Fold it in whenever §2.1 is next touched for another reason.
 
 ### P6-22: "Budget Utilization" report is sourced from a service and process configuration, not a queryable entity *(Applied)*
 - **Objective**: Resolve the `Budget Utilization` catalog row (§6.8 of `docs/phase6-scoping-plan.md`), whose declared source is `AiUsageService` budget state rather than a TypeORM entity, so `ReportExecutorService` has nothing to resolve.
