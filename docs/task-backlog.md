@@ -1009,6 +1009,27 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Decision detail**: Decision A1 made this table the source of truth for which views exist, but its shape holds only identity and last refresh — cadence and trigger are in §7.3, debounce in a Redis lock. Options: **(A)** extend the table (runtime-editable cadence, event-trigger flag, debounce seconds, enabled) — a DB-plan shape change, with the worker reading per-row config and an operator able to disable a view without a deploy; or **(B)** keep cadence in code permanently and amend §7.4 to state that the table is a registry only, so the boundary is explicit. (B) is smaller; (A) is what makes §7.4's own "runtime-editable" question answerable.
 - **Risks**: Registered views whose refresh behaviour is invisible in the registry invites the assumption that editing a row controls refresh cadence; a misread operator would expect a change to take effect and see none.
 
+### P6-30: §1.2's Loyalty row lists two column names that `LoyaltyTransaction` does not have *(Open — defect)*
+- **Objective**: Correct §1.2's Loyalty row, whose "Reportable Dimensions" name `points_change` and `reason` while `LoyaltyTransaction` stores those values as `points` and `description`.
+- **Dependencies**: P6-25 — the ticket that inspected `LoyaltyTransaction`'s full column set while resolving §6.7, and found this. Related to P6-24, which covers the same defect class in the table's sibling rows (`plan_name` in Memberships, `Refund`/`PaymentAllocation` in Finance). Independent of P6-21 and P6-22.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§1.2 Loyalty row :35)
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Covered by the catalog-integrity test proposed in P6-21, extended as P6-24's Tests section describes — resolving §1.2's names against entity metadata. This ticket adds the **"Reportable Dimensions"** column to what that test must check, since P6-24's wording names only the "Key Entities" column.
+- **Acceptance criteria**:
+  - Every value in §1.2's "Reportable Dimensions" column either exists on one of the row's declared entities under that name, or is explicitly marked as derived.
+  - §1.2's Loyalty row uses the entity's own vocabulary.
+- **Defect detail**:
+  - §1.2's Loyalty row declares its key entities as `LoyaltyAccount` and `LoyaltyTransaction`, and lists `transaction_type, points_change, reason` as reportable dimensions (docs/phase6-scoping-plan.md:35). `transaction_type` is a real column. **`points_change` and `reason` are not**: `LoyaltyTransaction`'s full column set is `id, account_id, transaction_type, points, remaining_points, reference_type, reference_id, description, expires_at, created_at` (src/loyalty/entities/loyalty-transaction.entity.ts:27-72). The values meant are `points` and `description`. `points_change` appears nowhere in `src/**` — 0 matches.
+  - **The `points_change` name is worse than a mismatch: it asserts a sign convention the column does not have.** `points` is documented as "Absolute number of points in this transaction (always positive)" (:43-45), with direction carried by `transaction_type` (`earn`, `adjust`, `expire`, `redeem` — src/migrations/1788965263250-AddLoyaltySchema.ts:52-53). An implementer reading §1.2 would write a signed-delta aggregation, or a `SUM(points)` that nets earnings against redemptions, and produce a number that silently disagrees with the ledger's own semantics. That is why this is filed rather than noted as a naming nit.
+  - Same class as §1.2's `plan_name`, which P6-24 records as a derived value presented as a stored column. It was not filed when P6-24 was written because P6-24 was scoped to the Memberships and Finance rows; the Loyalty row had not been examined column-by-column until P6-25 did exactly that.
+  - The row's Measures column (`total points, points burned, redemption rate, active accounts`) is **unaffected** — those are aggregates, not column names — and "active accounts" now matches §6.7's redefined row (P6-25, resolution D). The Tenancy column (`organization_id, member_id`) also becomes accurate for `LoyaltyTransaction` under that same resolution, since it now carries `organization_id`.
+- **Risks**: A report author scoping work from §1.2 names a column that does not exist and meets either a validation failure at execution — the failure mode P6-21's row has — or, worse, a silently wrong sign convention for points. §1.2 is the plan's own inventory of "known reportable fields", so its accuracy is what makes that claim checkable.
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
