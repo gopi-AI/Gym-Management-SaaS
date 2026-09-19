@@ -5,9 +5,11 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository, In } from 'typeorm';
 import { Invoice } from '../entities/invoice.entity';
 import { InvoiceItem } from '../entities/invoice-item.entity';
+import { TaxLine } from '../entities/tax-line.entity';
+import { TaxRate } from '../entities/tax-rate.entity';
 import { Payment } from '../entities/payment.entity';
 import { CreateInvoiceDto, InvoiceLineItemDto } from '../dto/create-invoice.dto';
 import { QueryInvoiceDto } from '../dto/query-invoice.dto';
@@ -15,12 +17,17 @@ import { TenantContextService } from '../../shared/tenant/tenant-context.service
 import { OutboxService } from '../../shared/outbox/outbox.service';
 import { endOfRange } from '../../shared/utils/date-range';
 import { InvoiceNumberService } from './invoice-number.service';
+import { TaxRatesService } from './tax-rates.service';
 import {
   FINANCE_EVENT_VERSION,
   FINANCE_EVENT_TYPES,
   INVOICE_STATUS,
   OUTSTANDING_INVOICE_STATUSES,
   PAYMENT_STATUS,
+  TAX_EXEMPT_NAME,
+  TaxedLineAmounts,
+  computeInvoiceTotals,
+  computeLineTax,
   toMoney,
   sumMoney,
 } from '../finance.constants';
@@ -66,10 +73,12 @@ export interface MembershipSaleInvoiceInput {
   manager: EntityManager;
 }
 
-/** An invoice together with its lines and its derived payment balance. */
+/** An invoice together with its lines, its applied tax and its derived payment balance. */
 export interface InvoiceWithDetail {
   invoice: Invoice;
   items: InvoiceItem[];
+  /** P3-04: one row per taxed line; empty for an untaxed invoice. */
+  tax_lines: TaxLine[];
   amount_paid: string;
   outstanding_amount: string;
 }
@@ -91,11 +100,17 @@ export class InvoicesService {
     private readonly invoiceItemRepository: Repository<InvoiceItem>,
     @InjectRepository(Payment)
     private readonly paymentRepository: Repository<Payment>,
+    @InjectRepository(TaxLine)
+    private readonly taxLineRepository: Repository<TaxLine>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly tenantContextService: TenantContextService,
     private readonly outboxService: OutboxService,
     private readonly invoiceNumberService: InvoiceNumberService,
+    // P3-04: rates are resolved through the service that owns the rates table, so
+    // the invoice path never queries FINANCE_TAX_RATES directly and the
+    // "which rates are in force" rule exists in exactly one place.
+    private readonly taxRatesService: TaxRatesService,
   ) {}
 
   /** Authorized organization, mirroring MembershipsService.resolveAuthorizedOrg. */
@@ -123,6 +138,34 @@ export class InvoicesService {
         'Member not found or does not belong to the authorized organization',
       );
     }
+  }
+
+  /**
+   * P3-04 — is the member tax-exempt? (§15 Q7: the flag lives on the member.)
+   *
+   * Read inside the caller's transaction so the exemption used for the tax
+   * calculation is the one committed with the invoice; reading through the ambient
+   * repository could observe a concurrent PATCH and tax the invoice under a rule
+   * that was never in force.
+   *
+   * A member row that has vanished between validation and this read is treated as
+   * non-exempt: `ensureMemberBelongsToOrg` has already rejected a genuinely unknown
+   * member, so reaching the fallback means the member was deleted mid-flight, and
+   * the safe default for a tax decision is "no exemption" — charging tax that was
+   * not owed is a recoverable billing error, whereas untaxed revenue is not.
+   */
+  private async isMemberTaxExempt(
+    memberId: string,
+    organizationId: string,
+    manager: EntityManager,
+  ): Promise<boolean> {
+    const row: { tax_exempt: boolean } | undefined = await manager
+      .createQueryBuilder()
+      .select('m.tax_exempt', 'tax_exempt')
+      .from('MEMBERS_MEMBERS', 'm')
+      .where('m.id = :id AND m.organization_id = :orgId', { id: memberId, orgId: organizationId })
+      .getRawOne();
+    return row?.tax_exempt === true;
   }
 
   private async ensureMembershipBelongsToOrg(
@@ -275,9 +318,26 @@ export class InvoicesService {
     const totals = await this.paymentTotalsByInvoice(organizationId, [invoice.id]);
     const amountPaid = totals.get(invoice.id) ?? '0.00';
 
+    // P3-04: the applied tax is returned alongside the lines so a caller can see
+    // WHY the header's tax_amount is what it is. §4 requires the applied result to
+    // be recorded; reading it back is what makes that record useful. Scoped by
+    // `invoice_item_id IN (...)` rather than by organization, so the query touches
+    // only this invoice's rows.
+    const taxLines =
+      items.length === 0
+        ? []
+        : await this.taxLineRepository.find({
+            where: {
+              organization_id: organizationId,
+              invoice_item_id: In(items.map((item) => item.id)),
+            },
+            order: { tax_name: 'ASC' },
+          });
+
     return {
       invoice,
       items,
+      tax_lines: taxLines,
       amount_paid: amountPaid,
       outstanding_amount: InvoicesService.outstanding(invoice.total_amount, amountPaid),
     };
@@ -345,7 +405,9 @@ export class InvoicesService {
     const amountPaid = totals.get(detail.invoice.id) ?? '0.00';
 
     return {
-      ...detail,
+      invoice: detail.invoice,
+      items: detail.items,
+      tax_lines: detail.taxLines,
       amount_paid: amountPaid,
       outstanding_amount: InvoicesService.outstanding(detail.invoice.total_amount, amountPaid),
     };
@@ -365,7 +427,7 @@ export class InvoicesService {
    */
   async createForMembershipSale(
     input: MembershipSaleInvoiceInput,
-  ): Promise<{ invoice: Invoice; items: InvoiceItem[] }> {
+  ): Promise<{ invoice: Invoice; items: InvoiceItem[]; taxLines: TaxLine[] }> {
     return this.persistInvoice(input.manager, {
       organizationId: input.organizationId,
       memberId: input.memberId,
@@ -428,18 +490,90 @@ export class InvoicesService {
     });
   }
 
-  /** Subtotal, tax and total for a set of lines. Tax is out of scope (always 0.00). */
-  private static computeTotals(items: InvoiceLineItemDto[]): {
-    subtotal: string;
-    taxAmount: string;
-    totalAmount: string;
-  } {
-    const subtotal = sumMoney(items.map((item) => Number(item.quantity) * Number(item.unit_price)));
-    // TODO(phase-2): compute tax per tax_code. Until then tax_amount is 0.00, so
-    // the total stays arithmetically consistent with subtotal + tax_amount.
-    const taxAmount = toMoney(0);
-    return { subtotal, taxAmount, totalAmount: sumMoney([subtotal, taxAmount]) };
+  /**
+   * P3-04 — resolve tax for every line and roll the invoice totals up.
+   *
+   * Replaces the Phase 1 `computeTotals` stub that always returned `0.00` tax.
+   * The arithmetic itself is NOT here: it is `computeLineTax` /
+   * `computeInvoiceTotals` in `finance.constants.ts`, next to `toMoney()` /
+   * `sumMoney()`, because §4 requires all money arithmetic to round to 2 decimals
+   * in exactly one place.
+   *
+   * Backwards compatibility (§4): a line with NO `tax_code` is not taxed and
+   * produces no tax row, so every Phase 1 caller keeps producing `tax_amount =
+   * 0.00` byte-for-byte. A line WITH a `tax_code` that does not resolve to an
+   * active rate is REJECTED rather than treated as zero-rated — see
+   * `TaxRatesService.resolveActiveRates`.
+   *
+   * Exemption (§15 Q7) is per member, so it is applied to every line at once. An
+   * exempt member still gets a tax row per taxed line, with `tax_rate` and
+   * `tax_amount` both `0.00` and `tax_name` `Tax exempt`, because §4 requires that
+   * "a zero-rated line is a real audit row, not a missing one".
+   */
+  private static async computeTaxedLines(
+    organizationId: string,
+    lineItems: InvoiceLineItemDto[],
+    isMemberTaxExempt: boolean,
+    at: Date,
+    manager: EntityManager,
+    taxRatesService: TaxRatesService,
+  ): Promise<{ lines: TaxedLineAmounts[]; taxLines: Array<{ lineIndex: number; taxLine: Partial<TaxLine> }> }> {
+    const requestedCodes = lineItems.map((line) => line.tax_code ?? '');
+    const rates = await taxRatesService.resolveActiveRates(
+      organizationId,
+      requestedCodes,
+      at,
+      manager,
+    );
+
+    const unresolved = TaxRatesService.unresolvedCodes(requestedCodes, rates);
+    if (unresolved.length > 0) {
+      throw new BadRequestException(
+        `Unknown or inactive tax_code(s): ${unresolved.join(', ')}`,
+      );
+    }
+
+    const lines: TaxedLineAmounts[] = [];
+    // Paired with the index of the line item it belongs to: a tax row cannot be
+    // written until its invoice item has an id, so the association is resolved
+    // after the items are saved rather than guessed from array positions.
+    const taxLines: Array<{ lineIndex: number; taxLine: Partial<TaxLine> }> = [];
+
+    for (const [lineIndex, line] of lineItems.entries()) {
+      const lineTotal = Number(line.quantity) * Number(line.unit_price);
+      const code = (line.tax_code ?? '').toUpperCase();
+      const rate = code ? rates.get(code) : undefined;
+
+      // No tax_code at all -> no tax row and no tax, preserving Phase 1 behaviour.
+      if (!rate) {
+        lines.push(computeLineTax({ lineTotal, ratePercent: 0, isInclusive: false }));
+        continue;
+      }
+
+      const taxed = computeLineTax({
+        lineTotal,
+        ratePercent: rate.rate,
+        isInclusive: rate.is_inclusive,
+        isExempt: isMemberTaxExempt,
+      });
+      lines.push(taxed);
+
+      taxLines.push({
+        lineIndex,
+        taxLine: {
+          organization_id: organizationId,
+          // The rate as APPLIED is snapshotted, never a live reference to the rate
+          // row: editing a rate must not change an invoice already issued.
+          tax_name: isMemberTaxExempt ? TAX_EXEMPT_NAME : rate.name,
+          tax_rate: isMemberTaxExempt ? toMoney(0) : rate.rate,
+          tax_amount: taxed.taxAmount,
+        },
+      });
+    }
+
+    return { lines, taxLines };
   }
+
 
   /** Default payment terms: due DEFAULT_PAYMENT_TERM_DAYS after issue. */
   private static defaultDueDate(from: Date = new Date()): Date {
@@ -449,9 +583,21 @@ export class InvoicesService {
   }
 
   /**
-   * Write an invoice + its line items + its `InvoiceCreated` event on the
-   * caller's transaction. Shared by the explicit and the sale-driven creation
-   * paths so the two can never diverge.
+   * Write an invoice + its line items + its tax lines + its `InvoiceCreated` event
+   * on the caller's transaction. Shared by the explicit and the sale-driven
+   * creation paths so the two can never diverge.
+   *
+   * P3-04 adds tax in three places, all on this one transaction:
+   *   1. the member's exemption is read inside the transaction (see
+   *      `isMemberTaxExempt`), so the rule applied is the committed one;
+   *   2. each line's tax is resolved and the invoice's `subtotal` / `tax_amount` /
+   *      `total_amount` are computed from the PER-LINE results;
+   *   3. a `FINANCE_TAX_LINES` row is written for every taxed line, after the items
+   *      exist (a tax line references `invoice_item_id`).
+   *
+   * Because all four writes share this transaction, an invoice can never exist with
+   * tax that does not reconcile against its tax lines — and a rejected tax_code
+   * rolls back the whole invoice rather than leaving an untaxed one behind.
    */
   private async persistInvoice(
     manager: EntityManager,
@@ -465,8 +611,23 @@ export class InvoicesService {
       dueDate: Date;
       causationId?: string;
     },
-  ): Promise<{ invoice: Invoice; items: InvoiceItem[] }> {
-    const { subtotal, taxAmount, totalAmount } = InvoicesService.computeTotals(input.lineItems);
+  ): Promise<{ invoice: Invoice; items: InvoiceItem[]; taxLines: TaxLine[] }> {
+    const invoiceDate = new Date();
+    const memberTaxExempt = await this.isMemberTaxExempt(
+      input.memberId,
+      input.organizationId,
+      manager,
+    );
+
+    const { lines, taxLines } = await InvoicesService.computeTaxedLines(
+      input.organizationId,
+      input.lineItems,
+      memberTaxExempt,
+      invoiceDate,
+      manager,
+      this.taxRatesService,
+    );
+    const { subtotal, taxAmount, totalAmount } = computeInvoiceTotals(lines);
 
     // Allocated on the caller's connection, under a row lock on the counter
     // (see InvoiceNumberService), so concurrent sales cannot share a number.
@@ -474,7 +635,6 @@ export class InvoicesService {
       input.organizationId,
       manager,
     );
-    const invoiceDate = new Date();
 
     const invoiceRepository = manager.getRepository(Invoice);
     const invoiceItemRepository = manager.getRepository(InvoiceItem);
@@ -496,6 +656,13 @@ export class InvoicesService {
       }),
     );
 
+    // `line_total` stays quantity x unit_price (the line amount as entered), which
+    // is what Phase 1 wrote and what `InvoiceCreated.v1.lineItems[].lineTotal`
+    // means. The tax separation is carried by the invoice's
+    // subtotal/tax_amount/total_amount triple and by FINANCE_TAX_LINES, not by
+    // rewriting the line amount — so an exclusive-rate invoice still has
+    // sum(line_total) === subtotal, and an inclusive-rate one does not, which is
+    // exactly the definition of inclusive tax.
     const items = await invoiceItemRepository.save(
       input.lineItems.map((line) =>
         invoiceItemRepository.create({
@@ -509,6 +676,21 @@ export class InvoicesService {
         }),
       ),
     );
+
+    let savedTaxLines: TaxLine[] = [];
+    if (taxLines.length > 0) {
+      const taxLineRepository = manager.getRepository(TaxLine);
+      savedTaxLines = await taxLineRepository.save(
+        taxLines.map(({ lineIndex, taxLine }) =>
+          taxLineRepository.create({
+            ...taxLine,
+            // Resolved here, not earlier: `invoice_item_id` only exists once the
+            // items above have been saved.
+            invoice_item_id: items[lineIndex].id,
+          }),
+        ),
+      );
+    }
 
     const payload: InvoiceCreatedPayloadShape = {
       invoiceId: invoice.id,
@@ -536,7 +718,7 @@ export class InvoicesService {
       manager,                             // transaction-scoped: commits/rolls back with the invoice
     );
 
-    return { invoice, items };
+    return { invoice, items, taxLines: savedTaxLines };
   }
 }
 

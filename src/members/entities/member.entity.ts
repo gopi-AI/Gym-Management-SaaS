@@ -75,6 +75,24 @@ export class Member {
   @Column({ type: 'boolean', default: true })
   is_active!: boolean;
 
+  /**
+   * P3-04 — tax exemption (§15 Q7 ruling: the flag lives on the MEMBER).
+   *
+   * An exempt member is charged no tax on any invoice line, but the tax that would
+   * have applied is still recorded on `FINANCE_TAX_LINES` as a zero-rated audit
+   * row, so an exemption can be reviewed after the fact.
+   *
+   * `tax_exempt_reason` is why the exemption was granted. It is nullable rather
+   * than conditionally required in the database; `UpdateMemberDto` requires it at
+   * the API boundary when the flag is set, because the reason is a human
+   * explanation and a database CHECK cannot tell a real one from a placeholder.
+   */
+  @Column({ type: 'boolean', default: false })
+  tax_exempt!: boolean;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  tax_exempt_reason?: string | null;
+
   @OneToMany(() => MemberIdentifier, (identifier) => identifier.member)
   identifiers!: MemberIdentifier[];
 

@@ -5,15 +5,19 @@ import { OutboxModule } from '../shared/outbox/outbox.module';
 import { MembersModule } from '../members/members.module';
 import { Invoice } from './entities/invoice.entity';
 import { InvoiceItem } from './entities/invoice-item.entity';
+import { TaxRate } from './entities/tax-rate.entity';
+import { TaxLine } from './entities/tax-line.entity';
 import { Payment } from './entities/payment.entity';
 import { InvoiceNumberCounter } from './entities/invoice-number-counter.entity';
 import { InvoiceNumberService } from './services/invoice-number.service';
 import { InvoicesService } from './services/invoices.service';
+import { TaxRatesService } from './services/tax-rates.service';
 import { PaymentsService } from './services/payments.service';
 import { PaymentRetryService } from './services/payment-retry.service';
 import { LedgerService } from './services/ledger.service';
 import { PAYMENT_GATEWAY, UnavailablePaymentGateway } from './services/payment-gateway.port';
 import { InvoicesController } from './controllers/invoices.controller';
+import { TaxRatesController } from './controllers/tax-rates.controller';
 import { PaymentsController } from './controllers/payments.controller';
 import { MemberOutstandingBalanceController } from './controllers/member-outstanding-balance.controller';
 import { FinancialReportsController } from './controllers/financial-reports.controller';
@@ -21,6 +25,9 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
 /**
  * Finance (Phase 1): invoices, payments and the payment-retry use case.
  * (Phase 3 / P3-01): the financial ledger read model — see `LedgerService`.
+ * (Phase 3 / P3-04): tax handling — `TaxRatesService` + `TaxRatesController`, and
+ * tax resolution inside `InvoicesService.persistInvoice`. Discounts are NOT here:
+ * they were split out of P3-04 into P3-04b.
  *
  * `PAYMENT_GATEWAY` is bound to `UnavailablePaymentGateway` because Phase 1 has
  * no payment provider — money is taken at the desk and recorded directly as a
@@ -29,7 +36,14 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
  */
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Invoice, InvoiceItem, Payment, InvoiceNumberCounter]),
+    TypeOrmModule.forFeature([
+      Invoice,
+      InvoiceItem,
+      Payment,
+      InvoiceNumberCounter,
+      TaxRate,
+      TaxLine,
+    ]),
     OutboxModule,
     TenancyModule,
     // P3-01: `GET /v1/members/{id}/outstanding-balance` must validate the member
@@ -46,6 +60,7 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
   ],
   controllers: [
     InvoicesController,
+    TaxRatesController,
     PaymentsController,
     MemberOutstandingBalanceController,
     FinancialReportsController,
@@ -53,6 +68,7 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
   providers: [
     InvoiceNumberService,
     InvoicesService,
+    TaxRatesService,
     PaymentsService,
     PaymentRetryService,
     LedgerService,
@@ -61,9 +77,12 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
   ],
   // InvoicesService/PaymentsService are exported because a membership sale
   // generates its invoice inside the membership transaction (MembershipsModule).
+  // TaxRatesService is exported so a later task (P3-04b discounts, §5 recurring
+  // billing) can resolve rates without re-implementing the in-force rule.
   exports: [
     InvoiceNumberService,
     InvoicesService,
+    TaxRatesService,
     PaymentsService,
     PaymentRetryService,
     LedgerService,

@@ -115,3 +115,140 @@ export function paymentRetryDelayMs(attempt: number): number {
   const delay = PAYMENT_RETRY_DEFAULTS.BASE_DELAY_MS * Math.pow(2, Math.max(0, attempt - 1));
   return Math.min(delay, PAYMENT_RETRY_DEFAULTS.MAX_DELAY_MS);
 }
+
+/* ------------------------------------------------------------------------ *
+ * P3-04 Tax calculation
+ *
+ * `docs/phase3-scoping-plan.md` §4: "The arithmetic must be centralised in one
+ * function in `finance.constants.ts` next to `toMoney()` / `sumMoney()`, because
+ * those helpers already establish that all money arithmetic is rounded to 2
+ * decimals in exactly one place." That is why the tax arithmetic lives here and
+ * not in a new module.
+ *
+ * The three decisions this code encodes were ruled on before implementation:
+ *
+ *   - **Rates are per organization** (§15 Q6). One regime per tenant; no
+ *     branch-level or per-item rate resolution.
+ *   - **Exemption is a property of the member** (§15 Q7): `Member.tax_exempt`.
+ *     An exempt member is charged no tax on any line, but the tax that WOULD have
+ *     applied is still recorded as an audit row (§4: "a zero-rated line is a real
+ *     audit row, not a missing one").
+ *   - **`subtotal` is net of tax** (§15 Q9), so the existing
+ *     `subtotal` / `tax_amount` / `total_amount` triple stays consistent for both
+ *     tax-exclusive and tax-inclusive rates.
+ *
+ * Discounts are explicitly NOT part of this task (P3-04 is tax-only; first-class
+ * discounting was split into P3-04b). The functions below take a line's amount as
+ * given, so a future discount reduces `lineTotal` before tax is computed and no
+ * arithmetic here has to change.
+ * ------------------------------------------------------------------------ */
+
+/**
+ * Rate unit: `FINANCE_TAX_RATES.rate` is a PERCENTAGE, so `18.00` means 18%.
+ *
+ * Stored as a percentage rather than a fraction because that is how tax rates are
+ * quoted, printed on invoices and configured by operators; a 0.18 fraction would
+ * have to be converted at every read and is an easy place to lose a factor of 100.
+ */
+export const TAX_RATE_UNIT = 'percent';
+
+/**
+ * `tax_name` recorded on a zero-rated tax line for an exempt member.
+ *
+ * A constant rather than a literal at the call site because the value is
+ * reportable: a tax report groups by `tax_name`, and "Tax exempt" must be one
+ * label, not a set of near-duplicates invented per caller.
+ */
+export const TAX_EXEMPT_NAME = 'Tax exempt';
+
+/** A line's amounts once tax has been resolved for it. All values are 2dp strings. */
+export interface TaxedLineAmounts {
+  /**
+   * Portion of the line that belongs in `Invoice.subtotal` — net of tax. For an
+   * exclusive rate this equals the line total; for an inclusive rate it is the
+   * line total minus the tax already inside it.
+   */
+  netAmount: string;
+  /** Tax on the line, rounded to 2 decimals. */
+  taxAmount: string;
+  /** Net + tax: what the member actually owes for this line. */
+  grossAmount: string;
+}
+
+/** Input to {@link computeLineTax}. */
+export interface TaxableLineInput {
+  /** Gross line amount (quantity x unit_price) BEFORE tax is separated out. */
+  lineTotal: number | string;
+  /** Rate as a percentage, e.g. `18` for 18%. */
+  ratePercent: number | string;
+  /** `true` when `lineTotal` already contains the tax (a tax-inclusive regime). */
+  isInclusive: boolean;
+  /**
+   * `true` when the member is tax-exempt. The rate is still passed through so the
+   * caller can record what would have been applied.
+   */
+  isExempt?: boolean;
+}
+
+/**
+ * Split a line's gross amount into its net and tax parts.
+ *
+ * Rounding is applied ONCE per part and `netAmount` is then DERIVED so that
+ * `net + tax === gross` exactly, in both directions. Rounding net and tax
+ * independently would let a line fail to add up to its own total (e.g. a 0.05 line
+ * at 18% inclusive rounds to 0.04 + 0.01 = 0.05, but 0.04 + 0.02 = 0.06 is
+ * reachable for other inputs), and an invoice whose lines do not sum to its total
+ * is the single most visible tax bug there is.
+ *
+ * A zero, negative or unparseable rate is treated as "no tax" rather than as an
+ * error: this is a pure arithmetic helper, and rejecting a malformed rate is the
+ * caller's job (`TaxRatesService` refuses to hand out one at all).
+ */
+export function computeLineTax(input: TaxableLineInput): TaxedLineAmounts {
+  const gross = toMoney(input.lineTotal);
+
+  if (input.isExempt) {
+    // No tax is charged, but the line is not silently dropped: the caller records
+    // a zero-amount tax line so the exemption is auditable.
+    return { netAmount: gross, taxAmount: toMoney(0), grossAmount: gross };
+  }
+
+  const rate = Number(input.ratePercent);
+  if (!Number.isFinite(rate) || rate <= 0) {
+    return { netAmount: gross, taxAmount: toMoney(0), grossAmount: gross };
+  }
+
+  const grossValue = Number(gross);
+
+  // Exclusive: tax sits ON TOP of the line total.
+  //   gross 100 @ 18%  ->  tax 18.00, net 100.00, total 118.00
+  // Inclusive: tax is ALREADY INSIDE the line total, so it is the share of the
+  // gross that the rate represents (gross * r / (100 + r)).
+  //   gross 118 @ 18%  ->  tax 18.00, net 100.00, total 118.00
+  const tax = input.isInclusive
+    ? toMoney((grossValue * rate) / (100 + rate))
+    : toMoney((grossValue * rate) / 100);
+
+  const net = input.isInclusive ? toMoney(grossValue - Number(tax)) : gross;
+
+  return { netAmount: net, taxAmount: tax, grossAmount: toMoney(Number(net) + Number(tax)) };
+}
+
+/**
+ * Roll a set of taxed lines up into the invoice's three stored amounts.
+ *
+ * `taxAmount` is the sum of the PER-LINE tax values, never a recomputation from
+ * the summed subtotal. That is what makes `Invoice.tax_amount` equal the sum of its
+ * `FINANCE_TAX_LINES.tax_amount` rows to the cent — the property that lets a tax
+ * authority's report reconcile against the invoice header, and the one most easily
+ * lost by rounding the aggregate instead of the lines.
+ */
+export function computeInvoiceTotals(lines: TaxedLineAmounts[]): {
+  subtotal: string;
+  taxAmount: string;
+  totalAmount: string;
+} {
+  const subtotal = sumMoney(lines.map((line) => line.netAmount));
+  const taxAmount = sumMoney(lines.map((line) => line.taxAmount));
+  return { subtotal, taxAmount, totalAmount: sumMoney([subtotal, taxAmount]) };
+}
