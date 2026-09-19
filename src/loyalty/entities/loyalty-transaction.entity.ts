@@ -24,6 +24,7 @@ import { LOYALTY_TRANSACTION_TYPE_VALUES } from '../loyalty.constants';
 @Index(['account_id', 'created_at'])
 @Index(['account_id', 'expires_at'])
 @Index(['expires_at', 'remaining_points'])
+@Index(['organization_id', 'created_at'])
 export class LoyaltyTransaction {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -32,6 +33,25 @@ export class LoyaltyTransaction {
   @Column({ type: 'uuid' })
   @Index()
   account_id!: string;
+
+  /**
+   * Denormalised from `LoyaltyAccount.organization_id` (P6-25, resolution D).
+   *
+   * Present on this entity so the report executor's tenant filter has a column
+   * on the *source* to bind to: `QueryDefinition` declares a single source and
+   * has no `joins` key (§3.1.1), so a `LoyaltyTransaction`-sourced catalog row
+   * is unscopable without it.
+   *
+   * Written by both writers — `LoyaltyAccrualService.awardForTrigger()` (which
+   * already holds the organization) and `LoyaltyExpiryService.expireTransaction()`
+   * (which already resolves it) — and backfilled deterministically for existing
+   * rows in 1788965263257-AddOrganizationIdToLoyaltyTransactions.ts.
+   *
+   * No FK to TENANCY_ORGANIZATIONS, matching the other loyalty tables, whose
+   * organization_id columns are plain `uuid NOT NULL`.
+   */
+  @Column({ type: 'uuid' })
+  organization_id!: string;
 
   @Column({
     type: 'varchar',
