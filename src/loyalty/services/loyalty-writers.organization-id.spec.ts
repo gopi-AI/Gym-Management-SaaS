@@ -23,17 +23,22 @@ import { LoyaltyExpiryService } from './loyalty-expiry.service';
  * `sweepExpiredTransactions()` — against a real, migrated schema, which is the
  * only form of check that would have caught it.
  *
- * **Opt-in.** It reads the same `DB_*` environment variables as the TypeORM CLI
- * (`src/data-source.ts`) and is skipped unless `LOYALTY_WRITERS_DB=1`, because CI
- * (`.github/workflows/ci.yml`) provisions no Postgres service. Run it with:
+ * **When it runs.** It reads the same `DB_*` environment variables as the TypeORM
+ * CLI (`src/data-source.ts`) and runs whenever `DB_HOST` is set. CI
+ * (`.github/workflows/ci.yml`) provisions a `postgres:16-alpine` service and sets
+ * those variables job-wide, so this suite executes there; with no `DB_*` variables
+ * it skips rather than erroring, which is what keeps a local `npm test` without
+ * Postgres passing:
  *
- *   LOYALTY_WRITERS_DB=1 DB_DATABASE=<migrated-db> npm test -- loyalty-writers
+ *   npm test -- loyalty-writers                     # no DB configured -> skipped
+ *   DB_HOST=127.0.0.1 DB_PORT=5432 DB_USERNAME=postgres \
+ *     DB_PASSWORD=... DB_DATABASE=<migrated-db> npm test -- loyalty-writers
  *
  * The target database must be migrated already, or be migratable by
  * `runMigrations()` below. Everything it writes is keyed to a per-run random
  * organization id and removed in `afterAll`.
  */
-const ENABLED = process.env.LOYALTY_WRITERS_DB === '1';
+const ENABLED = Boolean(process.env.DB_HOST);
 const describeDb = ENABLED ? describe : describe.skip;
 
 describeDb('LOYALTY_TRANSACTIONS writers satisfy the NOT NULL organization_id column', () => {
