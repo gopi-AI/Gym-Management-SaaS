@@ -1019,26 +1019,39 @@ Each question states its options, a recommended default where one exists, and th
 
 **Q4 — Is line-level payment allocation in scope?** `FINANCE_PAYMENT_ALLOCATIONS` can allocate a payment to specific invoice items. Is that required in Phase 3, or is invoice-level payment enough?
 *Impact*: if out of scope, the table can be deferred entirely — it is not needed for refunds or credit notes. **Affects §2.**
+**Decision** (P3-02, 2026-09-19): **Out of scope — deferred entirely.** `FINANCE_PAYMENT_ALLOCATIONS` / `PaymentAllocation` is not built, in P3-02 or elsewhere in Phase 3. Refunds and credit notes are payment- and invoice-level, never line-level, so nothing in §2 requires it. If line-level reporting is wanted later it is an additive change (a new table plus a narrower lookup), the same reasoning Q6 applies to a hypothetical `branch_id`.
 
 **Q5 — Refund and credit-note lifecycle.** Three linked decisions:
   - **Fully-credited invoices**: Model A (adjustments are separate records; `Invoice.status` untouched — recommended) or Model B (new `credited`/`refunded` states, requiring changes to `VALID_INVOICE_TRANSITIONS` and Phase 1 tests)?
   - **Partial refunds**: may a payment be refunded multiple times up to its total? Any min/max?
   - **Gateway responsibility**: must the provider refund succeed before the refund row is written (synchronous), or is the row written `pending` and processed asynchronously?
 **Affects §2, §3, §6.**
+**Decision** (P3-02, 2026-09-19):
+  - **Fully-credited invoices — Model A.** Adjustments are separate records; `Invoice.status` is never rewritten, so `VALID_INVOICE_TRANSITIONS` and `voidInvoice()`'s paid guard are unchanged and Phase 1 behaviour (and its tests) is preserved. A credit note reduces the *derived* outstanding balance, consistent with the existing derived-balance pattern.
+  - **Partial refunds — allowed.** A payment may be refunded repeatedly up to its total (`SUM(refunds.amount) ≤ payment.amount`), with no additional cap and no minimum. Enforced inside the transaction, not by a pre-check.
+  - **Gateway responsibility — not gateway-executed in P3-02.** Refunds are staff-initiated and recorded manually, written directly as `succeeded` with no provider call; the `pending` state exists in the schema for P3-03 to use. P3-03 later adds a gateway-initiated path **as an addition, not a redesign**.
+  - **Consequence for §12.1:** §3's *"Blocks §2 if refunds are gateway-executed"* does **not** bind, because §2's refunds are manual. The build order stands as written — P3-02 (#3) before P3-03 (#4).
 
 ### B. Finance — Tax & Discounts
 
 **Q6 — Tax rate granularity.** Per organization (one regime), per branch (different cities), or per invoice item (product-level taxability)?
 *Impact*: determines whether `FINANCE_TAX_RATES` needs `branch_id` and/or item-category scoping. **Affects §4, §7.**
+**Decision** (P3-04, recorded 2026-09-19): **Per organization** — one tax regime per tenant. `FINANCE_TAX_RATES` carries no `branch_id` and no item-category scoping. Adding either later is additive (a nullable column plus a narrower lookup), whereas removing one after invoices were written under it would not be. Built as `FINANCE_TAX_RATES` by migration `1788965263255`.
 
 **Q7 — Tax-exempt handling.** No entity has a tax-exempt flag today. Attach it to the member (`tax_exempt` + reason), the organization, or the line item (zero-rated category)? The backlog requires “Tax-exempt members handled”, which points at the member.
 **Affects §4.**
+**Decision** (P3-04, recorded 2026-09-19): **Attached to the member** — `MEMBERS_MEMBERS.tax_exempt` (boolean, `NOT NULL DEFAULT false`) plus `tax_exempt_reason` (varchar(255), nullable), added by migration `1788965263256`. An exempt member is charged no tax on any line, but a **zero-rated `FINANCE_TAX_LINES` row is still written** per taxed line, because a zero-rated line is a real audit row rather than a missing one. The reason is required at the API boundary (`UpdateMemberDto`) and deliberately nullable in the schema, so no placeholder text is invented for rows that predate the column.
 
 **Q8 — Membership discount ownership and scope.** Is first-class discounting in scope for Phase 3? If yes, `MEMBERSHIP_MEMBERSHIP_DISCOUNTS` must be **built from scratch** (it does not exist despite the backlog), and a decision is needed on whether Membership owns the definition while Finance applies it (recommended) or Finance owns both.
 *Impact*: materially changes P3-04's size. **Affects §4, §13, §14.5.**
+**Decision** (P3-04, recorded 2026-09-19): **First-class discounting stays in Phase 3 scope, but was split out of P3-04 into P3-04b.** P3-04 was built **tax-only**; `MEMBERSHIP_MEMBERSHIP_DISCOUNTS` is still absent from the codebase and is P3-04b's deliverable (see `docs/task-backlog.md` P3-04 / P3-04b). **Still open:** the ownership direction — Membership owning the definition while Finance applies it (§4's recommended default; §13 records the dependency as *"direction TBD"*) — is **not** yet ruled and should be settled as part of P3-04b, not assumed.
 
 **Q9 — Tax/discount representation and calculation order.** Confirm that (a) discounts apply before or after tax **as configured**, (b) `subtotal` means net-of-tax so the existing `subtotal`/`tax_amount`/`total_amount` triple is populated consistently, and (c) whether per-line tax amounts require an `InvoiceCreated.v2` contract.
 *Impact*: the calculation function signature and the `V2` decision both affect schema/contracts. **Affects §4, §14.4.**
+**Decision** (P3-04, recorded 2026-09-19):
+  - **(a) Discount ordering — deferred**, with discounts, to P3-04b. P3-04 computes tax on the line amount as given, so a future discount reduces the line total before tax is computed and no tax arithmetic has to change.
+  - **(b) `subtotal` means net of tax — confirmed and implemented.** `subtotal` is net, `tax_amount` is the sum of the **per-line** tax values (never recomputed from the summed subtotal), and `total_amount = subtotal + tax_amount`, for both exclusive and inclusive regimes. This is what makes `Invoice.tax_amount` reconcile with the `FINANCE_TAX_LINES` rows to the cent.
+  - **(c) No `InvoiceCreated.v2` — the contract is unchanged.** Per-line tax amounts are deliberately **not** added to the event payload; they are recorded in `FINANCE_TAX_LINES` and returned on the invoice read API (`tax_lines`). `InvoiceCreated.v1` stays byte-identical for callers that pass no `tax_code`.
 
 ### C. Finance — Gateway, Recurring Billing & Dunning
 
