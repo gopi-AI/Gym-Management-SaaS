@@ -171,6 +171,9 @@ export class LoyaltyAccrualService {
 
         const txn = manager.getRepository(LoyaltyTransaction).create({
           account_id: account.id,
+          // NOT NULL since 1788965263257-AddOrganizationIdToLoyaltyTransactions.ts.
+          // Already in scope: the rule lookup above is scoped by this same org.
+          organization_id: params.organizationId,
           transaction_type: LOYALTY_TRANSACTION_TYPES.EARN,
           points: rule.points_per_event,
           remaining_points: rule.points_per_event,
