@@ -1068,6 +1068,26 @@ This document contains the implementation tasks broken down by phase, with depen
   - **Scope of the change**: five name substitutions in the plan — `PtEnrollment`/`PtSession` in the §1.2 PT row and `PtSession` in three §6.6 source columns — plus the two dimension names. `PtSession` appears nowhere else in `docs/` (the other hits are P6-24's ticket text and the §1.2 note, both of which name it *as* the defect).
 - **Risks**: §6.6's PT rows would be seeded as system report schemas that fail on every execution, and §1.2 would keep directing report authors at columns that do not exist.
 
+### P6-32: CI provisions no database, so DB-backed tests cannot fail the build *(Open — defect)*
+- **Objective**: Give CI a database so the DB-backed specs actually run there instead of being opt-in and silent.
+- **Dependencies**: The spec added with the loyalty writers' fix, `src/loyalty/services/loyalty-writers.organization-id.spec.ts`, which is opt-in via `LOYALTY_WRITERS_DB=1`.
+- **Files/modules affected**: `.github/workflows/ci.yml`; this ticket.
+- **Database changes**: None in the product. CI gains a Postgres service container (or an ephemeral database per job).
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Once a database is available, the existing opt-in spec should run unconditionally in CI while still skipping gracefully for contributors without one.
+- **Acceptance criteria**:
+  - CI runs the DB-backed specs against a real, migrated Postgres.
+  - A DB-backed spec that violates a NOT NULL constraint fails the build.
+  - `npm test` with no database still passes — it skips, and does not error.
+- **Defect detail**:
+  - `.github/workflows/ci.yml` has **no `services:` block and no database**: the job runs checkout, `npm ci`, typecheck, lint, frontend typecheck and `npx jest --passWithNoTests`, and nothing sets database environment variables.
+  - **Consequence demonstrated this session**: the `organization_id` NOT NULL regression introduced by `1788965263257` reached a commit because the only check that would have caught it — driving the real writers against a migrated schema — had no database to run against in CI. It was found only by running the migration and an insert manually.
+  - The new spec is therefore **opt-in rather than fail-if-unavailable**: a CI job with no database would otherwise report an environment failure rather than a code failure. That is correct but silent in CI, which is exactly the gap this ticket closes.
+- **Risks**: A regression class this project has now hit once stays undetectable on every push — and a green build can be read as "the database-dependent behaviour is verified" when that part of the suite never ran.
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
