@@ -716,7 +716,7 @@ GROUP BY m.organization_id, date_trunc('month', gs.month)::date;
 
 **Design change (Decision A1)**: materialized views are **registered as rows in the `REPORTS_MATERIALIZED_VIEWS` table (§3.3)**, not declared through an in-code `MaterializedViewConfig` interface. The database is the source of truth for which views exist, so adding or describing a view is a migration + a row, not a shape the application code declares.
 
-| Concern | Where it lives now |
+| Concern | Where it lives |
 |---|---|
 | Which MVs exist | one `REPORTS_MATERIALIZED_VIEWS` row per view |
 | Human-readable name / description | `REPORTS_MATERIALIZED_VIEWS.name` / `.description` |
@@ -739,7 +739,7 @@ VALUES
 
 The same migration must also register the four §7.2 views once they are implemented; they are omitted here only because their SQL predates this decision and has not yet been reconciled with it.
 
-> **Open gap — cadence columns do not exist**: the DB-plan shape of `REPORTS_MATERIALIZED_VIEWS` is only `id, name, description, last_refreshed`. It has **no** column for refresh cadence, event-trigger flag, debounce seconds, or enabled/disabled — all of which the previous in-code interface carried. Those settings therefore remain in **code/config** (the §7.3 cron schedule and the Redis debounce). If the team wants them runtime-editable, the table must be **extended** with those columns — that is a change to the DB-plan shape and is deliberately **not** made here; it is flagged for a decision.
+> **Decision — the registry holds identity and refresh time only, and cadence stays in code permanently (resolution (B))**: `REPORTS_MATERIALIZED_VIEWS`'s shape is `id, name, description, last_refreshed` and it **stays** that shape. It has no column for refresh frequency, event-trigger flag, debounce seconds, or enabled/disabled, and it will not gain one: those settings live in **code/config** — the §7.3 cron schedule, the outbox trigger wiring, and the Redis debounce — **permanently**, not as a gap awaiting a schema change. That bounds the table's role exactly: it is the registry of *which* views exist and *when each was last refreshed*, while *how often* each refreshes is a deployment concern owned by the refresh worker. Extending the table with per-row cadence, trigger, debounce and enabled fields was considered and rejected, because nothing today needs a cadence changed without a deploy, and because those settings would then live in two places — the rows and §7.3's worker config — giving refresh behaviour a second source of truth, where editing a row would appear to control the schedule but would not until the worker also read it. If runtime-editable cadence is ever genuinely needed, the columns are the shape of that change and the worker reading per-row config is its substance: a separate decision with its own cost, not a follow-on to this one.
 
 ---
 
