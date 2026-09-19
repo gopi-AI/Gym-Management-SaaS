@@ -26,16 +26,16 @@ Every module below has **TypeORM entities + migrations** already deployed. The c
 | Module | Key Entities | Tenancy | Reportable Dimensions | Measures |
 |---|---|---|---|---|
 | **Members** (`members`) | `Member` | `organization_id` | created_at (join date), date_of_birth, gender, branch_id, is_active (soft-delete flag only) | count, new members |
-| **Memberships** (`memberships/`) | `Membership`, `MembershipPlan`, `MembershipHistory` | `organization_id`, `branch_id` | plan_id (plan name resolved at read time), status (active/paused/frozen/cancelled/expired), billing_cycle, start/end dates | active count, churn rate, avg duration, cancellation trend |
+| **Memberships** (`memberships/`) | `Membership`, `MembershipPlan`, `MembershipHistory` | `organization_id`, `branch_id` | plan_id (plan name resolved at read time), status (active/paused/frozen/cancelled/expired), billing_period, start/end dates | active count, churn rate, avg duration, cancellation trend |
 | **Finance** (`finance/`) | `Invoice`, `InvoiceItem`, `Payment`, `Refund` | `organization_id`, `branch_id` | status, date_range, payment_method, invoice_number | total revenue, outstanding, avg invoice value, payment method mix |
 | **Attendance** (`attendance/`) | `AttendanceRecord`, `AttendanceEvent` | `organization_id`, `branch_id` | check_in/out times, member_id, event_type | check-ins/day, peak hours, avg session duration, week-over-week trend |
 | **Workouts** (`workouts/`) | `WorkoutSession`, `WorkoutSessionExercise`, `WorkoutPlanAssignment` | `organization_id`, `member_id` | session_date, duration_minutes, exercises logged, plan_template | total sessions, avg duration, exercise adherence, trend |
 | **Diet** (`diet/`) | `NutritionLog`, `DietPlanAssignment` | `organization_id`, `member_id` | log_date, meal_template, macro values (calories, protein_g, carbs_g, fat_g) | daily avg macros, meals logged, missing-macro ratio, plan adherence |
-| **PT** (`pt/`) | `PtEnrollment`, `PtSession`, `TrainerCommission` | `organization_id`, `branch_id` | trainer_id, session_date, status, package_price, currency | session count, commission earned, trainer utilization, revenue |
+| **PT** (`pt/`) | `PTEnrollment`, `PTSession`, `TrainerCommission` | `organization_id`, `branch_id` | trainer_id, session_date, status, price, currency | session count, commission earned, trainer utilization, revenue |
 | **Loyalty** (`loyalty/`) | `LoyaltyAccount`, `LoyaltyTransaction` | `organization_id`, `member_id` | transaction_type, points, description | total points, points burned, redemption rate, active accounts |
 | **AI Usage** (`ai/`) | `AiUsage` | `organization_id` | model, request_type, estimated_cost_usd, token count | total cost, avg cost/request, budget remaining, token trends |
 
-> **Note — §1.2's Finance and Memberships rows, and where the preamble now stands (explicit decision)**: the Finance row listed `Refund` and `PaymentAllocation` under a preamble asserting that every module here has **TypeORM entities + migrations** already deployed. `Refund` satisfies it — it ships as a deployed entity with the finance schema, built by P6-01 alongside the rest of Phase 6.0's schema rather than by P3-02, which is also what makes §6.2's `Refund Report` row resolvable — while `PaymentAllocation` never did, having neither entity nor table, so P6-24 removed it from the row. The Memberships row's `plan_name` is corrected to `plan_id` for the same reason: the name lives on `MembershipPlan` and is resolved at read time, not stored. With those corrected the preamble holds for every entity name in this table **except the PT row's** `PtEnrollment` and `PtSession`, which are case mismatches against the declared `PTEnrollment` and `PTSession` — found while closing P6-24, deliberately not folded into it, and tracked separately. It is therefore not yet fully true, and this note exists so that gap is visible rather than assumed.
+> **Note — §1.2's Finance, Memberships and PT rows, and where the preamble now stands (explicit decision)**: the Finance row listed `Refund` and `PaymentAllocation` under a preamble asserting that every module here has **TypeORM entities + migrations** already deployed. `Refund` satisfies it — it ships as a deployed entity with the finance schema, built by P6-01 alongside the rest of Phase 6.0's schema rather than by P3-02, which is also what makes §6.2's `Refund Report` row resolvable — while `PaymentAllocation` never did, having neither entity nor table, so P6-24 removed it from the row. The Memberships row's `plan_name` is corrected to `plan_id` for the same reason: the name lives on `MembershipPlan` and is resolved at read time, not stored. The PT row's `PtEnrollment` and `PtSession` were case mismatches against the declared `PTEnrollment` and `PTSession` — found while closing P6-24, filed separately rather than folded into it, and corrected by P6-31, which fixed both spellings here and in the three §6.6 catalog rows that named `PtSession` as their source. With those corrected the preamble is true of every entity name in this table, and the §6.6 rows that source a PT entity now resolve against entity metadata.
 
 ### 1.3 Reporting Gaps
 
@@ -517,10 +517,10 @@ These are the platform-defined reports created as seed data. They are marked `is
 
 | Report Name | Description | Source | Key Columns | Filters |
 |---|---|---|---|---|
-| **Trainer Session Count** | Sessions per trainer over period | `PtSession` | trainer_id, session_count, total_duration | date_range, branch |
+| **Trainer Session Count** | Sessions per trainer over period | `PTSession` | trainer_id, session_count, total_duration | date_range, branch |
 | **Commission Summary** | Commission earned by trainer | `TrainerCommission` | trainer_id, amount, currency, status | date_range, branch |
-| **Session Completion Rate** | Scheduled vs. completed PT sessions | `PtSession` | status, count | date_range |
-| **Trainer Utilization** | Trainer time utilization over period | `PtSession` | trainer_id, booked_hours, available_hours, pct | date_range |
+| **Session Completion Rate** | Scheduled vs. completed PT sessions | `PTSession` | status, count | date_range |
+| **Trainer Utilization** | Trainer time utilization over period | `PTSession` | trainer_id, booked_hours, available_hours, pct | date_range |
 
 ### 6.7 Loyalty Reports
 
