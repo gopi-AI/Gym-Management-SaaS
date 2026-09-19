@@ -1792,3 +1792,58 @@ This document contains the implementation tasks broken down by phase, with depen
   - Migrations run successfully in dev/test
   - Basic CRUD operations work with tenant context
 - **Risks**: RLS misconfiguration leading to data leaks
+
+## Known Defects
+
+### DEF-01: `QueryMembershipPlanDto.is_active` inverts `?is_active=false`
+- **Objective**: Fix boolean query-parameter coercion on `GET /v1/membership-plans`.
+  `@Type(() => Boolean)` calls `Boolean(value)`, and `Boolean('false')` is `true`, so
+  `?is_active=false` filters for ACTIVE plans — the opposite of what was asked for —
+  while still passing `@IsBoolean()`, so no 400 is raised and nothing reports a problem.
+- **Found during**: P3-04 (tax handling), while writing `QueryTaxRateDto` and checking
+  its `is_active` coercion against the rest of the codebase.
+- **Dependencies**: None
+- **Files/modules affected**:
+  - src/memberships/dto/query-membership-plan.dto.ts (line 18 — the only production change)
+  - src/memberships/dto/query-membership-plan.dto.spec.ts (new regression spec)
+- **Database changes**: None
+- **API changes**: None (behaviour fix only — `GET /v1/membership-plans?is_active=false`
+  starts returning the plans it always claimed to)
+- **Frontend changes**: None, unless an `apps/web` call site is found to rely on the
+  inverted result (see Risks)
+- **Worker changes**: None
+- **Reproduction**: `plainToInstance(QueryMembershipPlanDto, payload)` followed by
+  `validate`, using the options `src/main.ts` sets (`whitelist: true, transform: true`),
+  then asserting the transformed value:
+
+  | `?is_active=` | after `@Type(() => Boolean)` | expected |
+  | --- | --- | --- |
+  | `true`  | `true`         | `true`    |
+  | `false` | **`true`**     | `false`   |
+  | `0`     | **`true`**     | `false`   |
+  | `1`     | **`true`**     | `false`   |
+  | `FALSE` | **`true`**     | `false`   |
+  | (absent) | `undefined`   | `undefined` |
+
+  Only the empty string coerces to `false` (`Boolean('')`), which is not a value a
+  query parameter can meaningfully carry: the filter is effectively always true or
+  unset, never false.
+- **Fix**: use the form already established in this codebase —
+  `@Transform(({ value }) => value === true || value === 'true')` — as used by
+  `QueryInvoiceDto.outstanding_only`, `QueryAttendanceRecordsDto.open_only` and
+  `QueryAccessDecisionsDto.is_granted`. `QueryTaxRateDto.is_active` was corrected this
+  way during P3-04 and is the reference implementation.
+- **Tests**:
+  - `plainToInstance` + `validate` asserting `?is_active=false` transforms to `false`
+    and stays distinguishable from an absent parameter
+  - The string cases above pin the coercion, so the decorator cannot be reverted silently
+  - Confirm `whitelist: true` still strips unknown query parameters
+- **Acceptance criteria**:
+  - `GET /v1/membership-plans?is_active=false` returns only inactive plans
+  - `?is_active=true` and an absent parameter behave exactly as they do today
+  - `@Type(() => Boolean)` no longer appears anywhere in `src/`
+- **Risks**: Low. One decorator on one field, and the current `is_active=false`
+  behaviour is already wrong, so no correct caller can depend on it. The one thing to
+  check is whether a frontend call site was written against the inverted result — such
+  a caller would need updating in the same change. (A second `@Type(() => Boolean)`
+  occurrence was the one this defect was found next to, and it is already fixed.)
