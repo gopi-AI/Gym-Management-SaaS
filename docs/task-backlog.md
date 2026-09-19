@@ -1809,8 +1809,8 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Database changes**: None
 - **API changes**: None (behaviour fix only — `GET /v1/membership-plans?is_active=false`
   starts returning the plans it always claimed to)
-- **Frontend changes**: None, unless an `apps/web` call site is found to rely on the
-  inverted result (see Risks)
+- **Frontend changes**: None required today. The `apps/web` path is wired for
+  `is_active` end-to-end but no call site passes it — see Blast radius.
 - **Worker changes**: None
 - **Reproduction**: `plainToInstance(QueryMembershipPlanDto, payload)` followed by
   `validate`, using the options `src/main.ts` sets (`whitelist: true, transform: true`),
@@ -1842,8 +1842,40 @@ This document contains the implementation tasks broken down by phase, with depen
   - `GET /v1/membership-plans?is_active=false` returns only inactive plans
   - `?is_active=true` and an absent parameter behave exactly as they do today
   - `@Type(() => Boolean)` no longer appears anywhere in `src/`
-- **Risks**: Low. One decorator on one field, and the current `is_active=false`
-  behaviour is already wrong, so no correct caller can depend on it. The one thing to
-  check is whether a frontend call site was written against the inverted result — such
-  a caller would need updating in the same change. (A second `@Type(() => Boolean)`
-  occurrence was the one this defect was found next to, and it is already fixed.)
+- **Blast radius** (verified 2026-09-19, at commit `eab95ced`): **no caller triggers
+  this today**, but the frontend path is complete end-to-end, so the first filter
+  feature added to the membership-plans screen would invert silently.
+  - The entry point is HTTP only: `MembershipPlansService.findAll` is called from
+    exactly one place, `MembershipPlansController.findAll`. No server-side caller
+    constructs `is_active`, so nothing internal can reach this defect.
+  - `apps/web` is wired the whole way: the type permits it
+    (`QueryMembershipPlanParams.is_active?: boolean` in `lib/types.ts`), the API layer
+    forwards it (`lib/memberships-api.ts`, `membershipPlansApi.list()` passes
+    `is_active: params.is_active`), and the URL builder would emit it
+    (`lib/api.ts`, `buildUrl`). Its guard is
+    `value !== undefined && value !== null && value !== ''`, and `false !== ''` is
+    `true` under strict comparison, so `false` is appended as `String(false)` — the
+    literal `"false"`, which is exactly the input this defect mis-coerces. Verified by
+    running that predicate directly: `{ a: undefined, b: null, c: '', d: false,
+    e: true, f: 0 }` yields `"d=false&e=true&f=0"`.
+  - The two live call sites both omit it, which is why the defect is unreachable now:
+    `app/membership-plans/page.tsx` calls `useMembershipPlans({ page, limit })` and
+    has no filter state at all (only `page` and `showCreate`), while
+    `app/memberships/page.tsx` calls `useMembershipPlans({ limit: 200 })` and then
+    filters the RESPONSE BODY client-side (`.filter((p) => p.is_active)`), which this
+    DTO never touches.
+  - Consequence: adding an "Active only" / "Show inactive" toggle to the
+    membership-plans screen — a natural next step, since that table already renders
+    Active/Inactive badges and its data contains both states — would return the
+    opposite set with a `200 OK`, no error, no log, and no existing test to catch it.
+    Land this fix before that feature, not after it.
+  - Related: `app/memberships/page.tsx` fetches 200 plans unfiltered and filters in the
+    browser. Migrating that to a server-side filter would work for `is_active: true`
+    but break for the inactive case for as long as this defect stands.
+- **Risks**: Low to fix and low to leave — but not zero. One decorator on one field, the
+  current `is_active=false` behaviour is already wrong, so no correct caller depends on
+  it, and there is no data to migrate. The exposure is forward-looking rather than
+  current: the plumbing is wired and unused, so the cost is paid by whoever adds
+  filtering rather than by anyone today (see Blast radius). A second
+  `@Type(() => Boolean)` occurrence was the one this defect was found next to; it is
+  already fixed, and the acceptance criterion covers it.
