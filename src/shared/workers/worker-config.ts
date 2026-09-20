@@ -21,6 +21,9 @@ export const WORKER_INTERVALS: Record<string, number> = {
   MEMBERSHIP_EXPIRY: 60 * 60 * 1000,
   PAYMENT_RETRY: 15 * 60 * 1000,
   EXPIRY: 60 * 60 * 1000,
+  // Report jobs execute real queries, so the cadence is short enough to feel
+  // synchronous but not so short that a batch queues behind itself.
+  REPORT_JOBS: 15_000,
 };
 
 /** Default batch size per worker. */
@@ -28,6 +31,8 @@ export const WORKER_BATCH_SIZES: Record<string, number> = {
   OUTBOX: 25,
   MEMBERSHIP_EXPIRY: 200,
   PAYMENT_RETRY: 50,
+  // §5.1 serializes execution to one job globally; the batch is the queue-drain unit.
+  REPORT_JOBS: 5,
 };
 
 /** Outbox lease duration: comfortably longer than a normal batch's runtime. */

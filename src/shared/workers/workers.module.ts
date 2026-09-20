@@ -2,9 +2,11 @@ import { Module } from '@nestjs/common';
 import { OutboxModule } from '../outbox/outbox.module';
 import { MembershipsModule } from '../../memberships/memberships.module';
 import { FinanceModule } from '../../finance/finance.module';
+import { ReportsModule } from '../../reports/reports.module';
 import { OutboxWorker } from './outbox.worker';
 import { MembershipExpiryWorker } from './membership-expiry.worker';
 import { PaymentRetryWorker } from './payment-retry.worker';
+import { ReportJobWorker } from '../../reports/workers/report-job.worker';
 
 /**
  * Background workers.
@@ -19,8 +21,8 @@ import { PaymentRetryWorker } from './payment-retry.worker';
  * `SchedulerRegistry`.
  */
 @Module({
-  imports: [OutboxModule, MembershipsModule, FinanceModule],
-  providers: [OutboxWorker, MembershipExpiryWorker, PaymentRetryWorker],
-  exports: [OutboxWorker, MembershipExpiryWorker, PaymentRetryWorker],
+  imports: [OutboxModule, MembershipsModule, FinanceModule, ReportsModule],
+  providers: [OutboxWorker, MembershipExpiryWorker, PaymentRetryWorker, ReportJobWorker],
+  exports: [OutboxWorker, MembershipExpiryWorker, PaymentRetryWorker, ReportJobWorker],
 })
 export class WorkersModule {}

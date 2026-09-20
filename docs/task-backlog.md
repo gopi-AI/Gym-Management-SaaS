@@ -1246,6 +1246,24 @@ This document contains the implementation tasks broken down by phase, with depen
   - **What would overturn it**: evidence that the row meant the plan *assignment's* template — for instance, a report or UI that consumes this dimension alongside assignment-level facts, or a §6.4 row that binds `plan_template`-style language to `WorkoutPlanAssignment`. Neither exists today (`plan_template` appears nowhere else in the plan), which is why the session reading stands on the two neighbouring dimensions rather than on direct evidence.
 - **Risks**: Four rows directed report authors at columns that do not exist. All four are now closed — two named (`meal_template_id`, `WorkoutSession.template_id`), one marked derived (`session_date`), one removed (`date_range`) — so the remaining risk is narrower and different in kind: the `plan_template` entity choice rests on circumstantial evidence and is flagged as such on the row, and `date_range`'s removal means §1.2's Finance row no longer mentions a filter that §6.2's rows do declare.
 
+### P6-36: `REPORTS_REPORT_JOBS` results have no storage except S3, and no bucket is configured *(Open — defect)*
+- **Objective**: Persist report job results — upload them to S3 and record the object key, so a completed job's rows survive the worker that produced them.
+- **Dependencies**: Phase B of the report executor (P6-02/P6-03), which deliberately writes only `result_rows`, `result_format`, `status` and `error_message`, because there is nowhere else to put the data and no bucket is configured to prove an upload against. Related: §8.3's new S3 **read** method, which the §4.2 download endpoint needs — that is the other half of this dependency and is not in scope here.
+- **Files/modules affected**:
+  - `src/reports/services/report-job.service.ts` (the terminal-state write, which currently records metrics only)
+  - a new S3 write path for reports (the members module's `S3Module` is the existing precedent)
+- **Database changes**: None — `result_s3_key` (VARCHAR 500), `result_s3_bucket` (VARCHAR 200), `result_rows` and `result_format` already exist (§3.2 (:248-267)) and are currently only partly populated.
+- **API changes**: None here. §4.2's `GET /v1/report/jobs/{id}/download` is what consumes it, and Phase B builds no routes.
+- **Frontend changes**: None
+- **Worker changes**: The report-job worker gains an upload step between "run the query" and "mark completed".
+- **Tests**: A completed job's `result_s3_key` resolves to an object whose contents equal the rows the executor returned, and a job whose upload fails ends `failed` rather than `completed` — the failure must be terminal, not a silent success with a null key.
+- **Defect detail**:
+  - **The columns exist; the data has nowhere to go.** §3.2 defines `result_s3_key`, `result_s3_bucket`, `result_rows`, `result_format` and `error_message` — and **no column for the result rows themselves**, by design: results are meant to live in object storage. So a job that completes today records *how many* rows it produced and in what format, and the rows are gone when the worker returns.
+  - **This is a deliberate Phase B scope line, not an oversight.** Phase B's proof requirements are real rows, real Redis counter values and a real failure case; an S3 upload cannot be proven in this environment (no bucket, no credentials), and the standing rule is not to claim something works that cannot actually be run. Recording metrics only keeps every Phase B claim provable; this ticket carries the unprovable half on its own.
+  - **What is knowingly lost in the interim**: a completed job is not re-runnable from its result — the same definition and parameters must be executed again. Nothing in Phase B or in §6.x's seeded rows depends on re-reading a stored result (they are catalog *definitions*, not cached outputs), which is why the gap is acceptable for now rather than blocking.
+  - **Two adjacent pieces belong with whoever takes this**: §10's "Export file too large (>100 MB)" check, which the plan says the worker performs **before** export, and §8.3's new S3 **read** method for the download endpoint. Both are S3-facing and neither is meaningful without a bucket.
+- **Risks**: A job reports `completed` with a row count while its rows exist only in the worker's memory, so a caller that expects a retrievable result finds nothing. That is visible in the response shape (`result_s3_key` is null) rather than silent, but it is a real gap in the contract §4.2's download endpoint will need.
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
