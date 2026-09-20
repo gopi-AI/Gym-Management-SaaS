@@ -1,4 +1,10 @@
-import { INVOICE_STATUS, OUTSTANDING_INVOICE_STATUSES, PAYMENT_STATUS } from './finance.constants';
+import {
+  CREDIT_NOTE_STATUS,
+  INVOICE_STATUS,
+  OUTSTANDING_INVOICE_STATUSES,
+  PAYMENT_STATUS,
+  REFUND_STATUS,
+} from './finance.constants';
 
 /**
  * P3-01 Finance ledger read model — shared constants (`docs/phase3-scoping-plan.md` §1).
@@ -143,6 +149,26 @@ export const SQL_OUTSTANDING_STATUSES = sqlStringList(OUTSTANDING_INVOICE_STATUS
 
 /** The only payment status that counts as money received, as a SQL literal. */
 export const SQL_SUCCEEDED_PAYMENT = sqlStringLiteral(PAYMENT_STATUS.SUCCEEDED);
+
+/**
+ * The only credit-note status that reduces a balance, as a SQL literal (P3-02).
+ *
+ * A `voided` credit note is deliberately excluded: it no longer reduces the
+ * invoice, so it must not reduce the ledger's outstanding figure either. The
+ * views and `CreditNotesService.creditedTotal` must agree on this, exactly as
+ * they agree on `SQL_SUCCEEDED_PAYMENT`, or the API and the ledger would report
+ * different balances for the same invoice.
+ */
+export const SQL_ISSUED_CREDIT_NOTE = sqlStringLiteral(CREDIT_NOTE_STATUS.ISSUED);
+
+/**
+ * The only refund status that returned money, as a SQL literal (P3-02).
+ *
+ * A `failed` refund moved nothing, so netting it off revenue would understate
+ * revenue. Matches `RefundsService.refundedTotal`, which counts only `succeeded`
+ * refunds against a payment's refundable balance.
+ */
+export const SQL_SUCCEEDED_REFUND = sqlStringLiteral(REFUND_STATUS.SUCCEEDED);
 
 /**
  * Order in which invoice statuses are presented in the outstanding-by-status

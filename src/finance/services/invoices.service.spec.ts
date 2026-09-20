@@ -8,6 +8,7 @@ import { InvoiceItem } from '../entities/invoice-item.entity';
 import { Payment } from '../entities/payment.entity';
 import { TaxLine } from '../entities/tax-line.entity';
 import { TaxRate } from '../entities/tax-rate.entity';
+import { CreditNote } from '../entities/credit-note.entity';
 import { TaxRatesService } from './tax-rates.service';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
@@ -28,6 +29,10 @@ describe('InvoicesService', () => {
   let mockPaymentRepo: Record<string, jest.Mock>;
   let mockTaxLineRepo: Record<string, jest.Mock>;
   let mockTaxRateRepo: Record<string, jest.Mock>;
+  /** P3-02: standing credit notes, read to derive the invoice balance. */
+  let mockCreditNoteRepo: Record<string, jest.Mock>;
+  /** Rows `mockCreditNoteRepo`'s SUM(gross_amount) query resolves. */
+  let creditedRows: Array<{ invoice_id: string; credited: string }>;
   /** Set to true by a test to make `isMemberTaxExempt` resolve an exempt member. */
   let memberTaxExempt: boolean;
   /** The query builder handed out by the transaction manager (exemption read). */
@@ -126,6 +131,26 @@ describe('InvoicesService', () => {
     mockTaxRateRepo = {
       find: jest.fn().mockResolvedValue([]),
     };
+    // P3-02: `creditNoteTotalsByInvoice` runs a fluent SUM(gross_amount) query.
+    // Default is no credit notes, so every Phase 1 assertion keeps seeing the
+    // payments-only balance it always saw.
+    creditedRows = [];
+    mockCreditNoteRepo = {
+      createQueryBuilder: jest.fn(() => {
+        const builder: Record<string, jest.Mock> = {
+          select: jest.fn(),
+          addSelect: jest.fn(),
+          where: jest.fn(),
+          andWhere: jest.fn(),
+          groupBy: jest.fn(),
+          getRawMany: jest.fn().mockImplementation(async () => creditedRows),
+        };
+        for (const method of ['select', 'addSelect', 'where', 'andWhere', 'groupBy']) {
+          builder[method].mockReturnValue(builder);
+        }
+        return builder;
+      }),
+    };
     memberTaxExempt = false;
     // Captured so a test can prove the exemption read used the TRANSACTION's
     // query builder rather than the ambient DataSource.
@@ -181,6 +206,7 @@ describe('InvoicesService', () => {
         { provide: getRepositoryToken(InvoiceItem), useValue: mockItemRepo },
         { provide: getRepositoryToken(Payment), useValue: mockPaymentRepo },
         { provide: getRepositoryToken(TaxLine), useValue: mockTaxLineRepo },
+        { provide: getRepositoryToken(CreditNote), useValue: mockCreditNoteRepo },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         { provide: TenantContextService, useValue: mockTenantContext },
         { provide: OutboxService, useValue: mockOutboxService },
@@ -509,6 +535,132 @@ describe('InvoicesService', () => {
       });
 
       await expect(service.voidInvoice('invoice-1')).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('names the real endpoints when refusing to void a paid invoice (§2 debt repayment)', async () => {
+      mockInvoiceRepo.findOne.mockResolvedValue({
+        id: 'invoice-1',
+        organization_id: orgId,
+        total_amount: '65.00',
+        status: INVOICE_STATUS.PAID,
+      });
+
+      // The guard still rejects — §2 only required the message to stop saying
+      // "out of scope" now that refunds and credit notes exist.
+      await expect(service.voidInvoice('invoice-1')).rejects.toThrow(
+        /A paid invoice cannot be voided; issue a refund against the payment.*credit note/,
+      );
+      await expect(service.voidInvoice('invoice-1')).rejects.not.toThrow(/out of scope/);
+    });
+  });
+
+  describe('outstanding balance — P3-02 credit notes (Model A)', () => {
+    /**
+     * Fluent stand-in for the `SUM(...)` totals query. `paymentTotalsByInvoice`
+     * and `creditNoteTotalsByInvoice` are shaped identically, so one helper
+     * serves both.
+     */
+    const totalsBuilder = (key: string, value: string) => {
+      const builder: Record<string, jest.Mock> = {
+        select: jest.fn(),
+        addSelect: jest.fn(),
+        where: jest.fn(),
+        andWhere: jest.fn(),
+        groupBy: jest.fn(),
+        getRawMany: jest.fn().mockResolvedValue([{ invoice_id: 'invoice-1', [key]: value }]),
+      };
+      for (const method of ['select', 'addSelect', 'where', 'andWhere', 'groupBy']) {
+        builder[method].mockReturnValue(builder);
+      }
+      return builder;
+    };
+
+    const invoiceRow = {
+      id: 'invoice-1',
+      organization_id: orgId,
+      member_id: memberId,
+      invoice_number: 'INV-000042',
+      subtotal: '100.00',
+      tax_amount: '18.00',
+      total_amount: '118.00',
+      status: INVOICE_STATUS.SENT,
+    };
+
+    beforeEach(() => {
+      mockInvoiceRepo.findOne = jest.fn().mockResolvedValue(invoiceRow);
+      mockItemRepo.find = jest.fn().mockResolvedValue([]);
+    });
+
+    it('reduces the reported balance by the credit notes on the invoice', async () => {
+      // This is Model A made observable: `Invoice.status` is untouched, so the
+      // ONLY place the credit shows up on the invoice is the derived balance.
+      mockPaymentRepo.createQueryBuilder = jest.fn(() => totalsBuilder('paid', '40.00'));
+      creditedRows = [{ invoice_id: 'invoice-1', credited: '18.00' }];
+
+      const detail = await service.findOne('invoice-1');
+
+      // 118.00 total - 40.00 paid - 18.00 credited
+      expect(detail.amount_paid).toBe('40.00');
+      expect(detail.amount_credited).toBe('18.00');
+      expect(detail.outstanding_amount).toBe('60.00');
+      // The status is deliberately NOT rewritten.
+      expect(detail.invoice.status).toBe(INVOICE_STATUS.SENT);
+    });
+
+    it('reports zero outstanding for a fully credited invoice without changing its status', async () => {
+      mockPaymentRepo.createQueryBuilder = jest.fn(() => totalsBuilder('paid', '0.00'));
+      creditedRows = [{ invoice_id: 'invoice-1', credited: '118.00' }];
+
+      const detail = await service.findOne('invoice-1');
+
+      expect(detail.outstanding_amount).toBe('0.00');
+      expect(detail.invoice.status).toBe(INVOICE_STATUS.SENT);
+    });
+
+    it('never reports a negative balance if credits and payments exceed the total', async () => {
+      // Defensive: the guards should prevent this, but a balance of -20.00 in a
+      // report is worse than a clamped zero, so the clamp is asserted.
+      mockPaymentRepo.createQueryBuilder = jest.fn(() => totalsBuilder('paid', '100.00'));
+      creditedRows = [{ invoice_id: 'invoice-1', credited: '38.00' }];
+
+      const detail = await service.findOne('invoice-1');
+
+      expect(detail.outstanding_amount).toBe('0.00');
+    });
+
+    it('leaves an invoice with NO credit notes exactly as Phase 1 reported it', async () => {
+      // Backwards compatibility: the credit term must be a no-op when there are
+      // no credit notes, which is every invoice that existed before P3-02.
+      mockPaymentRepo.createQueryBuilder = jest.fn(() => totalsBuilder('paid', '40.00'));
+      creditedRows = [];
+
+      const detail = await service.findOne('invoice-1');
+
+      expect(detail.amount_credited).toBe('0.00');
+      expect(detail.outstanding_amount).toBe('78.00'); // 118.00 - 40.00
+    });
+
+    it('reads the credits for the whole page in ONE query, not per invoice', async () => {
+      mockPaymentRepo.createQueryBuilder = jest.fn(() => totalsBuilder('paid', '0.00'));
+      mockInvoiceRepo.createQueryBuilder = jest.fn(() => {
+        const builder: Record<string, jest.Mock> = {
+          where: jest.fn(),
+          andWhere: jest.fn(),
+          orderBy: jest.fn(),
+          addOrderBy: jest.fn(),
+          take: jest.fn(),
+          skip: jest.fn(),
+          getManyAndCount: jest.fn().mockResolvedValue([[invoiceRow], 1]),
+        };
+        for (const method of ['where', 'andWhere', 'orderBy', 'addOrderBy', 'take', 'skip']) {
+          builder[method].mockReturnValue(builder);
+        }
+        return builder;
+      });
+
+      await service.findAll({});
+
+      expect(mockCreditNoteRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
     });
   });
 });

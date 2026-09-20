@@ -272,6 +272,15 @@ Reuses `finance:read` / `finance:record-payment`. The webhook route is the **onl
 - **Blocks §2** if refunds are gateway-executed.
 - **Blocks §5** — dunning cannot retry what it cannot charge.
 - **Depends on P0-06** (idempotency) per the backlog.
+- **Known gap inherited from §2 — refund idempotency.** P3-02 records refunds
+  without an idempotency key. The only protection is the
+  `SUM(refunds.amount) ≤ payment.amount` invariant plus the payment row lock, so a
+  *duplicate* submission that still fits under the payment's remaining balance
+  would be recorded twice as two legitimate refunds. Accepted for P3-02, where
+  every refund is a human at a desk acting deliberately (Q5's ruling), and it must
+  be closed **here**: gateway-initiated refunds make automated retries possible,
+  and a retried refund is indistinguishable from a second refund without a key.
+  `RefundsService.create()` carries the same note at the call site.
 
 ---
 
@@ -1028,9 +1037,12 @@ Each question states its options, a recommended default where one exists, and th
 **Affects §2, §3, §6.**
 **Decision** (P3-02, 2026-09-19):
   - **Fully-credited invoices — Model A.** Adjustments are separate records; `Invoice.status` is never rewritten, so `VALID_INVOICE_TRANSITIONS` and `voidInvoice()`'s paid guard are unchanged and Phase 1 behaviour (and its tests) is preserved. A credit note reduces the *derived* outstanding balance, consistent with the existing derived-balance pattern.
+  - **One expression owns the derived balance — `InvoicesService.outstanding(total, paid, credited)`.** Model A leaves `status` alone, so the derived balance *is* the answer to "what does this invoice still owe", and three callers need that answer: the `outstanding_amount` the API reports (list and detail), the ceiling `PaymentsService` enforces when refusing an over-payment, and the test `PaymentsService` applies when deciding whether the invoice has become `paid`. All three call the one `public static` method instead of subtracting in place, because the ceiling and the advertised balance are the same question asked twice — derived separately they can drift, and a payment would then be refused against a balance the API was simultaneously advertising as payable. `creditNoteTotalsByInvoice` supplies the `credited` term; `outstanding()` stays the only place the subtraction happens. `credited` is a **required** argument with no `'0.00'` default, so no caller can silently inherit a payments-only balance by forgetting to pass one — which is exactly how the Model A gap would reappear. The result is floored at zero, so "is anything still owed?" is asked as `outstanding() <= 0` rather than by comparing an amount sum against the invoice total. The P3-02 ledger views apply the same rule in SQL (`SQL_ISSUED_CREDIT_NOTE` — issued credit notes only), so the API and the ledger cannot report different balances for the same invoice.
   - **Partial refunds — allowed.** A payment may be refunded repeatedly up to its total (`SUM(refunds.amount) ≤ payment.amount`), with no additional cap and no minimum. Enforced inside the transaction, not by a pre-check.
   - **Gateway responsibility — not gateway-executed in P3-02.** Refunds are staff-initiated and recorded manually, written directly as `succeeded` with no provider call; the `pending` state exists in the schema for P3-03 to use. P3-03 later adds a gateway-initiated path **as an addition, not a redesign**.
   - **Tax reversal — the credit note carries its own breakdown; `FINANCE_TAX_LINES` is never touched.** `CreditNote` stores its own `net_amount` / `tax_amount` / `gross_amount`, computed at creation time. It does **not** write to or modify `FINANCE_TAX_LINES`, which stays an immutable audit record of the tax applied to each invoice line — the reversal is a separate adjustment record under Model A, not an edit to the original. For a **partial** credit the split is proportional to the invoice's own already-applied rate (`invoice.tax_amount / invoice.total_amount`), **not** a fresh `FINANCE_TAX_RATES` lookup, so the reversal reflects what was actually charged and stays correct even if the rate is later changed, expired or deleted. Rounding is applied once to the tax part with the net derived from it, so `net + tax = gross` exactly (the same discipline as `computeLineTax`). The arithmetic lives in exactly one place, `CreditNotesService.splitCredit`.
+    **Consequence to be aware of:** because the ratio is invoice-wide, a partial credit reverses tax at the invoice's *blended* rate, not per line. Crediting in full is exact and reproduces the invoice's stored `subtotal` and `tax_amount`; a partial credit is exact in aggregate but not attributable to any single line. Line-level credit attribution would need line targeting on the request — and line-level allocation, which Q4 rules out — so it is a scope change rather than a refinement.
+  - **Which invoices can be credited.** `void` is rejected: it owes nothing, so there is nothing to credit. `draft` **is** creditable, because a draft does still owe (it is in `OUTSTANDING_INVOICE_STATUSES`); §2 does not restrict it, although in practice a draft is more likely to be edited or voided. `paid` is creditable too — that is the point of Model A, and of §2's note that `voidInvoice()` directs paid invoices to a credit note.
   - **Consequence for §12.1:** §3's *"Blocks §2 if refunds are gateway-executed"* does **not** bind, because §2's refunds are manual. The build order stands as written — P3-02 (#3) before P3-03 (#4).
 
 ### B. Finance — Tax & Discounts

@@ -11,6 +11,7 @@ import { InvoiceItem } from '../entities/invoice-item.entity';
 import { TaxLine } from '../entities/tax-line.entity';
 import { TaxRate } from '../entities/tax-rate.entity';
 import { Payment } from '../entities/payment.entity';
+import { CreditNote } from '../entities/credit-note.entity';
 import { CreateInvoiceDto, InvoiceLineItemDto } from '../dto/create-invoice.dto';
 import { QueryInvoiceDto } from '../dto/query-invoice.dto';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
@@ -19,6 +20,7 @@ import { endOfRange } from '../../shared/utils/date-range';
 import { InvoiceNumberService } from './invoice-number.service';
 import { TaxRatesService } from './tax-rates.service';
 import {
+  CREDIT_NOTE_STATUS,
   FINANCE_EVENT_VERSION,
   FINANCE_EVENT_TYPES,
   INVOICE_STATUS,
@@ -80,6 +82,8 @@ export interface InvoiceWithDetail {
   /** P3-04: one row per taxed line; empty for an untaxed invoice. */
   tax_lines: TaxLine[];
   amount_paid: string;
+  /** P3-02: standing credit notes against this invoice, as a money string. */
+  amount_credited: string;
   outstanding_amount: string;
 }
 
@@ -102,6 +106,15 @@ export class InvoicesService {
     private readonly paymentRepository: Repository<Payment>,
     @InjectRepository(TaxLine)
     private readonly taxLineRepository: Repository<TaxLine>,
+    // P3-02: credit notes are read through their own repository rather than
+    // through `CreditNotesService`, because `CreditNotesService` already depends
+    // on this service (`loadInvoiceForUpdate`) and injecting it here would make
+    // the two depend on each other. The repository has no such cycle, and
+    // `TaxLine` above is read the same way. The "what counts as a standing
+    // credit" rule is shared with `CreditNotesService.creditedTotal` through
+    // `CREDIT_NOTE_STATUS`, not duplicated as a literal.
+    @InjectRepository(CreditNote)
+    private readonly creditNoteRepository: Repository<CreditNote>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly tenantContextService: TenantContextService,
@@ -229,8 +242,66 @@ export class InvoicesService {
     return totals;
   }
 
-  private static outstanding(total: string, paid: string): string {
-    return toMoney(Math.max(0, Number(total) - Number(paid)));
+  /**
+   * P3-02 — standing credit notes totalled per invoice: the credit counterpart of
+   * `paymentTotalsByInvoice`, and deliberately shaped identically (same
+   * signature, same `Map<invoiceId, moneyString>` return, same optional
+   * `manager`) so the two are read and tested the same way.
+   *
+   * Only `issued` credit notes count — a `voided` one no longer reduces the
+   * invoice. That is the same rule `CreditNotesService.creditedTotal` applies
+   * when deciding how much of an invoice is still creditable, and the same rule
+   * the P3-02 ledger views apply in SQL, so all three agree.
+   *
+   * `gross_amount`, not `net_amount`: the credit note reduces the invoice by its
+   * gross (net + tax) amount, which is what the member owes less of.
+   */
+  async creditNoteTotalsByInvoice(
+    organizationId: string,
+    invoiceIds: string[],
+    manager?: EntityManager,
+  ): Promise<Map<string, string>> {
+    const totals = new Map<string, string>();
+    if (invoiceIds.length === 0) return totals;
+
+    const repository = manager ? manager.getRepository(CreditNote) : this.creditNoteRepository;
+    const rows: Array<{ invoice_id: string; credited: string }> = await repository
+      .createQueryBuilder('creditNote')
+      .select('creditNote.invoice_id', 'invoice_id')
+      .addSelect('SUM(creditNote.gross_amount)', 'credited')
+      .where('creditNote.organization_id = :organizationId', { organizationId })
+      .andWhere('creditNote.status = :status', { status: CREDIT_NOTE_STATUS.ISSUED })
+      .andWhere('creditNote.invoice_id IN (:...invoiceIds)', { invoiceIds })
+      .groupBy('creditNote.invoice_id')
+      .getRawMany();
+
+    for (const row of rows) {
+      totals.set(row.invoice_id, toMoney(row.credited));
+    }
+    return totals;
+  }
+
+  /**
+   * The invoice's derived balance under §15 Q5's Model A ruling.
+   *
+   * `credited` is a REQUIRED argument rather than an optional `'0.00'` default.
+   * That is deliberate: every caller has to decide what it knows about credit
+   * notes instead of silently inheriting a payments-only balance by forgetting
+   * to pass one, which is exactly how the Model A gap would reappear.
+   *
+   * PUBLIC because `PaymentsService` is the other caller that needs this number.
+   * The over-payment ceiling it enforces and the `outstanding_amount` this service
+   * reports are the same question asked in two places, so they must be the same
+   * expression: if they were derived separately, a payment could be refused
+   * against a balance the API was simultaneously advertising as payable.
+   * `creditNoteTotalsByInvoice` supplies the credits; this stays the single place
+   * the subtraction happens.
+   *
+   * The result is floored at zero, so a caller asking "is anything still owed?"
+   * tests `<= 0` rather than comparing an amount sum to the total.
+   */
+  public static outstanding(total: string, paid: string, credited: string): string {
+    return toMoney(Math.max(0, Number(total) - Number(paid) - Number(credited)));
   }
 
   /** Paginated invoice list (tenant-scoped, newest first). */
@@ -284,13 +355,21 @@ export class InvoicesService {
       organizationId,
       rows.map((invoice) => invoice.id),
     );
+    // P3-02: credits for the same page of invoices, fetched in one query so the
+    // list's balance is correct without an N+1 — the same reason the paid totals
+    // above are fetched in bulk rather than per row.
+    const credits = await this.creditNoteTotalsByInvoice(
+      organizationId,
+      rows.map((invoice) => invoice.id),
+    );
 
     const data: InvoiceListItem[] = rows.map((invoice) => {
       const paid = totals.get(invoice.id) ?? '0.00';
+      const credited = credits.get(invoice.id) ?? '0.00';
       return {
         ...invoice,
         amount_paid: paid,
-        outstanding_amount: InvoicesService.outstanding(invoice.total_amount, paid),
+        outstanding_amount: InvoicesService.outstanding(invoice.total_amount, paid, credited),
       };
     });
 
@@ -317,6 +396,10 @@ export class InvoicesService {
 
     const totals = await this.paymentTotalsByInvoice(organizationId, [invoice.id]);
     const amountPaid = totals.get(invoice.id) ?? '0.00';
+    // P3-02: a credited invoice must not report the un-credited balance (§15 Q5
+    // Model A — the credit lives in the derived balance, not in `status`).
+    const credits = await this.creditNoteTotalsByInvoice(organizationId, [invoice.id]);
+    const amountCredited = credits.get(invoice.id) ?? '0.00';
 
     // P3-04: the applied tax is returned alongside the lines so a caller can see
     // WHY the header's tax_amount is what it is. §4 requires the applied result to
@@ -339,7 +422,12 @@ export class InvoicesService {
       items,
       tax_lines: taxLines,
       amount_paid: amountPaid,
-      outstanding_amount: InvoicesService.outstanding(invoice.total_amount, amountPaid),
+      amount_credited: amountCredited,
+      outstanding_amount: InvoicesService.outstanding(
+        invoice.total_amount,
+        amountPaid,
+        amountCredited,
+      ),
     };
   }
 
@@ -404,12 +492,23 @@ export class InvoicesService {
     const totals = await this.paymentTotalsByInvoice(organizationId, [detail.invoice.id]);
     const amountPaid = totals.get(detail.invoice.id) ?? '0.00';
 
+    // P3-02: an invoice created moments ago in this same transaction cannot have
+    // a credit note against it, so the credited total is a known '0.00' and no
+    // query is issued for it. Reading it would be a round trip that can only ever
+    // return zero.
+    const amountCredited = toMoney(0);
+
     return {
       invoice: detail.invoice,
       items: detail.items,
       tax_lines: detail.taxLines,
       amount_paid: amountPaid,
-      outstanding_amount: InvoicesService.outstanding(detail.invoice.total_amount, amountPaid),
+      amount_credited: amountCredited,
+      outstanding_amount: InvoicesService.outstanding(
+        detail.invoice.total_amount,
+        amountPaid,
+        amountCredited,
+      ),
     };
   }
 
@@ -455,9 +554,17 @@ export class InvoicesService {
    * are out of scope for this pass — so that transition is rejected explicitly
    * rather than silently discarding a member's payment.
    *
-   * TODO(phase-2): emit an invoice-voided event and support voiding partially
-   * paid invoices once RefundIssued exists in `docs/event-contracts.md`. No event
-   * is invented here because the contract defines none for this transition.
+   * The two guards below are P3-02's "debt repayment" (§2 required that they
+   * "point at real functionality instead of 'out of scope'"). The guards
+   * themselves are UNCHANGED — voiding a paid or partly-paid invoice still moves
+   * no money back, so it is still rejected — but the messages now name the
+   * endpoints that do the job.
+   *
+   * Still open, deliberately: voiding a PARTIALLY PAID invoice remains
+   * unsupported, and no `InvoiceVoided` event exists in
+   * `docs/event-contracts.md`. `RefundIssued` / `CreditNoteIssued` now exist, but
+   * neither expresses a void, and inventing a contract here would be inventing an
+   * event no consumer has asked for.
    */
   async voidInvoice(id: string): Promise<Invoice> {
     const organizationId = await this.resolveAuthorizedOrg();
@@ -470,7 +577,9 @@ export class InvoicesService {
       }
       if (invoice.status === INVOICE_STATUS.PAID) {
         throw new BadRequestException(
-          'A paid invoice cannot be voided; issue a refund/credit note instead (out of scope)',
+          'A paid invoice cannot be voided; issue a refund against the payment ' +
+            '(POST /v1/payments/{id}/refunds) or a credit note against this invoice ' +
+            '(POST /v1/invoices/{id}/credit-notes) instead',
         );
       }
 
@@ -478,7 +587,7 @@ export class InvoicesService {
       const amountPaid = totals.get(invoice.id) ?? '0.00';
       if (Number(amountPaid) > 0) {
         throw new BadRequestException(
-          `Invoice already has ${amountPaid} collected against it; refunds are out of scope, so it cannot be voided`,
+          `Invoice already has ${amountPaid} collected against it; refund the payment or issue a credit note before voiding it`,
         );
       }
 
