@@ -198,8 +198,8 @@ The query definition is a **structured JSON** — NOT raw SQL — that `ReportEx
 interface QueryDefinition {
   /** The primary data source entity */
   source: string;
-  /** Column selections: {alias: "source_column" or aggregate} */
-  columns: Record<string, string>;
+  /** Column selections: {alias: ColumnRef} — a column, an aggregate, or a time bucket */
+  columns: Record<string, ColumnRef>;
   /** WHERE clause conditions (compiled safely) */
   filters?: FilterClause[];
   /** GROUP BY columns */
@@ -237,7 +237,7 @@ interface FilterClause {
 
 > **Rationale vs. raw SQL**: A structured definition allows the executor to validate columns against a known allowlist (preventing access to columns not in the entity's reporting schema), apply tenant-scoping (`organization_id = :orgId`) automatically, and generate parameterized queries.
 
-> **Known contradiction with §17 (surfaced, not resolved)**: The §17 examples place raw SQL *expressions* in `columns` — e.g. `"COUNT(*)"`, `"SUM(total_amount)"`, and a date-truncation expression. Arbitrary expressions cannot be checked against a column allowlist, so the safety guarantee stated above holds only for plain column references and a fixed set of allowlisted aggregates. Either the executor must restrict `columns` to that subset (in which case the §17 examples must be rewritten to match), or this allowlist guarantee must be explicitly weakened. This is an open decision — it is deliberately left visible here rather than silently dropped.
+> **Resolved — `columns` takes three shapes and no raw SQL (explicit decision)**: the contradiction with §17 is settled in favour of the allowlist, because a raw SELECT-list fragment can contain a subquery, which would reduce the automatic `organization_id` scoping to a filter on the outer `FROM` rather than a guarantee. A `columns` value is a `ColumnRef`, defined canonically in `src/reports/types/query-definition.ts`: a plain column; an aggregate from a closed set (`COUNT`/`SUM`/`AVG`/`MIN`/`MAX`, optional `DISTINCT`, `COUNT(*)` allowed); or a time bucket `{ bucket, unit }` with `unit` from `day`/`week`/`month`/`quarter`/`year`, compiled to `date_trunc`. The bucket variant is load-bearing rather than decorative: §6.x's `period`, `week` and `month` grouping keys are buckets and **no entity carries any of those names as a column**, so an aggregates-only allowlist could not execute the twelve catalog rows that group by one. Derived scalars (`rate`, `pct`, `days_overdue`, `tenure_months`, `ww_change`, `avg_gap`) are deliberately **not** expressions — a definition declares their inputs and the read layer derives them, the pattern P6-24 and P6-28 already use. `group_by` and `order_by` entries resolve against output aliases first, then source columns, which is what makes §17's grouping and ordering by `month` and `total` valid. §17's examples were rewritten to this shape, with their source names corrected to metadata casing and their now-redundant explicit `$orgId` filter removed.
 
 ### 3.2 `REPORTS_REPORT_JOBS` (new table)
 
@@ -1017,14 +1017,37 @@ CREATE TABLE "REPORTS_USER_REPORT_FAVORITES" (
 
 ## 17. Appendix: Query Definition JSON Examples
 
-### Simple Count Query
+These are the canonical shapes `ReportExecutorService` accepts. A `columns` value is a
+`ColumnRef` — a plain column, an allowlisted aggregate, or a time bucket — and never
+raw SQL (§3.1.1, :240). Source names are entity **class** names, because resolution is
+an exact match against `DataSource` metadata; `"member"` would be rejected where
+`"Member"` resolves. No example passes an explicit `organization_id` filter: the
+executor appends `organization_id = :orgId` from the requesting context, and nothing
+in a definition can replace or widen it.
+
+**`group_by` and `order_by` entries both resolve against output aliases first, then
+source columns**, and the rule is deliberately identical for the two: they address the
+same alias space, so treating them differently would be arbitrary. A bucketed alias is
+substituted by the expression it names — `group_by: ["month"]` where `month` is
+`{ bucket: "created_at", unit: "month" }` groups by `date_trunc('month', "created_at")`.
+This matters more than it looks: if `group_by` resolved only against source columns, the
+first example below would group by the raw `created_at` and return one row per timestamp
+instead of one per month. That is a query that **succeeds and returns wrong data**, which
+is a worse failure mode than the raw-SQL injection hole this appendix was rewritten to
+close.
+
+### Simple Count Query — a time bucket, not a date-truncation expression
+
+`Member` has no `month` column, and `period`/`week`/`month` exist on no entity
+anywhere in the schema, so the grouping key is declared as a bucket over the date
+column it derives from.
 
 ```json
 {
-  "source": "member",
+  "source": "Member",
   "columns": {
-    "month": "to_char(created_at, 'YYYY-MM')",
-    "count": "COUNT(*)"
+    "month": { "bucket": "created_at", "unit": "month" },
+    "count": { "fn": "COUNT", "column": "*" }
   },
   "group_by": ["month"],
   "order_by": [{ "column": "month", "direction": "ASC" }],
@@ -1032,21 +1055,29 @@ CREATE TABLE "REPORTS_USER_REPORT_FAVORITES" (
 }
 ```
 
+`group_by: ["month"]` and `order_by.column: "month"` both name the **output alias**,
+not a source column. The alias is substituted by the expression it names, so this
+groups by `date_trunc('month', "created_at")` — grouping by the underlying column
+would return one row per timestamp instead of one per month.
+
 ### Filtered Aggregate Query
 
 ```json
 {
-  "source": "invoice",
+  "source": "Invoice",
   "columns": {
     "status": "status",
-    "total": "SUM(total_amount)",
-    "count": "COUNT(*)"
+    "total": { "fn": "SUM", "column": "total_amount" },
+    "count": { "fn": "COUNT", "column": "*" }
   },
   "filters": [
-    { "column": "created_at", "operator": "BETWEEN", "value": ["$from", "$to"] },
-    { "column": "organization_id", "operator": "=", "value": "$orgId" }
+    { "column": "created_at", "operator": "BETWEEN", "value": ["$from", "$to"] }
   ],
   "group_by": ["status"],
   "order_by": [{ "column": "total", "direction": "DESC" }]
 }
 ```
+
+`status` is a plain column and groups directly; `total` is an aggregate and is
+ordered by its **alias**. `$from`/`$to` are resolved from the report parameters at
+execution time, per `FilterClause.value` (§3.1.1).
