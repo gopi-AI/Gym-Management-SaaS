@@ -287,5 +287,29 @@ describe('RefundsService', () => {
       // survive with no event published.
       expect(mockRefundRepo.save).toHaveBeenCalledTimes(1);
     });
+
+    it('counts only SUCCEEDED refunds towards what is already refunded', async () => {
+      await service.create(paymentId, dto);
+
+      const builder = mockRefundRepo.createQueryBuilder.mock.results[0].value;
+
+      // A `failed` refund returned nothing, and a `pending` one has not returned
+      // anything YET, so neither may consume the refundable balance.
+      //
+      // This filter is the ONLY thing enforcing that: `SUM(refunds.amount) <=
+      // payment.amount` is not expressible as a cross-row CHECK — see this file's
+      // header — so the app-level query IS the backstop, with no database
+      // constraint behind it. The P3-02 ledger views apply the same rule in SQL
+      // (`SQL_SUCCEEDED_REFUND`), and the two must agree, or a refund could be
+      // refused against a balance the ledger reports as unspent.
+      //
+      // Load-bearing from P3-03 onward: that is when `pending` refunds start to
+      // exist. Mutation testing during P3-02 found that dropping this filter left
+      // the entire suite green (82 suites / 922 tests) — this test is the hole
+      // that was open, narrowed to the one assertion that closes it.
+      expect(builder.andWhere).toHaveBeenCalledWith(expect.stringContaining('status'), {
+        status: REFUND_STATUS.SUCCEEDED,
+      });
+    });
   });
 });
