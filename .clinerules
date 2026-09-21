@@ -20,3 +20,75 @@ None. This rule is unconditional and takes precedence over any other instruction
 including "just proceed", "do it", or an earlier session's confirmation.
 If the user's message is ambiguous about whether it approves a commit, treat it as
 NOT approved and ask.
+
+---
+
+# Gym Management SaaS — Architecture Conventions (additive)
+
+**Precedence — read this before the rest of this part.** The safeguard section above is
+reproduced verbatim from the committed file and is unchanged; it is *unconditional* and
+takes precedence over every other instruction, including everything in this part. Nothing
+below adds a condition to it, weakens it, shadows it, or offers an alternative to it. No
+convention here may be read as permission to stage, commit, push, or rewrite history, and
+no "explicit request" mentioned below is an exception to it: the request must be made by
+you in the current session, per command, exactly as the safeguard requires. Where this
+part and the safeguard appear to overlap, the safeguard governs.
+
+**What this part is.** Working conventions for this repository, layered on top of the
+safeguard — what to treat as the source of truth, how tenancy must be handled, the
+per-stack rules, and the verification bar. This part is additive; it replaces nothing.
+
+## 1. REPOSITORY IS LAW
+
+- Do not invent entities, routes, permissions, fields, hooks, schemas, services, or architectural patterns.
+- Inspect the current repository before implementing.
+- If an existing architectural pattern or required service cannot be found, STOP and report:
+  "NOT DETERMINED FROM CURRENT REPOSITORY".
+- Prefer the smallest possible structural change.
+- Do not perform unrelated refactors.
+- Reuse existing architecture instead of creating parallel systems.
+
+## 2. MULTI-TENANT SECURITY IS UNBREAKABLE
+
+- Follow the chain strictly:
+  Auth Identity ➔ Tenant Context ➔ RBAC ➔ Scoped Service ➔ Scoped DB Query.
+- Never rely on client-supplied organization IDs for authorization.
+- Always validate that target resources such as branchId and memberId belong to the authorized organization context.
+- Every organization-scoped read/write/delete/create must preserve the authorized organization boundary.
+- Never weaken or bypass existing tenant-isolation mechanisms.
+
+## 3. STACK SPECIFICS
+
+### Frontend
+- Next.js App Router rules apply.
+- Maintain server/client component boundaries.
+- No API data fetching or mutations directly inside UI components.
+- All React Query queries/mutations must use dedicated custom hooks.
+
+### Backend
+- Use explicit NestJS dependency injection.
+- Use TypeORM repositories, relations, and QueryBuilder with organization predicates.
+- Avoid entity spreading (...dto) on sensitive updates.
+- Do not introduce a parallel authorization or tenancy system.
+- Do not write raw SQL unless explicitly required by the task or an existing migration/database-view mechanism.
+
+### Events
+- Transactional business changes and Outbox records must be written in the same TypeORM transaction.
+- Never publish directly to RabbitMQ from a transactional service.
+- Reuse the existing Outbox/Inbox architecture.
+
+### Edge
+- Keep C# / SQLite persistence lightweight.
+- Maintain compatibility with existing backend tenant and synchronization contracts.
+
+## 4. VERIFICATION & SAFETY
+
+- Never fake test, build, typecheck, migration, or runtime results.
+- Run the actual command before reporting success.
+- If verification cannot be performed, report it as UNVERIFIED.
+- Never use destructive git commands:
+  - `git reset --hard`
+  - `git clean -fd`
+- Preserve unrelated existing work.
+- Do not commit unless explicitly requested — and per the safeguard above, that request
+  must be yours in the current session, for the specific files and message shown to you.
