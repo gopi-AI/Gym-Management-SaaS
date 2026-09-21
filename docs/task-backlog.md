@@ -1264,6 +1264,132 @@ This document contains the implementation tasks broken down by phase, with depen
   - **Two adjacent pieces belong with whoever takes this**: §10's "Export file too large (>100 MB)" check, which the plan says the worker performs **before** export, and §8.3's new S3 **read** method for the download endpoint. Both are S3-facing and neither is meaningful without a bucket.
 - **Risks**: A job reports `completed` with a row count while its rows exist only in the worker's memory, so a caller that expects a retrievable result finds nothing. That is visible in the response shape (`result_s3_key` is null) rather than silent, but it is a real gap in the contract §4.2's download endpoint will need.
 
+### P6-37: §6.3's "Peak Hours" groups by `hour`, which is neither a column nor an allowlisted bucket unit *(Open — defect)*
+- **Objective**: Make "Peak Hours" executable — either by giving the row a grouping key that resolves, or by redefining the measure — so a seeded system row cannot fail `ReportExecutorService`'s validation on every execution.
+- **Dependencies**: §3.1.1's `columns` contract and its closed `TimeBucketUnit` set (`src/reports/types/query-definition.ts`). Same "declared name resolves against nothing" class as P6-30 and P6-31 for §1.2, and as P6-21/P6-24 for §6.2's rows.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§6.3's "Peak Hours" row, :484)
+  - `src/reports/types/query-definition.ts` (`TimeBucketUnit`, :39) — only if the resolution is to widen the bucket set
+- **Database changes**: None — `AttendanceRecord.check_in_time` is a `timestamptz` and already holds everything the measure needs.
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**: The catalog-integrity guard P6-21's **Tests** entry already asks for — every §6.x Key Column resolves against the declared source's metadata, or is a declared derived scalar (§3.1.1, :240). That test is the general guard for this whole class, not just this row.
+- **Acceptance criteria**:
+  - "Peak Hours" declares only a plain column, an allowlisted aggregate, or a bucket drawn from `TimeBucketUnit`. No value in its Key Columns fails to resolve.
+  - If hour-of-day bucketing is genuinely wanted, adding `hour` to `TimeBucketUnit` is recorded as an **explicit decision with its `date_trunc` semantics** — not left implied by a catalog row.
+- **Defect detail**:
+  - **`hour` exists nowhere in the schema.** Zero entity properties across `src/**/*.entity.ts`, and zero column definitions across `src/migrations/*.ts`. `AttendanceRecord`'s full column set is `id, organization_id, branch_id, member_id, check_in_time, check_out_time, check_in_method, check_out_method, checked_in_by` — there is no `hour` among them.
+  - **It cannot be declared as a bucket either, which is what makes the row unexecutable rather than merely misnamed.** `TimeBucketUnit` (`src/reports/types/query-definition.ts:39`) is `'day' | 'week' | 'month' | 'quarter' | 'year'`. There is no `hour`, and §3.1.1 (:240) closes that set deliberately — the unit "is never interpolated".
+  - **It fails at execution time, not at seed time.** §10 has `ReportExecutorService.validate()` check a row's declared columns against *current entity metadata*, which is the same failure mode P6-21 was filed for: the row passes creation and then fails on every run.
+  - **This is a contract gap, not missing data.** `date_trunc('hour', check_in_time)` is well-defined for a `timestamptz`, so peak-hour analysis is available in principle; what is absent is any way to *declare* it. §6.3's sibling row "Week-over-Week Trend" (:486) is expressible for exactly the opposite reason — `week` is in the closed set.
+  - **Adjacent and deliberately not folded in**: `avg_count` and `peak_count` (:484), and `unique_members` (:483), are legitimate aggregate aliases over real columns, not defects.
+- **Risks**: A seeded system row that cannot run; and a reader scoping peak-hour work from the catalog builds against a column that does not exist rather than against a stated contract limitation.
+
+### P6-38: §6.3's "Avg Session Duration" needs a duration that exists only as an expression the allowlist forbids — and its own description names §6.4's measure *(Open — defect)*
+- **Objective**: Resolve "Avg Session Duration" onto something expressible, or record its redefinition or deletion, so the row stops declaring a value no `QueryDefinition` can produce.
+- **Dependencies**: §3.1.1's `columns` allowlist. Related: §7.2's `reports_mv_daily_attendance`, which computes this same figure as MV SQL and belongs to P6-15 (Phase 6.2 — Stretch), so it is not a `QueryDefinition` source. Same class as P6-21/P6-24.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§6.3's "Avg Session Duration" row, :485)
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**: The catalog-integrity guard named under P6-37.
+- **Acceptance criteria**:
+  - The row declares only resolvable columns, or is redefined or deleted with the decision recorded — the treatment §6.2's "Membership Sales by Plan" and §6.1's "Membership Status Distribution" already received.
+- **Defect detail**:
+  - **`avg_duration` is not a column.** `AttendanceRecord` carries `check_in_time` and `check_out_time` and no duration column of any kind.
+  - **It is not a declared derived scalar either.** §3.1.1 (:240) enumerates the derived scalars as `rate`, `pct`, `days_overdue`, `tenure_months`, `ww_change` and `avg_gap`. `avg_duration` is not among them.
+  - **The value is an arithmetic expression, which `columns` cannot hold.** §3.1.1 admits exactly three shapes — a plain column, a closed-set aggregate *over a column*, or a closed-set time bucket. This measure is `AVG(check_out_time - check_in_time)`: an aggregate over a **difference of two columns**, which is none of the three. The allowlist is precisely what keeps a raw fragment out of the SELECT list, so "just allow it" reopens the hole §3.1.1 was resolved to close.
+  - **A second, independent defect sits in the same row**: its Description reads "**Average workout duration**" while its Source is `AttendanceRecord`. §6.4 already has "**Avg Workout Duration**" over `WorkoutSession` (:493). So this row's description states a measure belonging to a different row, against a source that cannot answer it — which is why the row reads as satisfiable at a glance.
+  - **Options, none prescribed here**: **(A)** repoint the measure at an entity that stores a duration — but the only such column is `WorkoutSession.duration_minutes`, which is §6.4's row, so the two would collide under a §6.3 heading; **(B)** extend the contract to admit declared expressions or derived scalars, which §3.1.1 deliberately rejected when it settled the raw-SQL contradiction; **(C)** drop the row, as §6.8's "Budget Utilization" was dropped in P6-22. This ticket records the state; the choice is the owner's.
+- **Risks**: A row that reads as satisfied ("it averages a duration") but cannot be declared at all; and a fix that quietly repoints it at workout sessions, which would duplicate §6.4's row under an attendance heading.
+
+### P6-39: §6.6's "Trainer Session Count" declares `total_duration`, which no PT entity stores — and no period bucket despite "over period" *(Open — defect)*
+- **Objective**: Resolve "Trainer Session Count" onto expressible columns, or record its redefinition, so the row's Key Columns all resolve against `PTSession`.
+- **Dependencies**: §3.1.1's `columns` allowlist — the same expression limitation as P6-38, but on the PT side. Same class as P6-21/P6-24.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§6.6's "Trainer Session Count" row, :520)
+- **Database changes**: None
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**: The catalog-integrity guard named under P6-37.
+- **Acceptance criteria**:
+  - Every Key Column in the row resolves against `PTSession`, or the row is redefined with the decision recorded.
+  - If the row is intended as a per-period series, it declares a `period`/`week`/`month` bucket rather than relying on `date_range` to imply one.
+- **Defect detail**:
+  - **`total_duration` is not a column.** `PTSession`'s full column set is `id, organization_id, branch_id, member_id, trainer_id, enrollment_id, scheduled_start, scheduled_end, actual_start, actual_end, status, notes, workout_session_id, created_at, updated_at`. There is no duration column, and `total_duration` appears nowhere in `src/**`.
+  - **It is an expression, not a column, and `columns` cannot hold it.** The measure is `SUM(actual_end - actual_start)` (or the scheduled equivalent): an aggregate over a **difference of two columns**, which is not one of §3.1.1's three admitted shapes — plain column, closed-set aggregate over a column, closed-set time bucket. Identical limitation to P6-38, so a resolution to one should be considered for both.
+  - **`session_count` is fine.** `COUNT(*)` over `PTSession` is a legitimate aggregate, so the row is half-expressible and half-not — which is exactly the shape that survives a spot check.
+  - **A second defect in the same row**: the Description reads "Sessions per trainer **over period**", but the row declares **no** time bucket (`period`/`week`/`month`), only a `date_range` filter. A filter bounds the range; it does not create a grouping key. Without a bucket the row cannot produce the per-period series its own description promises — the same mismatch §6.1's "Membership Status Distribution" was redefined to remove, and which §6.3's "Week-over-Week Trend" avoids by declaring `week`.
+  - **Adjacent and deliberately not folded in**: `trainer_id` is a real column and resolves; the row's `date_range` and `branch` filters are filters, not Key Columns, and are unaffected.
+- **Risks**: A seeded row with one unresolvable column among resolvable ones, so it fails validation on every execution while looking nearly correct; and a "per trainer over period" measure that returns a single aggregate once the duration is fixed.
+
+### P6-40: §6.6's "Trainer Utilization" needs `booked_hours` and `available_hours`, and the availability data was deliberately never built *(Open — defect)*
+- **Objective**: Resolve "Trainer Utilization" — a ratio whose denominator does not exist anywhere in the schema — by redefining or deleting the row and recording the decision, rather than leaving a catalog row that can never execute.
+- **Dependencies**: §3.1.1's `columns` allowlist for `booked_hours`; and the deliberately-absent trainer-availability model for `available_hours`. Same class as P6-21/P6-24. Shares its `booked_hours` expression problem with P6-38 and P6-39.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§6.6's "Trainer Utilization" row, :523)
+- **Database changes**: None here. Resolving `available_hours` would require the availability/booking tables that **`1788965263245-CreatePtTables.ts` records as not built** — explicitly out of scope for that migration and gated on a business rule that has not been defined. That is a separate, larger decision than this ticket.
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**: The catalog-integrity guard named under P6-37.
+- **Acceptance criteria**:
+  - "Trainer Utilization" declares only resolvable columns, or is deleted with the deletion recorded — the treatment P6-22 gave §6.8's "Budget Utilization", which was removed because its inputs lived in a service and Redis counters rather than in any queryable entity.
+  - If trainer utilization is genuinely wanted as a measure, the absence of an availability source is recorded as the blocker, not worked around in a catalog row.
+- **Defect detail**:
+  - **Neither `booked_hours` nor `available_hours` exists anywhere.** Zero entity properties across `src/**/*.entity.ts` and zero column definitions across `src/migrations/*.ts`. `PTSession` holds only `scheduled_start`, `scheduled_end`, `actual_start` and `actual_end`; `PersonalTrainer` (`PT_TRAINERS`) holds `id, organization_id, branch_id, user_id, first_name, last_name, specialty, certification, hire_date, is_active, created_at, updated_at` — no capacity (`working_hours`, `max_sessions`, `availability`, `capacity`) of any kind.
+  - **The absence is documented in the repository as intentional, which is what distinguishes this from a naming error.** `src/migrations/1788965263245-CreatePtTables.ts:18-20` states: *"No `PT_TRAINER_AVAILABILITY` / `PT_TRAINER_BOOKINGS` tables: §1 marks the availability recurrence pattern as needing a business rule definition, and neither entity is in this task's scope."* So `available_hours` is not missing by omission — the project deliberately declined to model availability until a rule exists.
+  - **So this row cannot be fixed by any allowlist extension.** `booked_hours` is at least derivable in principle from `scheduled_start`/`scheduled_end`, but only as the same forbidden two-column difference as P6-38/P6-39. `available_hours` is a hard stop: there is no column, no table, and no agreed rule that would produce it. `pct` is a declared derived scalar (P6-33/P6-35 territory) but depends on both inputs, so it is unresolvable by construction too.
+  - **A second defect in the same row**: the Description reads "Trainer time utilization **over period**", with no `period`/`week`/`month` bucket declared — the same description-versus-declaration mismatch recorded for P6-39.
+  - **This is the strongest deletion case of the five.** §6.8's "Budget Utilization" was deleted on precisely this reasoning — its inputs were "not one source" and not durable rows — and the same argument applies here more simply: utility is a ratio over a denominator the schema does not have.
+- **Risks**: A seeded row that fails validation on every execution; and worse, a future implementer reading "Trainer Utilization" as a supported measure and inventing an availability model to satisfy a catalog row, reversing a scope decision that was made deliberately and recorded in the PT migration.
+
+### P6-41: §6.7's "Points Issued/Burned" declares `total_points`; the entity column is `points` *(Open — defect)*
+- **Objective**: Correct the row's Key Column to a name that resolves on `LoyaltyTransaction`, and correct the same wrong name where it has propagated into a shipped DTO's provenance comment.
+- **Dependencies**: §3.1.1's column validation (§10). Same class as P6-30, which fixed an identical §1.2 defect on this very entity. Note §6.7's own note (:539) already records that this section's **other two** rows are unresolved and "deliberately not redefined here" — this ticket covers only `total_points` and should be closed alongside whichever ticket takes those.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§6.7's "Points Issued/Burned" row, :529)
+  - `src/loyalty/dto/loyalty-read.dto.ts` (:16-17) — a **comment** that cites the row by its wrong column name
+- **Database changes**: None — the column exists; only its declared name is wrong.
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**: The catalog-integrity guard named under P6-37 — this row is precisely what it would have caught.
+- **Acceptance criteria**:
+  - The row declares a Key Column that exists on `LoyaltyTransaction` under that exact name.
+  - `src/loyalty/dto/loyalty-read.dto.ts`'s citation of the row no longer names a column the entity does not have.
+- **Defect detail**:
+  - **The entity column is `points`, not `total_points`.** `LoyaltyTransaction`'s full column set is `id, account_id, organization_id, transaction_type, points, remaining_points, reference_type, reference_id, description, expires_at, created_at`. `total_points` exists **nowhere** in `src/**` as a column or entity property.
+  - **The wrong name has propagated into shipping code.** `src/loyalty/dto/loyalty-read.dto.ts:16-17` documents the dashboard field `pointsIssuedBurned` as sourced from *"`Points Issued/Burned` (transaction_type, count, total_points)"* — so a delivered DTO carries the catalog's non-existent column name in its provenance note. The DTO's own fields are correctly named and nothing is broken at runtime today; the **citation** is what is wrong, and it is the kind of comment a future reader trusts.
+  - **The failure mode is §10's, not the database's.** `ReportExecutorService.validate()` checks declared columns against current entity metadata at execution time, so the seeded row passes creation and fails on every execution with a column-not-found error — the P6-21 pattern.
+  - **Likely a one-word fix, but deliberately not applied here.** Reading the Description ("Loyalty points movements over time") and the sibling row, the intended measure is almost certainly `SUM(points)` grouped by `transaction_type`, with `total_points` as the **output alias** rather than a declared source column — §3.1.1 allows aliases, and `count` in the same row is already such an alias. Confirming that reading is a small scope decision, so it is left to the owner rather than assumed.
+  - **Adjacent and deliberately not folded in**: `transaction_type` and `count` both resolve; §6.7's other two rows (`Redemption Rate`, `Active Loyalty Accounts`) have their own recorded questions and are not in scope here — though `Redemption Rate`'s `period` is fine as a bucket, contrary to §6.7's note (:539) which lists `period` among its "derived values, not stored columns".
+- **Risks**: A seeded row that fails validation on every execution; and a wrong column name preserved in a code comment that a later reader takes as the schema's vocabulary — the same defect P6-30 corrected in §1.2 for this entity.
+
+### P6-42: Three plan references resolve to nothing the plan defines, and §14/Q2 restates a question §3.1.1 marks resolved *(Open — defect)*
+- **Objective**: Remove or define the three dangling references, and reconcile §14/Q2 with §3.1.1's explicit resolution, so a reader following any of them reaches real material.
+- **Dependencies**: None technically. Found during the full section-by-section read of `docs/phase6-scoping-plan.md` that the worktree health check left incomplete, and recorded here rather than folded into P6-36's commit, which was a migration/provenance change. Same "plan text not true of the plan's own contents" class as P6-33 and P6-34.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (:111; :240; :628; :717; :953; and :1000 for the adjacent wireframe item)
+  - `src/reports/types/query-definition.ts` (:55) — only if :240's duplicated count is corrected with it
+- **Database changes**: None
+- **API changes**: None. **Frontend changes**: None. **Worker changes**: None.
+- **Tests**: None — corrective documentation, except that :240's count is duplicated verbatim in `src/reports/types/query-definition.ts:55`, so a fix must touch both or they will drift apart.
+- **Acceptance criteria**:
+  - Every service, question code and interface named in the plan either resolves to a definition in the plan or is reworded to describe what actually exists.
+  - §14 lists only genuinely open questions.
+- **Defect detail**:
+  - **1. `ReportService` is exported but defined nowhere (:111).** §2.2's dependency block ends `└── exports: ReportService (for use by other modules like AI)`. `ReportService` appears **once** in the whole document; it is absent from §2.1's module tree, which names `report-schemas.service.ts`, `report-jobs.service.ts`, `report-executor.service.ts`, `export.service.ts` and `materialized-views.service.ts`; and there is no `report.service.ts` in `src/reports/services/`. Every other service the document names is defined somewhere — this one is a phantom export, so a reader cannot tell whether material is missing from the document or from the repository.
+  - **2. `Q7` is cited but §14 defines only Q1–Q6 (:628).** §7.2's `reports_mv_daily_workouts` comment reads *"SUM(duration_minutes) was explicitly rejected per Q7 (see src/workouts/entities/workout-session.entity.ts)"*. §14 titled "Open Questions" contains exactly six numbered items, and `grep -n 'Q7'` over the document returns line 628 alone. Whether the intended referent is a §14 question (which does not exist) or a question number from `docs/phase2-scoping-plan.md` is **not determinable from this document** — so this is not merely a broken link, it is an unresolvable provenance claim about a real design rejection.
+  - **3. `MaterializedViewConfig` is rejected but never introduced (:717).** §7.4 says materialized views are *"not declared through an in-code `MaterializedViewConfig` interface"*. A repository-wide and document-wide search returns **only that line**. The document rejects a construct it never defines, so the rejection cannot be evaluated — and "Decision A1", which the same line invokes, has no defining location either.
+  - **4. §14/Q2 contradicts §3.1.1's resolution (:953 vs :240).** Q2 asks *"Should the report definition be a structured JSON or a raw SQL template?"* and recommends structured JSON, while §3.1.1 (:240) opens **"Resolved — `columns` takes three shapes and no raw SQL (explicit decision)"**, and `src/reports/types/query-definition.ts:13` carries the same RESOLVED banner. One of the two is stale; the resolution is the newer, code-backed one, so Q2 should be removed or restated as the genuinely-open residual (whether `filters` should also be closed-ended) rather than left inviting a settled question to be re-litigated.
+  - **5. Adjacent, deliberately not folded in.** **(a)** §3.1.1 (:240) claims *"the twelve catalog rows that group by one"* — I can account for **8** rows whose Key Columns name `period`/`week`/`month`/`hour` (:484, :486, :493, :512, :513, :530, :531, :554), or **7** if `hour` is excluded per P6-37. The *argument* is sound (buckets are load-bearing); the *count* looks stale, most plausibly from before several rows were redefined to snapshots. **(b)** §16.1's wireframe (:1000) still lists a report named "Active Members — Q4 2026", but §6.1's P6-21 redefinition replaced that row with "Membership Status Distribution" — a point-in-time snapshot with **no** time dimension — so the wireframe names a report and a period that no longer exist.
+- **Risks**: A reader following `ReportService` or `Q7` finds nothing at either end and cannot tell which side is incomplete; §14/Q2 invites re-opening a decision already implemented in code; and the "twelve" figure is quoted in `src/reports/types/query-definition.ts`, so if only the document is corrected the two copies disagree.
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
