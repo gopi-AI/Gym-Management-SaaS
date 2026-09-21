@@ -26,8 +26,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * a constraint enforcing it. Not adding one is deliberate — a unique index on
  * `name` would be a schema decision the plan has not made.
  */
-export class CreateMaterializedViewsTable1788965263255 implements MigrationInterface {
-    name = 'CreateMaterializedViewsTable1788965263255'
+export class CreateMaterializedViewsTable1788965263402 implements MigrationInterface {
+    name = 'CreateMaterializedViewsTable1788965263402'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
         await queryRunner.query(`

@@ -12,7 +12,7 @@ import { LoyaltyExpiryService } from './loyalty-expiry.service';
 /**
  * DB-backed regression test for BOTH `LOYALTY_TRANSACTIONS` writers.
  *
- * **Why this exists.** 1788965263257-AddOrganizationIdToLoyaltyTransactions.ts
+ * **Why this exists.** 1788965263403-AddOrganizationIdToLoyaltyTransactions.ts
  * added `organization_id` as `NOT NULL` with no DEFAULT, but neither writer set
  * it — so every accrual insert and every expiry-sweep insert started failing with
  * `null value in column "organization_id" ... violates not-null constraint`. That

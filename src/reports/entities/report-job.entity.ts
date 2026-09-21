@@ -5,7 +5,7 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 
  *
  * Implements docs/phase6-scoping-plan.md §3.2 (entity metadata for the
  * `"REPORTS_REPORT_JOBS"` table created by
- * 1788965263254-CreateReportJobsTable.ts).
+ * 1788965263401-CreateReportJobsTable.ts).
  *
  * `status` is the state machine of §3.2:
  *   pending | running | completed | failed | cancelled

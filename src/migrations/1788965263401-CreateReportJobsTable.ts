@@ -30,8 +30,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * index and the migration owns it — a future `migration:generate` will see it as
  * extra and want to drop it. See the entity's docblock.
  */
-export class CreateReportJobsTable1788965263254 implements MigrationInterface {
-    name = 'CreateReportJobsTable1788965263254'
+export class CreateReportJobsTable1788965263401 implements MigrationInterface {
+    name = 'CreateReportJobsTable1788965263401'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
         await queryRunner.query(`

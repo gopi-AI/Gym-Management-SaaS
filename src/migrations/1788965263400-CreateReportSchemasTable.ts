@@ -21,8 +21,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * this follows the plan's explicit choice rather than the sibling pattern, and
  * the divergence is recorded in the entity's docblock.
  */
-export class CreateReportSchemasTable1788965263253 implements MigrationInterface {
-    name = 'CreateReportSchemasTable1788965263253'
+export class CreateReportSchemasTable1788965263400 implements MigrationInterface {
+    name = 'CreateReportSchemasTable1788965263400'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
         await queryRunner.query(`

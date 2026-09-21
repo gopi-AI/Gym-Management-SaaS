@@ -13,7 +13,7 @@ import type { QueryDefinition } from '../types/query-definition';
  *
  * Implements docs/phase6-scoping-plan.md §3.1 (entity metadata for the
  * `"REPORTS_REPORT_SCHEMAS"` table created by
- * 1788965263253-CreateReportSchemasTable.ts).
+ * 1788965263400-CreateReportSchemasTable.ts).
  *
  * `query_definition` holds the structured JSON of §3.1.1 — NOT raw SQL. The
  * executor compiles it, validates every column against entity metadata and

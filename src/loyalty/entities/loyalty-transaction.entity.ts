@@ -45,7 +45,7 @@ export class LoyaltyTransaction {
    * Written by both writers — `LoyaltyAccrualService.awardForTrigger()` (which
    * already holds the organization) and `LoyaltyExpiryService.expireTransaction()`
    * (which already resolves it) — and backfilled deterministically for existing
-   * rows in 1788965263257-AddOrganizationIdToLoyaltyTransactions.ts.
+   * rows in 1788965263403-AddOrganizationIdToLoyaltyTransactions.ts.
    *
    * No FK to TENANCY_ORGANIZATIONS, matching the other loyalty tables, whose
    * organization_id columns are plain `uuid NOT NULL`.

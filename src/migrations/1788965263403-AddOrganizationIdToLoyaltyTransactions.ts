@@ -34,8 +34,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * LOYALTY_REWARDS.organization_id are all plain `uuid NOT NULL`), so this column
  * matches its own domain rather than introducing a new constraint shape.
  */
-export class AddOrganizationIdToLoyaltyTransactions1788965263257 implements MigrationInterface {
-    name = 'AddOrganizationIdToLoyaltyTransactions1788965263257'
+export class AddOrganizationIdToLoyaltyTransactions1788965263403 implements MigrationInterface {
+    name = 'AddOrganizationIdToLoyaltyTransactions1788965263403'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
         await queryRunner.query(`

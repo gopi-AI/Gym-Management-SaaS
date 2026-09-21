@@ -5,7 +5,7 @@ import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
  *
  * Implements docs/phase6-scoping-plan.md §3.3 (entity metadata for the
  * `"REPORTS_MATERIALIZED_VIEWS"` table created by
- * 1788965263255-CreateMaterializedViewsTable.ts).
+ * 1788965263402-CreateMaterializedViewsTable.ts).
  *
  * This table did not exist before Phase 6: the name appeared in
  * docs/database-plan.md only as a Mermaid ERD node, with no SQL and no

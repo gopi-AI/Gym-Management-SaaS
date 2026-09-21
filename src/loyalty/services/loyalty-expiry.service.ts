@@ -87,7 +87,7 @@ export class LoyaltyExpiryService {
     await this.transactionRepository.manager.transaction(async (manager) => {
       // 1. Fetch the account to get the organization_id for the event envelope and
       //    for the expire row's own organization_id (NOT NULL since
-      //    1788965263257-AddOrganizationIdToLoyaltyTransactions.ts). The column is
+      //    1788965263403-AddOrganizationIdToLoyaltyTransactions.ts). The column is
       //    guaranteed non-null by LOYALTY_TRANSACTIONS.account_id's FK.
       const account = await manager.getRepository(LoyaltyAccount).findOne({
         where: { id: earnTxn.account_id },
