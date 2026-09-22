@@ -730,9 +730,9 @@ This document contains the implementation tasks broken down by phase, with depen
   - src/reports/ (canonical system report definitions, if extracted from the migration)
   - docs/phase6-scoping-plan.md §6 and §11 (source of truth for the catalog and seed contract)
 - **Database changes**:
-  - Insert the initial 12 system report schemas into `REPORTS_REPORT_SCHEMAS` for each organization: `New Members (Daily/Weekly/Monthly)`, `Member Demographics`, `Membership Status Distribution`, `Membership Tenure Distribution`, `Revenue Summary`, `Membership Sales by Plan`, `Outstanding Invoices`, `Payment Method Mix`, `Daily Check-ins`, `Peak Hours`, `Avg Session Duration`, and `Week-over-Week Trend`.
+  - Insert the initial 11 system report schemas into `REPORTS_REPORT_SCHEMAS` for each organization: `New Members (Daily/Weekly/Monthly)`, `Member Demographics`, `Membership Status Distribution`, `Membership Tenure Distribution`, `Revenue Summary`, `Membership Sales by Plan`, `Outstanding Invoices`, `Payment Method Mix`, `Daily Check-ins`, `Peak Hours`, and `Week-over-Week Trend`. The `Avg Session Duration` row is excluded from this migration's INSERT set and deferred to P6-38, the same treatment already given to `Refund Report`.
   - Set `is_system = true`, `is_active = true`, and `created_by = NULL` for every seeded row, with the correct organization scope and canonical `query_definition`, parameters, category, name, and description.
-  - This migration seeds exactly 12 report-schema rows per organization and does not reference, check for, or depend on `Refund` or P3-02 in any way. The `Refund Report` row is added later by a separate migration file, created only once `1788965263258-CreateRefundAndCreditNoteTables.ts` is present in this branch's migration history.
+  - This migration seeds exactly 11 report-schema rows per organization and does not reference, check for, or depend on `Refund` or P3-02 in any way. The `Refund Report` row is added later by a separate migration file, created only once `1788965263258-CreateRefundAndCreditNoteTables.ts` is present in this branch's migration history.
 - **API changes**: None
 - **Frontend changes**: None
 - **Worker changes**: None
@@ -743,12 +743,12 @@ This document contains the implementation tasks broken down by phase, with depen
   - Organizations remain isolated: no report schema references another organization's ID.
   - Migration behavior is safe to rerun or fails without creating duplicate catalog rows.
 - **Acceptance criteria**:
-  - All existing organizations receive the initial 12 executable system reports, one row per report per organization.
+  - All existing organizations receive the initial 11 executable system reports, one row per report per organization; `Avg Session Duration` is deferred to P6-38 pending resolution of its non-executable QueryDefinition shape.
   - System rows cannot be modified or deleted through the existing custom-schema API behavior.
   - The seed uses the canonical P6-07 definitions and does not introduce report-column names that are absent from the current entities.
-  - The migration is ordered after `REPORTS_REPORT_SCHEMAS` creation and seeds exactly 12 rows without any Refund or P3-02 dependency.
+  - The migration is ordered after `REPORTS_REPORT_SCHEMAS` creation and seeds exactly 11 rows, with `Avg Session Duration` deferred to P6-38, without any Refund or P3-02 dependency.
   - New organizations created after this migration are provisioned by the follow-on lifecycle work in **P6-44**.
-- **Risks**: Catalog definitions can drift between the migration and organization-creation provisioning path, and organizations created after this migration will otherwise have no system reports; address the lifecycle gap and keep both paths on the canonical definitions in **P6-44**.
+- **Risks**: Catalog definitions can drift between the migration and organization-creation provisioning path, and organizations created after this migration will otherwise have no system reports; address the lifecycle gap and keep both paths on the canonical definitions in **P6-44**. A future follow-on migration adding `Avg Session Duration` depends on resolution of **P6-38**, mirroring the `Refund Report` follow-on migration's dependency on **P3-02**.
 
 ### P6-44: Provision System Report Schemas for New Organizations
 - **Objective**: Provision the canonical P6-07 system report catalog whenever a new organization is created so organizations created after the seed migration receive the same initial system reports as existing organizations.
