@@ -722,6 +722,65 @@ This document contains the implementation tasks broken down by phase, with depen
   - Widget components (charts, tables, metrics)
   - Date range selectors
 
+### P6-07: Seed System Report Schemas
+- **Objective**: Seed the platform-defined system report schemas from the canonical Phase 6 report catalog so every existing organization has the initial report definitions available through the reports API.
+- **Dependencies**: P6-01
+- **Files/modules affected**:
+  - src/migrations/ (system report schema seed migration)
+  - src/reports/ (canonical system report definitions, if extracted from the migration)
+  - docs/phase6-scoping-plan.md §6 and §11 (source of truth for the catalog and seed contract)
+- **Database changes**:
+  - Insert the initial 12 system report schemas into `REPORTS_REPORT_SCHEMAS` for each organization: `New Members (Daily/Weekly/Monthly)`, `Member Demographics`, `Membership Status Distribution`, `Membership Tenure Distribution`, `Revenue Summary`, `Membership Sales by Plan`, `Outstanding Invoices`, `Payment Method Mix`, `Daily Check-ins`, `Peak Hours`, `Avg Session Duration`, and `Week-over-Week Trend`.
+  - Set `is_system = true`, `is_active = true`, and `created_by = NULL` for every seeded row, with the correct organization scope and canonical `query_definition`, parameters, category, name, and description.
+  - This migration seeds exactly 12 report-schema rows per organization and does not reference, check for, or depend on `Refund` or P3-02 in any way. The `Refund Report` row is added later by a separate migration file, created only once `1788965263258-CreateRefundAndCreditNoteTables.ts` is present in this branch's migration history.
+- **API changes**: None
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Migration seeds the expected report count and names for every existing organization.
+  - Every seeded row has the required system, active, and null-author fields and the correct organization ID.
+  - Seeded query definitions pass report-schema validation and use only the canonical source entities and column names from the Phase 6 catalog.
+  - Organizations remain isolated: no report schema references another organization's ID.
+  - Migration behavior is safe to rerun or fails without creating duplicate catalog rows.
+- **Acceptance criteria**:
+  - All existing organizations receive the initial 12 executable system reports, one row per report per organization.
+  - System rows cannot be modified or deleted through the existing custom-schema API behavior.
+  - The seed uses the canonical P6-07 definitions and does not introduce report-column names that are absent from the current entities.
+  - The migration is ordered after `REPORTS_REPORT_SCHEMAS` creation and seeds exactly 12 rows without any Refund or P3-02 dependency.
+  - New organizations created after this migration are provisioned by the follow-on lifecycle work in **P6-44**.
+- **Risks**: Catalog definitions can drift between the migration and organization-creation provisioning path, and organizations created after this migration will otherwise have no system reports; address the lifecycle gap and keep both paths on the canonical definitions in **P6-44**.
+
+### P6-44: Provision System Report Schemas for New Organizations
+- **Objective**: Provision the canonical P6-07 system report catalog whenever a new organization is created so organizations created after the seed migration receive the same initial system reports as existing organizations.
+- **Dependencies**: P6-07; organization creation flow; P3-02 for the optional `Refund Report` row
+- **Files/modules affected**:
+  - src/tenancy/services/organizations.service.ts (organization-creation lifecycle)
+  - src/tenancy/ (module wiring and organization creation integration tests)
+  - src/reports/ (reusable canonical system-report definitions and provisioning service)
+  - src/migrations/ or database constraints, if required to enforce idempotency
+- **Database changes**:
+  - No new report catalog or parallel schema; reuse `REPORTS_REPORT_SCHEMAS` and the canonical definitions established by P6-07.
+  - Add the minimum uniqueness or conflict strategy needed to make provisioning idempotent per organization and system report definition, if the existing schema does not already provide one.
+- **API changes**: None; organization creation continues to expose the existing API contract.
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Creating an organization provisions the complete initial 12-report catalog with the new organization ID.
+  - Provisioning is organization-scoped and cannot read, write, or duplicate another organization's report schemas.
+  - Repeating the provisioning operation, retrying organization creation after a partial failure, or invoking the path concurrently does not create duplicate system rows.
+  - Provisioned rows have `is_system = true`, `is_active = true`, and `created_by = NULL`, and match the P6-07 names, categories, descriptions, parameters, and query definitions.
+  - Organization creation and report provisioning are atomic, or the implementation provides an explicit failure-safe recovery path that cannot leave silently incomplete catalog state.
+  - A failure in provisioning is surfaced and tested; the organization is not reported as successfully created with an untracked partial catalog.
+  - When P3-02's `Refund` entity/table is available, the optional `Refund Report` is provisioned using the same canonical definition; otherwise it is omitted without blocking the 12-report baseline.
+  - Existing organizations and the P6-07 migration path remain unchanged and are not reseeded or duplicated by the lifecycle hook.
+- **Acceptance criteria**:
+  - Every newly created organization receives the same canonical initial report catalog as an organization covered by P6-07.
+  - Provisioning derives the organization boundary from the authorized organization-creation context and never accepts a client-supplied organization ID as an authorization substitute.
+  - Provisioning is idempotent, transactionally consistent or explicitly failure-safe, and safe under retries and concurrent execution.
+  - The implementation reuses one canonical definition set so migration and lifecycle provisioning cannot drift.
+  - The 12-report baseline is always available; `Refund Report` is included only when P3-02 is present.
+- **Risks**: A non-atomic or non-idempotent hook could leave new organizations with incomplete or duplicate system catalogs; definition drift between P6-07 and this path could make report behavior depend on organization age.
+
 ### P6-20: Attendance materialized view buckets check-ins by session-zone day, not organization-local day *(Applied)*
 - **Objective**: Make `reports_mv_daily_attendance` (§7.2 of `docs/phase6-scoping-plan.md`) bucket `check_in_time` into the **organization's** local calendar day — joining `TENANCY_ORGANIZATIONS` and converting per row with `AT TIME ZONE o.timezone` — so a check-in near local midnight is not attributed to the wrong `date`.
 - **Dependencies**: P6-15 (Materialized view migration + refresh worker) — the view is currently only defined in the Phase 6 scoping plan; no migration creates it. This defect has to be fixed in the migration P6-15 writes, not after it ships.
