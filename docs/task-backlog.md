@@ -722,6 +722,15 @@ This document contains the implementation tasks broken down by phase, with depen
   - Widget components (charts, tables, metrics)
   - Date range selectors
 
+### P6-06: Report-schema creation rejects declared $ filter placeholders without runtime values (Open — defect)
+- **Objective**: Separate report-parameter declarations from execution-time parameter values so custom report schemas containing date-range or other $name filter placeholders can be created through the API and resolved when the report executes.
+- **Finding**: ReportSchemasService.create() calls assertDefinitionIsValid(dto.query_definition, organizationId) at src/reports/services/report-schemas.service.ts:112-114, without passing dto.parameters. The helper accepts an optional parameter-value map and forwards it directly to validation at src/reports/services/report-schemas.service.ts:70-76:
+  this.validator.validate(definition, { organizationId, parameters }).
+  ReportQueryValidator.validate() defaults the context parameters to {} at src/reports/services/report-query-validator.service.ts:458, then validates every filter through validateFilter() at :459-460. For $-prefixed values, validateFilter() requires the name to exist in that runtime map at src/reports/services/report-query-validator.service.ts:291-301; otherwise it throws MISSING_FILTER_VALUE at :295-298.
+- **Impact**: A custom report submitted through the API with a definition such as BETWEEN ['$from', '$to'] cannot be created when its DTO contains only the parameter declaration metadata — or even when parameters: [] is used — because creation validates placeholders as though execution-time values had already been supplied. The validator's own contract documents $name values as placeholders \"resolved from the report parameters at execution time\" in src/reports/types/query-definition.ts:119-123.
+- **Scope**: Independent of P6-07. Do not weaken tenant scoping or execution-time validation; clarify the declaration/runtime boundary and retain actual value validation when a report runs.
+- **Note**: P6-07's seed migration (commit a832879b) is unaffected by this defect — it inserts rows directly via QueryRunner, bypassing ReportSchemasService.create() and this validation path entirely.
+
 ### P6-07: Seed System Report Schemas
 - **Objective**: Seed the platform-defined system report schemas from the canonical Phase 6 report catalog so every existing organization has the initial report definitions available through the reports API.
 - **Dependencies**: P6-01
