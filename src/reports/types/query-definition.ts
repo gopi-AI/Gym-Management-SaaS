@@ -67,7 +67,7 @@ export interface QueryDefinition {
   columns: Record<string, ColumnRef>;
 
   /** WHERE conditions, compiled to parameterised fragments. */
-  filters?: FilterClause[];
+  filters?: readonly FilterClause[];
 
   /**
    * GROUP BY columns. Each entry resolves against **output aliases first**, then
@@ -77,14 +77,14 @@ export interface QueryDefinition {
    * `date_trunc('month', "created_at")` rather than by the raw timestamp — grouping
    * by the underlying column would produce one row per timestamp, not per month.
    */
-  group_by?: string[];
+  group_by?: readonly string[];
 
   /**
    * ORDER BY clause. `column` resolves against **output aliases first**, then source
    * columns — §17's examples order by aliases (`"total"`, `"month"`), which are not
    * source columns, so alias-first is the reading that makes them valid.
    */
-  order_by?: { column: string; direction: 'ASC' | 'DESC' }[];
+  order_by?: readonly { column: string; direction: 'ASC' | 'DESC' }[];
 
   /** LIMIT. */
   limit?: number;

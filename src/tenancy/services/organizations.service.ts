@@ -1,16 +1,19 @@
-import { Injectable, forwardRef } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Injectable } from '@nestjs/common';
+import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Organization } from '../entities/organization.entity';
 import { CreateOrganizationDto } from '../dto/create-organization.dto';
 import { UpdateOrganizationDto } from '../dto/update-organization.dto';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
+import { provisionSystemReportSchemas } from '../../reports/services/system-report-schema-provisioner';
 
 @Injectable()
 export class OrganizationsService {
   constructor(
     @InjectRepository(Organization)
     private readonly organizationRepository: Repository<Organization>,
+    @InjectDataSource()
+    private readonly dataSource: DataSource,
     private readonly tenantContextService: TenantContextService,
   ) {}
 
@@ -28,12 +31,18 @@ export class OrganizationsService {
   }
 
   async create(dto: CreateOrganizationDto): Promise<Organization> {
-    const organization = this.organizationRepository.create({
-      ...dto,
-      is_active: dto.is_active ?? true,
+    return this.dataSource.transaction(async (manager) => {
+      const organizationRepository = manager.getRepository(Organization);
+      const organization = organizationRepository.create({
+        ...dto,
+        is_active: dto.is_active ?? true,
+      });
+      const saved = await organizationRepository.save(organization);
+      const createdOrganization = Array.isArray(saved) ? saved[0] : saved;
+
+      await provisionSystemReportSchemas(manager, createdOrganization.id);
+      return createdOrganization;
     });
-    const saved = await this.organizationRepository.save(organization);
-    return Array.isArray(saved) ? saved[0] : saved;
   }
 
   async update(id: string, dto: UpdateOrganizationDto): Promise<Organization | null> {

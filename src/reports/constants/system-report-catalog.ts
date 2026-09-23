@@ -1,22 +1,8 @@
-import { MigrationInterface, QueryRunner } from 'typeorm';
+// Deliberate duplicate of the migration's SYSTEM_REPORT_SCHEMAS
+// (src/migrations/1788965263405-SeedSystemReportSchemas.ts), kept separate because
+// that migration is already committed/run and should not be refactored. If this
+// catalog is ever revised, the migration's copy must be checked and updated too.
 
-/**
- * Phase 6 — seed the canonical system report schemas for every organization.
- *
- * The definitions are inserted directly through QueryRunner rather than through
- * ReportSchemasService.create(). This is intentional: the migration seeds the
- * reviewed catalog as database data and does not run the application schema-create
- * validation path. `parameters` is the declared JSON column value and is empty for
- * every catalog row; filter placeholders remain in query_definition as supplied by
- * the catalog.
- *
- * Idempotency uses an application-level existence check because
- * REPORTS_REPORT_SCHEMAS has no uniqueness constraint on organization/name/system.
- */
-
-// src/reports/constants/system-report-catalog.ts holds an intentionally duplicated copy
-// for organization-creation provisioning (P6-44); if these definitions are ever revised,
-// that file must be checked and updated too.
 export const SYSTEM_REPORT_SCHEMAS = [
     {
         name: 'New Members (Daily/Weekly/Monthly)',
@@ -205,57 +191,3 @@ export const SYSTEM_REPORT_SCHEMAS = [
     },
 ] as const;
 
-const SYSTEM_REPORT_NAMES = SYSTEM_REPORT_SCHEMAS.map((schema) => schema.name);
-
-export class SeedSystemReportSchemas1788965263405 implements MigrationInterface {
-    name = 'SeedSystemReportSchemas1788965263405'
-
-    public async up(queryRunner: QueryRunner): Promise<void> {
-        const organizations: Array<{ id: string }> = await queryRunner.query(
-            `SELECT "id" FROM "TENANCY_ORGANIZATIONS" ORDER BY "id" ASC`,
-        );
-
-        for (const organization of organizations) {
-            for (const schema of SYSTEM_REPORT_SCHEMAS) {
-                // This name-only check prevents duplicate inserts, but it does not
-                // correct query_definition drift if a future revision edits a row
-                // that already exists in an environment.
-                const existing: Array<{ id: string }> = await queryRunner.query(
-                    `SELECT "id" FROM "REPORTS_REPORT_SCHEMAS"
-                     WHERE "organization_id" = $1
-                       AND "name" = $2
-                       AND "is_system" = true
-                     ORDER BY "created_at" ASC, "id" ASC
-                     LIMIT 1`,
-                    [organization.id, schema.name],
-                );
-                if (existing.length > 0) {
-                    continue;
-                }
-
-                await queryRunner.query(
-                    `INSERT INTO "REPORTS_REPORT_SCHEMAS"
-                     ("organization_id", "name", "description", "category", "query_definition", "parameters", "is_system", "is_active", "created_by")
-                     VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, true, true, NULL)`,
-                    [
-                        organization.id,
-                        schema.name,
-                        schema.description,
-                        schema.category,
-                        JSON.stringify(schema.query_definition),
-                        JSON.stringify([]),
-                    ],
-                );
-            }
-        }
-    }
-
-    public async down(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.query(
-            `DELETE FROM "REPORTS_REPORT_SCHEMAS"
-             WHERE "is_system" = true
-               AND "name" = ANY($1::varchar[])`,
-            [SYSTEM_REPORT_NAMES],
-        );
-    }
-}
