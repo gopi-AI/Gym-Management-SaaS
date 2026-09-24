@@ -65,4 +65,22 @@ export class UpdateMemberDto {
   @IsBoolean()
   @IsOptional()
   is_active?: boolean;
+
+  /**
+   * P3-04 — tax exemption (see `Member.tax_exempt`).
+   *
+   * `tax_exempt_reason` is only meaningful when `tax_exempt` is `true`. That
+   * coupling is enforced in `MembersService.update()` rather than with a
+   * conditional validator here, because the service is the only place that can see
+   * the member's CURRENT exemption state: a PATCH that sets the reason alone, or
+   * clears the flag alone, has to be judged against what is already stored.
+   */
+  @IsBoolean()
+  @IsOptional()
+  tax_exempt?: boolean;
+
+  @IsString()
+  @IsOptional()
+  @Length(1, 255)
+  tax_exempt_reason?: string;
 }

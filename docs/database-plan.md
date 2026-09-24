@@ -97,6 +97,8 @@ IDENTITY_USERS {
         timestamptz created_at
         timestamptz updated_at
         bool is_active
+        bool tax_exempt
+        string tax_exempt_reason
     }
     MEMBERS_MEMBER_IDENTIFIERS {
         uuid id PK
@@ -187,6 +189,7 @@ MEMBERS_MEMBER_CONSENTS {
     MEMBERSHIP_MEMBERSHIP_DISCOUNTS {
         uuid id PK
         uuid membership_id FK
+        uuid organization_id FK
         string discount_type
         decimal amount
         timestamptz starts_at
@@ -213,6 +216,7 @@ MEMBERS_MEMBER_CONSENTS {
     FINANCE_INVOICE_ITEMS {
         uuid id PK
         uuid invoice_id FK
+        uuid organization_id FK
         string description
         decimal quantity
         decimal unit_price
@@ -262,9 +266,23 @@ FINANCE_PAYMENTS {
         string status
         timestamptz created_at
     }
+    FINANCE_TAX_RATES {
+        uuid id PK
+        uuid organization_id FK
+        string name
+        string code UK (organization_id, code)
+        decimal rate
+        bool is_inclusive
+        bool is_active
+        timestamptz effective_from
+        timestamptz effective_to
+        timestamptz created_at
+        timestamptz updated_at
+    }
     FINANCE_TAX_LINES {
         uuid id PK
         uuid invoice_item_id FK
+        uuid organization_id FK
         string tax_name
         decimal tax_rate
         decimal tax_amount

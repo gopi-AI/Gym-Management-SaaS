@@ -227,6 +227,126 @@ describe('MembersService', () => {
     });
   });
 
+  /**
+   * P3-04 tax exemption (§15 Q7: the flag lives on the member).
+   *
+   * The rule enforced here is the one `InvoicesService` depends on: a member is
+   * exempt ONLY when a reason is on file. An exemption with no reason is not
+   * reportable, and the invoice path treats the flag as authoritative, so an
+   * unexplained `tax_exempt: true` would silently stop charging tax.
+   *
+   * Both directions matter, because the flag and the reason are two columns that
+   * can drift apart: setting the flag must set a reason, and clearing the flag must
+   * clear the reason so a later re-exemption cannot inherit a stale justification.
+   */
+  describe('update — P3-04 tax exemption', () => {
+    const storedMember = (overrides: Partial<Member> = {}): Member =>
+      ({
+        id: 'm1',
+        global_uuid: 'uuid-1',
+        organization_id: orgId,
+        is_active: true,
+        tax_exempt: false,
+        tax_exempt_reason: null,
+        ...overrides,
+      }) as Member;
+
+    const updatedFields = () =>
+      mockMemberRepo.update.mock.calls[0][1] as Record<string, unknown>;
+
+    beforeEach(() => {
+      mockMemberRepo.update.mockResolvedValue({ affected: 1 });
+    });
+
+    it('stores the flag and the reason together', async () => {
+      mockMemberRepo.findOne.mockResolvedValue(storedMember());
+
+      await service.update('m1', {
+        tax_exempt: true,
+        tax_exempt_reason: 'Diplomatic status',
+      });
+
+      expect(updatedFields()).toMatchObject({
+        tax_exempt: true,
+        tax_exempt_reason: 'Diplomatic status',
+      });
+    });
+
+    it('rejects an exemption that carries no reason', async () => {
+      mockMemberRepo.findOne.mockResolvedValue(storedMember());
+
+      await expect(service.update('m1', { tax_exempt: true })).rejects.toThrow(
+        /tax_exempt_reason is required/,
+      );
+      expect(mockMemberRepo.update).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('keeps the stored reason when the flag is re-sent without one', async () => {
+      // `tax_exempt: true` on a member who is ALREADY exempt with a reason must not
+      // wipe the reason: the DTO makes the reason optional, so a caller sending the
+      // flag alone is reaffirming the exemption, not clearing its justification.
+      mockMemberRepo.findOne.mockResolvedValue(
+        storedMember({ tax_exempt: true, tax_exempt_reason: 'Diplomatic status' }),
+      );
+
+      await service.update('m1', { tax_exempt: true });
+
+      const fields = updatedFields();
+      expect(fields).toMatchObject({ tax_exempt: true });
+      expect(fields).not.toHaveProperty('tax_exempt_reason');
+    });
+
+    it('rejects a blank reason, not just a missing one', async () => {
+      // `@Length(1, 255)` already rejects this at the DTO, but the service is also
+      // called internally, and a whitespace-only reason is not a justification.
+      mockMemberRepo.findOne.mockResolvedValue(
+        storedMember({ tax_exempt: true, tax_exempt_reason: 'Diplomatic status' }),
+      );
+
+      await expect(service.update('m1', { tax_exempt_reason: '' })).rejects.toThrow(
+        /tax_exempt_reason is required/,
+      );
+      expect(mockMemberRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('clears the reason when the exemption is revoked', async () => {
+      // Revoking the exemption must not leave the reason behind: a later
+      // re-exemption would then inherit a justification that no longer applies.
+      mockMemberRepo.findOne.mockResolvedValue(
+        storedMember({ tax_exempt: true, tax_exempt_reason: 'Diplomatic status' }),
+      );
+
+      await service.update('m1', { tax_exempt: false });
+
+      expect(updatedFields()).toMatchObject({ tax_exempt: false, tax_exempt_reason: null });
+    });
+
+    it('accepts a reason supplied in the same request as the flag', async () => {
+      mockMemberRepo.findOne.mockResolvedValue(
+        storedMember({ tax_exempt: true, tax_exempt_reason: 'Diplomatic status' }),
+      );
+
+      await service.update('m1', { tax_exempt_reason: 'Charity registration' });
+
+      expect(updatedFields()).toMatchObject({
+        tax_exempt: true,
+        tax_exempt_reason: 'Charity registration',
+      });
+    });
+
+    it('leaves the exemption untouched by an unrelated update', async () => {
+      // The coupling rule must not fire on a request that never mentions tax.
+      mockMemberRepo.findOne.mockResolvedValue(storedMember());
+
+      await service.update('m1', { first_name: 'Jane' });
+
+      const fields = updatedFields();
+      expect(fields).not.toHaveProperty('tax_exempt');
+      expect(fields).not.toHaveProperty('tax_exempt_reason');
+    });
+  });
+
   describe('softDelete', () => {
     it('sets is_active to false and emits MEMBER_DEACTIVATED', async () => {
       const existing = { id: 'm1', global_uuid: 'uuid-1', organization_id: orgId, is_active: true } as Member;

@@ -29,7 +29,15 @@ export class InvoiceLineItemDto {
   @Min(0)
   unit_price!: number;
 
-  /** Unused in this pass — tax handling is out of scope. */
+  /**
+   * Optional tax rate code (e.g. `GST`), resolved against the organization's
+   * `FINANCE_TAX_RATES` by `InvoicesService`.
+   *
+   * P3-04: when omitted the line is not taxed and produces no tax row, so Phase 1
+   * callers keep producing `tax_amount = 0.00`. When supplied it MUST resolve to an
+   * active, in-force rate for the authorized organization, otherwise the whole
+   * invoice is rejected — a typo must not silently produce an untaxed invoice.
+   */
   @IsString()
   @IsOptional()
   @Length(1, 50)

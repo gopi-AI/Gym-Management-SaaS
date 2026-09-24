@@ -393,6 +393,14 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Worker changes**: None
 - **Tests**:
   - Diet plan retrieval
+  - Nutrition log storage
+  - Meal template usage
+- **Acceptance criteria**:
+  - Shows assigned diet plans
+  - Lists nutrition logs
+  - Meal template details available
+  - Nutritional summary (calories, macros)
+- **Risks**: Nutrition data inaccuracies, template mismatches
 ## Phase 3: Finance/Inventory/CRM
 
 ### P3-01: Financial Ledger Read Model
@@ -430,8 +438,8 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Files/modules affected**:
   - src/finance/ (refund and credit note service)
 - **Database changes**:
-  - refunds table (`FINANCE_REFUNDS`) — **create it**: P1-04 did not deliver it despite listing it (see the note after P6-26). P3-02 ships the table and the `Refund` entity in `1788965263258-CreateRefundAndCreditNoteTables.ts`, together with `credit_notes`. Phase 6 does **not** create it or extend it — the reporting catalog sources `Refund` from that migration (docs/phase6-scoping-plan.md §6.2 :475).
-  - credit_notes table — **create it**: likewise not delivered by P1-04; created by the same P3-02 migration.
+  - refunds table (`FINANCE_REFUNDS`) — **create it**: P1-04 did not deliver it despite listing it (the Phase 1 finance migration deliberately created only invoices, invoice items, payments and the invoice-number counter — see the note after P6-26). P3-02 ships the table and the `Refund` entity in `1788965263258-CreateRefundAndCreditNoteTables.ts`, together with `credit_notes`. Phase 6 does **not** create it or extend it — the reporting catalog sources `Refund` from that migration (docs/phase6-scoping-plan.md §6.2 :475).
+  - credit_notes table — **create it**: likewise not delivered by P1-04, for the same reason; created by the same P3-02 migration.
 - **API changes**:
   - POST /v1/payments/{id}/refunds (enhanced)
 ### P3-05: Inventory Management
@@ -2082,40 +2090,58 @@ This document contains the implementation tasks broken down by phase, with depen
   - Refunds processed via gateway
 - **Risks**: Security vulnerabilities, financial losses
 
-### P3-04: Tax Handling and Discounts
-- **Objective**: Implement tax calculation and discount application.
+### P3-04: Tax Handling (tax-only; discounts split to P3-04b)
+- **Objective**: Implement tax calculation. Discounts are explicitly OUT of scope for
+  this item and tracked separately as P3-04b (see below).
 - **Dependencies**: P1-04
 - **Files/modules affected**:
-  - src/finance/ (tax and discount service)
+  - src/finance/ (tax rate configuration + tax calculation)
+  - src/members/ (tax-exemption flag on the member)
 - **Database changes**:
-  - tax_lines table (completed in P1-04)
-  - Potentially tax_rates table
-  - membership_discounts table (completed in P1-03)
+  - `FINANCE_TAX_RATES` (net-new; not in the ERD) — per-organization configurable rates
+  - `FINANCE_TAX_LINES` (NOT built in P1-04 — the Phase 1 finance migration created
+    only invoices, invoice items, payments and the invoice-number counter)
+  - `MEMBERS_MEMBERS.tax_exempt` + `tax_exempt_reason` (net-new columns)
+  - membership_discounts table — MOVED to P3-04b; it was NOT built in P1-03
 - **API changes**:
   - GET /v1/tax-rates
-  - POST /v1/tax-rates (admin)
-  - Enhance invoice creation with tax/discount
+  - POST /v1/tax-rates (admin — `finance:admin`, provisioned in migration 1788965263254)
+  - Enhance invoice creation with tax
 - **Frontend changes**: None
 - **Worker changes**: None
 - **Tests**:
   - Tax calculation accuracy
-  - Discount application rules
-  - Combined tax and discount scenarios
   - Tax-exempt handling
+  - Backwards compatibility (a line without a tax_code still yields tax_amount = 0.00)
 - **Acceptance criteria**:
-  - Taxes calculated correctly per jurisdiction
-  - Discounts applied before/after tax as configured
-  - Tax-exempt members handled
-  - Tax reporting data available
+  - Tax calculated correctly from the organization's configured rates
+  - Tax-exempt members are charged no tax, and the zero-rated result is still
+    recorded as an audit row
+  - Tax reporting data available (`FINANCE_TAX_LINES`)
 - **Risks**: Tax calculation errors, compliance issues
-  - Nutrition log storage
-  - Meal template usage
+
+### P3-04b: Membership Discounts (split out of P3-04)
+- **Objective**: Implement first-class discounting on memberships.
+- **Dependencies**: P3-04
+- **Files/modules affected**:
+  - src/memberships/ (discount definition — Membership owns it)
+  - src/finance/ (discount application on the invoice)
+- **Database changes**:
+  - membership_discounts table (NOT built in P1-03 — there is no `MembershipDiscount`
+    entity or discount service in the codebase; verified 2026-09-17)
+- **API changes**:
+  - POST /v1/memberships/{id}/discount
+  - Enhance invoice creation with discount application
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Discount application rules
+  - Combined tax and discount scenarios (including the configurable
+    discount-before-tax vs discount-after-tax order)
 - **Acceptance criteria**:
-  - Shows assigned diet plans
-  - Lists nutrition logs
-  - Meal template details available
-  - Nutritional summary (calories, macros)
-- **Risks**: Nutrition data inaccuracies, template mismatches
+  - Discounts applied before/after tax as configured
+  - Discount definitions owned by Membership, applied by Finance
+- **Risks**: Discount calculation errors, unintended revenue leakage
 
 ### P2-07: Measurements Tab API
 - **Objective**: Implement API for body measurements tracking tab.
@@ -2562,3 +2588,90 @@ This document contains the implementation tasks broken down by phase, with depen
   - Migrations run successfully in dev/test
   - Basic CRUD operations work with tenant context
 - **Risks**: RLS misconfiguration leading to data leaks
+
+## Known Defects
+
+### DEF-01: `QueryMembershipPlanDto.is_active` inverts `?is_active=false`
+- **Objective**: Fix boolean query-parameter coercion on `GET /v1/membership-plans`.
+  `@Type(() => Boolean)` calls `Boolean(value)`, and `Boolean('false')` is `true`, so
+  `?is_active=false` filters for ACTIVE plans — the opposite of what was asked for —
+  while still passing `@IsBoolean()`, so no 400 is raised and nothing reports a problem.
+- **Found during**: P3-04 (tax handling), while writing `QueryTaxRateDto` and checking
+  its `is_active` coercion against the rest of the codebase.
+- **Dependencies**: None
+- **Files/modules affected**:
+  - src/memberships/dto/query-membership-plan.dto.ts (line 18 — the only production change)
+  - src/memberships/dto/query-membership-plan.dto.spec.ts (new regression spec)
+- **Database changes**: None
+- **API changes**: None (behaviour fix only — `GET /v1/membership-plans?is_active=false`
+  starts returning the plans it always claimed to)
+- **Frontend changes**: None required today. The `apps/web` path is wired for
+  `is_active` end-to-end but no call site passes it — see Blast radius.
+- **Worker changes**: None
+- **Reproduction**: `plainToInstance(QueryMembershipPlanDto, payload)` followed by
+  `validate`, using the options `src/main.ts` sets (`whitelist: true, transform: true`),
+  then asserting the transformed value:
+
+  | `?is_active=` | after `@Type(() => Boolean)` | expected |
+  | --- | --- | --- |
+  | `true`  | `true`         | `true`    |
+  | `false` | **`true`**     | `false`   |
+  | `0`     | **`true`**     | `false`   |
+  | `1`     | **`true`**     | `false`   |
+  | `FALSE` | **`true`**     | `false`   |
+  | (absent) | `undefined`   | `undefined` |
+
+  Only the empty string coerces to `false` (`Boolean('')`), which is not a value a
+  query parameter can meaningfully carry: the filter is effectively always true or
+  unset, never false.
+- **Fix**: use the form already established in this codebase —
+  `@Transform(({ value }) => value === true || value === 'true')` — as used by
+  `QueryInvoiceDto.outstanding_only`, `QueryAttendanceRecordsDto.open_only` and
+  `QueryAccessDecisionsDto.is_granted`. `QueryTaxRateDto.is_active` was corrected this
+  way during P3-04 and is the reference implementation.
+- **Tests**:
+  - `plainToInstance` + `validate` asserting `?is_active=false` transforms to `false`
+    and stays distinguishable from an absent parameter
+  - The string cases above pin the coercion, so the decorator cannot be reverted silently
+  - Confirm `whitelist: true` still strips unknown query parameters
+- **Acceptance criteria**:
+  - `GET /v1/membership-plans?is_active=false` returns only inactive plans
+  - `?is_active=true` and an absent parameter behave exactly as they do today
+  - `@Type(() => Boolean)` no longer appears anywhere in `src/`
+- **Blast radius** (verified 2026-09-19, at commit `eab95ced`): **no caller triggers
+  this today**, but the frontend path is complete end-to-end, so the first filter
+  feature added to the membership-plans screen would invert silently.
+  - The entry point is HTTP only: `MembershipPlansService.findAll` is called from
+    exactly one place, `MembershipPlansController.findAll`. No server-side caller
+    constructs `is_active`, so nothing internal can reach this defect.
+  - `apps/web` is wired the whole way: the type permits it
+    (`QueryMembershipPlanParams.is_active?: boolean` in `lib/types.ts`), the API layer
+    forwards it (`lib/memberships-api.ts`, `membershipPlansApi.list()` passes
+    `is_active: params.is_active`), and the URL builder would emit it
+    (`lib/api.ts`, `buildUrl`). Its guard is
+    `value !== undefined && value !== null && value !== ''`, and `false !== ''` is
+    `true` under strict comparison, so `false` is appended as `String(false)` — the
+    literal `"false"`, which is exactly the input this defect mis-coerces. Verified by
+    running that predicate directly: `{ a: undefined, b: null, c: '', d: false,
+    e: true, f: 0 }` yields `"d=false&e=true&f=0"`.
+  - The two live call sites both omit it, which is why the defect is unreachable now:
+    `app/membership-plans/page.tsx` calls `useMembershipPlans({ page, limit })` and
+    has no filter state at all (only `page` and `showCreate`), while
+    `app/memberships/page.tsx` calls `useMembershipPlans({ limit: 200 })` and then
+    filters the RESPONSE BODY client-side (`.filter((p) => p.is_active)`), which this
+    DTO never touches.
+  - Consequence: adding an "Active only" / "Show inactive" toggle to the
+    membership-plans screen — a natural next step, since that table already renders
+    Active/Inactive badges and its data contains both states — would return the
+    opposite set with a `200 OK`, no error, no log, and no existing test to catch it.
+    Land this fix before that feature, not after it.
+  - Related: `app/memberships/page.tsx` fetches 200 plans unfiltered and filters in the
+    browser. Migrating that to a server-side filter would work for `is_active: true`
+    but break for the inactive case for as long as this defect stands.
+- **Risks**: Low to fix and low to leave — but not zero. One decorator on one field, the
+  current `is_active=false` behaviour is already wrong, so no correct caller depends on
+  it, and there is no data to migrate. The exposure is forward-looking rather than
+  current: the plumbing is wired and unused, so the cost is paid by whoever adds
+  filtering rather than by anyone today (see Blast radius). A second
+  `@Type(() => Boolean)` occurrence was the one this defect was found next to; it is
+  already fixed, and the acceptance criterion covers it.

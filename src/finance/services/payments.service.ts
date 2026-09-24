@@ -137,16 +137,40 @@ export class PaymentsService {
           manager,
         );
         const alreadyPaid = totals.get(invoice.id) ?? '0.00';
-        const outstanding = toMoney(Number(invoice.total_amount) - Number(alreadyPaid));
+        // P3-02: a credit note reduces what the member still owes, so it must also
+        // lower the ceiling an over-payment is measured against. Without this, a
+        // credited invoice would accept more money than it is owed — the guard
+        // would compare against the un-credited total.
+        const credits = await this.invoicesService.creditNoteTotalsByInvoice(
+          organizationId,
+          [invoice.id],
+          manager,
+        );
+        const alreadyCredited = credits.get(invoice.id) ?? '0.00';
+        // The subtraction itself belongs to `InvoicesService.outstanding()`: this
+        // ceiling and the API's `outstanding_amount` are now the same expression
+        // rather than two copies that have to be kept in step by hand. It floors at
+        // zero, so an invoice whose credits already cover it reports exactly 0.00
+        // and falls into the "no outstanding balance" branch below.
+        const outstanding = InvoicesService.outstanding(
+          invoice.total_amount,
+          alreadyPaid,
+          alreadyCredited,
+        );
 
         if (Number(outstanding) <= 0) {
           throw new BadRequestException('Invoice has no outstanding balance');
         }
         if (Number(amount) > Number(outstanding)) {
-          // Over-payments (and the credit/refund handling they imply) are out of
-          // scope for this pass, so they are rejected rather than absorbed.
+          // Over-payments are still rejected, not absorbed (P3-02 did not change
+          // this): an over-payment is not a payment, and accepting one would
+          // silently create a credit balance nothing in the schema represents —
+          // `FINANCE_CREDIT_NOTES` reduces an invoice, it does not hold member
+          // credit. The message names the real remedies instead of "out of scope".
           throw new BadRequestException(
-            `Payment amount ${amount} exceeds the outstanding balance ${outstanding}`,
+            `Payment amount ${amount} exceeds the outstanding balance ${outstanding}; ` +
+              'reduce the amount, or reduce the invoice with a credit note ' +
+              '(POST /v1/invoices/{id}/credit-notes)',
           );
         }
 
@@ -225,7 +249,31 @@ export class PaymentsService {
       manager,
     );
     const amountPaid = totals.get(invoice.id) ?? '0.00';
-    const fullyPaid = Number(amountPaid) >= Number(invoice.total_amount);
+    // P3-02: an invoice is settled when nothing is left owed on it, and a credit
+    // note reduces what is owed exactly as a payment does (Model A puts the credit
+    // in the derived balance). Judging this on payments alone would leave a
+    // credited invoice permanently stuck in `partially_paid`, because the
+    // over-payment guard refuses the extra payment that would otherwise be needed
+    // to cross `total_amount`. With no credit notes this is arithmetically
+    // identical to the Phase 1 rule, so invoices with no credit notes are
+    // arithmetically unaffected.
+    const credits = await this.invoicesService.creditNoteTotalsByInvoice(
+      organizationId,
+      [invoice.id],
+      manager,
+    );
+    const amountCredited = credits.get(invoice.id) ?? '0.00';
+    // "Settled" means "nothing left owed", so it is read from the same
+    // `outstanding()` the API reports rather than from a second, payments-plus-
+    // credits sum kept in step by hand. `outstanding()` floors at zero, so `<= 0`
+    // is the settled test and the two can no longer disagree about the border
+    // case where credits alone cover the invoice.
+    const remaining = InvoicesService.outstanding(
+      invoice.total_amount,
+      amountPaid,
+      amountCredited,
+    );
+    const fullyPaid = Number(remaining) <= 0;
     const nextStatus = fullyPaid ? INVOICE_STATUS.PAID : INVOICE_STATUS.PARTIALLY_PAID;
 
     const allowed = VALID_INVOICE_TRANSITIONS[invoice.status] ?? [];

@@ -22,21 +22,22 @@ import { join } from 'path';
  * Ported from `main`, where the regression it was written for was real:
  * `1788965263253-CreateFinanceLedgerViews.ts` used to export three view-SQL
  * builders from inside the glob, and they now live in
- * `src/finance/ledger-views.constants.ts`. Two assertions are therefore adapted
- * rather than copied verbatim, because both name files that only exist on `main`:
+ * `src/finance/ledger-views.constants.ts`.
  *
- *   1. The "files it is meant to be guarding" anchor names
- *      `1788965263227-InitialSchema.ts` — the oldest migration, present on every
- *      branch. `main`'s anchor is `1788965263253-CreateFinanceLedgerViews.ts`,
- *      which this branch has never had: this branch's `…253` slot held
- *      `CreateReportSchemasTable`, since renumbered to `1788965263400` to clear
- *      the timestamps `main` had already taken.
- *   2. `main`'s fourth assertion pins the extracted builders to
- *      `src/finance/ledger-views.constants.ts`. Neither that file nor the
- *      migration it guards exists here, so the assertion is **not** carried.
- *      The hazard it guards is still covered, generically and on its own terms,
- *      by the "exports no function" assertion below — which is the one that
- *      actually fails when the regression is reintroduced.
+ * While the two histories were apart this file adapted two of `main`'s
+ * assertions, because both name files that existed only there. The histories
+ * are now merged and both files are present under `src/`, so `main`'s fourth
+ * assertion — the one that pins the extracted builders to
+ * `src/finance/ledger-views.constants.ts` — is carried here again and the
+ * adaptation is retired.
+ *
+ * One deliberate difference remains: the first assertion anchors on
+ * `1788965263227-InitialSchema.ts`, the oldest migration, present on every
+ * branch, rather than on `main`'s `1788965263253-CreateFinanceLedgerViews.ts`.
+ * The guard is about the loader rather than about any one migration, so it is
+ * anchored to a file guaranteed to exist. The `…253` slot is a poor anchor for
+ * a further reason: this branch once used it for `CreateReportSchemasTable`,
+ * since renumbered to `1788965263400` to clear the timestamps `main` had taken.
  *
  * These assertions are static (they read the source rather than booting a
  * DataSource) so they fail fast and point at the offending file and line.
@@ -95,5 +96,23 @@ describe('migration loader contract', () => {
         hasTimestamp: true,
       });
     }
+  });
+
+  it('keeps the view-SQL builders outside the glob, where the loader cannot see them', () => {
+    // A regression here reintroduces the fatal CLI error, so the location is
+    // asserted rather than left to convention.
+    const migration = readFileSync(
+      join(MIGRATIONS_DIR, '1788965263253-CreateFinanceLedgerViews.ts'),
+      'utf8',
+    );
+    const constants = readFileSync(
+      join(MIGRATIONS_DIR, '..', 'finance', 'ledger-views.constants.ts'),
+      'utf8',
+    );
+
+    expect(migration).not.toMatch(/export\s+function/);
+    expect(constants).toMatch(/export\s+function\s+buildMemberOutstandingViewSql/);
+    expect(constants).toMatch(/export\s+function\s+buildRevenueByPeriodViewSql/);
+    expect(constants).toMatch(/export\s+function\s+buildOutstandingByStatusViewSql/);
   });
 });

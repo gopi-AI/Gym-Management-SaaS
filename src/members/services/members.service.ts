@@ -197,6 +197,45 @@ export class MembersService {
     });
   }
 
+  /**
+   * P3-04 — validate the tax-exemption patch against the member's stored state.
+   *
+   * The flag and its reason are coupled, and the coupling can only be judged with
+   * the CURRENT row in hand: `{ tax_exempt: true }` alone must be rejected, but
+   * `{ tax_exempt_reason: '...' }` alone is legal for a member who is ALREADY
+   * exempt (the reason is being corrected). So this is enforced here rather than
+   * with a conditional validator on the DTO, which cannot see stored state.
+   *
+   * Clearing the flag clears the reason too: a stale reason on a non-exempt member
+   * would misreport why an invoice was untaxed.
+   */
+  private validateTaxExemption(
+    dto: UpdateMemberDto,
+    member: Member,
+  ): { tax_exempt?: boolean; tax_exempt_reason?: string | null } {
+    if (dto.tax_exempt === undefined && dto.tax_exempt_reason === undefined) {
+      return {};
+    }
+
+    const resultingFlag = dto.tax_exempt ?? member.tax_exempt;
+    const resultingReason = dto.tax_exempt_reason ?? member.tax_exempt_reason ?? null;
+
+    if (resultingFlag && !resultingReason) {
+      throw new BadRequestException(
+        'tax_exempt_reason is required when a member is tax exempt',
+      );
+    }
+
+    if (!resultingFlag) {
+      return { tax_exempt: false, tax_exempt_reason: null };
+    }
+
+    return {
+      tax_exempt: true,
+      ...(dto.tax_exempt_reason !== undefined ? { tax_exempt_reason: resultingReason } : {}),
+    };
+  }
+
   async update(id: string, dto: UpdateMemberDto): Promise<Member> {
     const organizationId = await this.getOrganizationId();
     const member = await this.memberRepository.findOne({
@@ -210,6 +249,7 @@ export class MembersService {
 
     const updates: Partial<Member> = {
       ...dto,
+      ...this.validateTaxExemption(dto, member),
       date_of_birth: dto.date_of_birth ? new Date(dto.date_of_birth) : member.date_of_birth,
     };
 
