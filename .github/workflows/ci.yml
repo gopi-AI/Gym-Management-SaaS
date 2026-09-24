@@ -30,16 +30,39 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
-    # Database connection for the DB-backed suites. Job-scoped so the migration step
-    # and the test step cannot drift apart. Suites that need a database run when
-    # these are set and skip when they are not, which is what keeps a local
-    # `npm test` with no Postgres passing.
+      # ── Redis service (matches docker-compose.yml: redis:7-alpine) ───────────────
+      # The same image the project runs locally, and the server the DB-backed report
+      # suites connect to at redis://127.0.0.1:6379 for §10's consecutive-failure
+      # counter and the §7.3 debounce lock. Those suites skip when DB_HOST is unset,
+      # but this job sets DB_HOST above, so they run here and need Redis reachable.
+      # No `env:` block: unlike Postgres, Redis here is unauthenticated, matching the
+      # compose service's shape (ports + healthcheck only).
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # Database and Redis connection for the DB-backed suites. Job-scoped so the
+    # migration step and the test step cannot drift apart. Suites that need a
+    # database run when these are set and skip when they are not, which is what
+    # keeps a local `npm test` with no Postgres passing. REDIS_HOST/REDIS_PORT are
+    # the keys src/app.module.ts's global CacheModule reads; their defaults are the
+    # same localhost:6379, but stating them keeps CI's Redis wiring explicit.
     env:
       DB_HOST: localhost
       DB_PORT: 5432
       DB_USERNAME: postgres
       DB_PASSWORD: postgres
       DB_DATABASE: gym_management
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      DB_ADMIN_DATABASE: postgres
+      REPORTING_MV_INTEGRATION: "1"
 
     # Matches .nvmrc (Node 24, the pinned version used locally).
     strategy:

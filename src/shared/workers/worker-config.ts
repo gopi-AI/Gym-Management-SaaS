@@ -24,6 +24,11 @@ export const WORKER_INTERVALS: Record<string, number> = {
   // Report jobs execute real queries, so the cadence is short enough to feel
   // synchronous but not so short that a batch queues behind itself.
   REPORT_JOBS: 15_000,
+  // Materialized-view refresh (§7.3). This is the sweep interval, not a view's
+  // own cadence: each view's hourly / 6-hourly / daily frequency is applied by
+  // MaterializedViewRefreshService against `last_refreshed`, so a short sweep
+  // only makes a due view refresh promptly — it cannot make one refresh early.
+  MATERIALIZED_VIEW_REFRESH: 5 * 60 * 1000,
 };
 
 /** Default batch size per worker. */

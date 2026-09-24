@@ -7,6 +7,7 @@ import { OutboxWorker } from './outbox.worker';
 import { MembershipExpiryWorker } from './membership-expiry.worker';
 import { PaymentRetryWorker } from './payment-retry.worker';
 import { ReportJobWorker } from '../../reports/workers/report-job.worker';
+import { MaterializedViewRefreshWorker } from '../../reports/workers/materialized-view-refresh.worker';
 
 /**
  * Background workers.
@@ -22,7 +23,19 @@ import { ReportJobWorker } from '../../reports/workers/report-job.worker';
  */
 @Module({
   imports: [OutboxModule, MembershipsModule, FinanceModule, ReportsModule],
-  providers: [OutboxWorker, MembershipExpiryWorker, PaymentRetryWorker, ReportJobWorker],
-  exports: [OutboxWorker, MembershipExpiryWorker, PaymentRetryWorker, ReportJobWorker],
+  providers: [
+    OutboxWorker,
+    MembershipExpiryWorker,
+    PaymentRetryWorker,
+    ReportJobWorker,
+    MaterializedViewRefreshWorker,
+  ],
+  exports: [
+    OutboxWorker,
+    MembershipExpiryWorker,
+    PaymentRetryWorker,
+    ReportJobWorker,
+    MaterializedViewRefreshWorker,
+  ],
 })
 export class WorkersModule {}
