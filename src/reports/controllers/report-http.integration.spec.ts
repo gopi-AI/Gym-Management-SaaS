@@ -408,6 +408,110 @@ describeDb('Report API over HTTP (P6-04 piece 1)', () => {
     expect(status.result_s3_bucket).toBeNull();
   });
 
+  /**
+   * P6-06 over the API surface. The service-level spec proves `create()`/`update()` call
+   * the declaration path; these prove the same through the real controller, so a fix that
+   * only worked in a unit test's call shape would still fail here.
+   */
+  it('POST /v1/report/schemas accepts a definition declaring $from/$to/$branchId with no values', async () => {
+    const body = {
+      name: 'Invoices by status and period',
+      category: 'finance',
+      query_definition: {
+        source: 'Invoice',
+        columns: {
+          status: 'status',
+          total: { fn: 'SUM', column: 'total_amount' },
+          count: { fn: 'COUNT', column: '*' },
+        },
+        filters: [
+          { column: 'invoice_date', operator: 'BETWEEN', value: ['$from', '$to'] },
+          { column: 'branch_id', operator: '=', value: '$branchId' },
+        ],
+        group_by: ['status'],
+        order_by: [{ column: 'total', direction: 'DESC' }],
+      },
+      // §3.1 parameter *declarations* — the DTO list is not a value map.
+      parameters: [
+        { name: 'from', type: 'date' },
+        { name: 'to', type: 'date' },
+        { name: 'branchId', type: 'uuid' },
+      ],
+    };
+
+    const created = await asOrg(orgA, () =>
+      schemasController.create(body as CreateReportSchemaDto),
+    );
+    logPair('POST /v1/report/schemas (declared placeholders)', body, created);
+
+    // A plain record, not a 400: this is the defect's exact reproduction.
+    expect(created.id).toBeDefined();
+    expect(created.organization_id).toBe(orgA);
+    expect(created.is_system).toBe(false);
+    // Stored unresolved — resolution is §3.1.1's execution-time step.
+    expect(created.query_definition).toEqual(body.query_definition);
+  });
+
+  it('PUT /v1/report/schemas/{id} accepts the same declared placeholders on update', async () => {
+    const created = await asOrg(orgA, () =>
+      schemasController.create({
+        name: 'Update target',
+        query_definition: { source: 'Member', columns: { total: { fn: 'COUNT', column: '*' } } },
+      } as CreateReportSchemaDto),
+    );
+
+    const body = {
+      query_definition: {
+        source: 'AttendanceRecord',
+        columns: { rows: { fn: 'COUNT', column: '*' } },
+        filters: [
+          { column: 'check_in_time', operator: 'BETWEEN', value: ['$from', '$to'] },
+          { column: 'branch_id', operator: '=', value: '$branchId' },
+        ],
+      },
+    };
+
+    const updated = await asOrg(orgA, () =>
+      schemasController.update(created.id, body as UpdateReportSchemaDto),
+    );
+    logPair(`PUT /v1/report/schemas/${created.id} (declared placeholders)`, body, updated);
+
+    expect(updated.id).toBe(created.id);
+    expect(updated.query_definition).toEqual(body.query_definition);
+  });
+
+  it('the newly created placeholder schema still fails at execution until values are supplied', async () => {
+    // The other half of the boundary, over HTTP: storing it succeeded, running it
+    // without values does not. This is what proves declaration mode moved the rejection
+    // later instead of removing it.
+    const created = await asOrg(orgA, () =>
+      schemasController.create({
+        name: 'Needs parameters',
+        query_definition: {
+          source: 'Invoice',
+          columns: { rows: { fn: 'COUNT', column: '*' } },
+          filters: [{ column: 'invoice_date', operator: 'BETWEEN', value: ['$from', '$to'] }],
+        },
+      } as CreateReportSchemaDto),
+    );
+
+    const trigger = await asOrg(orgA, () =>
+      jobsController.execute(created.id, {}, {
+        setHeader: () => undefined,
+      }),
+    );
+
+    const drained = await reportJobService.runPendingBatch(5);
+    console.log(`[report-api evidence] drain for unresolved placeholders=${JSON.stringify(drained)}`);
+
+    const status = await asOrg(orgA, () => jobsController.findOne(trigger.id));
+    logPair(`GET /v1/report/jobs/${trigger.id} (no parameter values supplied)`, {}, status);
+
+    expect(status.status).toBe('failed');
+    expect(status.error_message).toContain('$from');
+    expect(status.result_rows).toBeNull();
+  });
+
   it('reports a genuine failed status when a source column is dropped after the schema was saved', async () => {
     const created = await asOrg(orgA, () =>
       schemasController.create({

@@ -21,13 +21,16 @@ import type { QueryDefinition } from '../types/query-definition';
  * `organization_id`. A schema id belonging to another organization is therefore a 404,
  * never a 403 that would confirm the row exists.
  *
- * **Creation validates through Phase A, unchanged.** `ReportQueryValidator` is called
- * with the authorized organization before anything is written, so an unknown source, an
- * unknown column, a bad aggregate or a bad bucket unit is rejected as a 400 at creation
- * time — the requirement that the catalog cannot be filled with definitions that only
- * fail later (§3.1.1). Phase B's `ReportJobService` then re-validates at execution, which
- * is what makes §10's schema-drift case (a column dropped after the schema was saved)
- * fail the *job* rather than the schema.
+ * **Creation validates through Phase A's declaration mode (P6-06).**
+ * `ReportQueryValidator` is called with the authorized organization before anything is
+ * written, so an unknown source, an unknown column, a bad aggregate or a bad bucket unit
+ * is rejected as a 400 at creation time — the requirement that the catalog cannot be
+ * filled with definitions that only fail later (§3.1.1). The one check creation cannot
+ * make is resolving §3.1.1's `$name` placeholders: a definition is stored *before* any
+ * report has supplied parameter values, so they are accepted as declarations here and
+ * resolved at execution. Phase B's `ReportJobService` then re-validates in resolution
+ * mode, which is what makes §10's schema-drift case (a column dropped after the schema
+ * was saved) fail the *job* rather than the schema.
  *
  * **System schemas are immutable here.** §6's preamble says system rows "cannot be
  * deleted by users", and §4.1's `PUT` is documented as "Update a **custom** schema", so
@@ -63,17 +66,23 @@ export class ReportSchemasService {
   }
 
   /**
-   * Phase A's validation, mapped to a 400. Run on create and on any update that
-   * supplies a definition, so a stored definition is always one that validated against
-   * the entity metadata of the moment.
+   * Declaration-time Phase A validation, mapped to a 400. Run on create and on any
+   * update that supplies a definition, so a stored definition is always one that
+   * validated against the entity metadata of the moment.
+   *
+   * This calls `validateDeclaration()` rather than `validate()` (P6-06). Creation has no
+   * runtime parameter *values* to offer — only the definition's parameter
+   * *declarations* — so §3.1.1's `$name` placeholders are accepted here unresolved and
+   * resolved, against real values, by `ReportJobService` when the report runs. Offering a
+   * value map from here is what made a definition using `$from`/`$to`/`$branchId`
+   * impossible to store, so the helper deliberately takes no such map.
    */
   private async assertDefinitionIsValid(
     definition: QueryDefinition,
     organizationId: string,
-    parameters?: Record<string, unknown>,
   ): Promise<void> {
     try {
-      await this.validator.validate(definition, { organizationId, parameters });
+      await this.validator.validateDeclaration(definition, { organizationId });
     } catch (error) {
       throwAsHttpException(error);
     }

@@ -185,6 +185,149 @@ describe('ReportQueryValidator (real metadata, no database)', () => {
     });
   });
 
+  /**
+   * P6-06: declaration-time validation — the mode `POST`/`PUT /v1/report/schemas` uses.
+   *
+   * `validateDeclaration()` is the **same pipeline** as `validate()` except that a `$name`
+   * filter value is accepted unresolved instead of being resolved from `parameters`:
+   * §3.1.1 puts that resolution at execution time, and a schema row is stored before any
+   * report has run. These tests pin both halves — what declaration mode accepts, and that
+   * every other rule is enforced identically.
+   */
+  describe('declaration mode (P6-06) — the definitions §4.1 stores', () => {
+    it('accepts $from/$to/$branchId with no parameter values, and returns nothing buildable', async () => {
+      const definition = def({
+        source: 'Invoice',
+        columns: { status: 'status', total: { fn: 'SUM', column: 'total_amount' } },
+        filters: [
+          { column: 'invoice_date', operator: 'BETWEEN', value: ['$from', '$to'] },
+          { column: 'branch_id', operator: '=', value: '$branchId' },
+        ],
+        group_by: ['status'],
+        order_by: [{ column: 'total', direction: 'DESC' }],
+      });
+
+      // The defect itself: this rejected with MISSING_FILTER_VALUE before the fix.
+      // `undefined` rather than a ValidatedQuery is deliberate — a declaration holds
+      // unresolved placeholders, so it is not something the builder may be handed.
+      await expect(
+        validator.validateDeclaration(definition, { organizationId: ORG }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('accepts every $-placeholder position: scalar, BETWEEN pair, IN list and LIKE', async () => {
+      const filters = [
+        { column: 'created_at', operator: '>', value: '$from' },
+        { column: 'created_at', operator: 'BETWEEN', value: ['$from', '$to'] },
+        { column: 'id', operator: 'IN', value: ['$a', '$b'] },
+        { column: 'first_name', operator: 'LIKE', value: '$pattern' },
+      ];
+      await expect(
+        validator.validateDeclaration(def({ source: 'Member', columns: { id: 'id' }, filters }), {
+          organizationId: ORG,
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('still enforces the allowlist, the operator set, scoping and per-operator shape', async () => {
+      const cases: { definition: unknown; code: string }[] = [
+        { definition: { source: 'Nope', columns: { id: 'id' } }, code: 'UNKNOWN_SOURCE' },
+        {
+          definition: {
+            source: 'Member',
+            columns: { id: 'id' },
+            filters: [{ column: 'nope', operator: '=', value: '$x' }],
+          },
+          code: 'UNKNOWN_COLUMN',
+        },
+        {
+          definition: {
+            source: 'Member',
+            columns: { id: 'id' },
+            filters: [{ column: 'organization_id', operator: '=', value: '$org' }],
+          },
+          code: 'SCOPING_COLUMN_IN_DEFINITION',
+        },
+        {
+          definition: {
+            source: 'Member',
+            columns: { id: 'id' },
+            filters: [{ column: 'id', operator: 'MATCHES', value: '$x' }],
+          },
+          code: 'INVALID_OPERATOR',
+        },
+        {
+          definition: {
+            source: 'Member',
+            columns: { id: 'id' },
+            filters: [{ column: 'created_at', operator: 'BETWEEN', value: ['$from'] }],
+          },
+          code: 'FILTER_VALUE_TYPE_MISMATCH',
+        },
+        {
+          definition: {
+            source: 'Member',
+            columns: { id: 'id' },
+            filters: [{ column: 'created_at', operator: '>', value: 'not-a-date' }],
+          },
+          code: 'FILTER_VALUE_TYPE_MISMATCH',
+        },
+        {
+          definition: { source: 'Member', columns: { id: 'id' }, limit: 0 },
+          code: 'INVALID_LIMIT',
+        },
+        { definition: { source: 'Member', columns: {} }, code: 'EMPTY_COLUMNS' },
+      ];
+
+      for (const testCase of cases) {
+        await expect(
+          validator.validateDeclaration(def(testCase.definition), { organizationId: ORG }),
+        ).rejects.toMatchObject({ code: testCase.code });
+      }
+    });
+
+    it('still requires an organizationId — declaration mode is not an unscoped path', async () => {
+      // A definition author cannot fix a missing tenant context, so this must stay a plain
+      // Error rather than becoming a validation code — and declaring placeholders must not
+      // have opened a route to validation without an authorized organization.
+      const error = await validator
+        .validateDeclaration(def({ source: 'Member', columns: { id: 'id' } }), {
+          organizationId: '',
+        })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as { name: string }).name).toBe('Error');
+      expect(error).not.toMatchObject({ code: expect.anything() });
+    });
+
+    it('does NOT relax execution: the same definition still fails resolution, then resolves', async () => {
+      // The boundary asserted in one place. The definition creation now accepts is still
+      // rejected by `validate()` until real values arrive — which is what stops
+      // declaration mode from becoming a way to ship a report that binds the literal
+      // string "$from" as its value.
+      const definition = def({
+        source: 'Invoice',
+        columns: { rows: { fn: 'COUNT', column: '*' } },
+        filters: [{ column: 'invoice_date', operator: 'BETWEEN', value: ['$from', '$to'] }],
+      });
+
+      await expect(
+        validator.validateDeclaration(definition, { organizationId: ORG }),
+      ).resolves.toBeUndefined();
+
+      await expect(
+        validator.validate(definition, { organizationId: ORG }),
+      ).rejects.toMatchObject({ code: 'MISSING_FILTER_VALUE' });
+
+      // …and resolves once values are supplied, which is §3.1.1's contract.
+      const resolved = await validator.validate(definition, {
+        organizationId: ORG,
+        parameters: { from: '2026-01-01', to: '2026-02-01' },
+      });
+      expect(resolved.filters[0].value).toEqual(['2026-01-01', '2026-02-01']);
+    });
+  });
+
   describe('failure modes — each is a bad request, not an internal error', () => {
     it('UNKNOWN_SOURCE, naming the near-miss when only the casing is wrong', async () => {
       await expectCode({ source: 'Nope', columns: { id: 'id' } }, 'UNKNOWN_SOURCE');

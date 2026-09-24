@@ -37,11 +37,44 @@ const TYPE_FAMILIES: Record<string, 'number' | 'date' | 'uuid' | 'boolean' | 'te
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Which moment in a report definition's life a validation call is for.
+ *
+ * A `$name` filter value means two different things at the two moments §3.1.1
+ * separates, so the mode is what decides whether one has to resolve:
+ *
+ *   - **`'resolution'`** — execution. The definition is about to be compiled, so every
+ *     `$name` must resolve from `parameters` now.
+ *   - **`'declaration'`** — `POST`/`PUT /v1/report/schemas` (§4.1). The definition is
+ *     only being *stored*; §3.1.1 says a `$name` value is "resolved from the report
+ *     parameters at execution time", and no report has run yet.
+ *
+ * Declaration mode is **opt-in** rather than inferred from a missing `parameters` map:
+ * `ValidateContext.parameters` is optional, so inferring would let an execution path
+ * that forgot to supply values silently bind each placeholder's own `$name` text as a
+ * value (`ReportQueryBuilder` binds whatever `ResolvedFilter.value` holds) instead of
+ * failing. A caller has to name the declaration path to get it.
+ */
+export type ValidationMode = 'resolution' | 'declaration';
+
 export interface ValidateContext {
   /** The authorized organization. The definition never supplies this. */
   organizationId: string;
   /** Values for `$name` placeholders in `FilterClause.value`. */
   parameters?: Record<string, unknown>;
+}
+
+/**
+ * Context for declaration-time validation (P6-06).
+ *
+ * Deliberately has **no `parameters`**: at declaration time there are no runtime values
+ * to supply, and accepting a map here would reinstate the confusion this path exists to
+ * remove — that a still-declared placeholder could be "resolved" before a report runs.
+ * The type is the enforcement, not a comment asking callers not to.
+ */
+export interface ValidateDeclarationContext {
+  /** The authorized organization. The definition never supplies this. */
+  organizationId: string;
 }
 
 /**
@@ -231,6 +264,10 @@ export class ReportQueryValidator {
   /**
    * Validates one filter: operator from the closed union, value shape matched to the
    * operator, `$placeholders` resolved, and the value's type matched to the column's.
+   *
+   * Everything except the last two of those is mode-independent. Resolution and the
+   * type check it feeds apply only to values that are known now, which in declaration
+   * mode excludes `$name` placeholders — see `resolveValue` below.
    */
   private validateFilter(
     columns: Map<string, DatabaseColumn>,
@@ -238,6 +275,7 @@ export class ReportQueryValidator {
     entityName: string,
     index: number,
     parameters: Record<string, unknown>,
+    mode: ValidationMode,
   ): ResolvedFilter {
     if (filter === null || typeof filter !== 'object' || Array.isArray(filter)) {
       throw new ReportQueryValidationError('INVALID_OPERATOR', 'Filter must be an object.', {
@@ -288,19 +326,48 @@ export class ReportQueryValidator {
       );
     }
 
-    const resolvePlaceholder = (value: unknown): unknown => {
-      if (typeof value === 'string' && value.startsWith('$')) {
-        const name = value.slice(1);
-        if (!(name in parameters) || parameters[name] === undefined) {
-          throw new ReportQueryValidationError(
-            'MISSING_FILTER_VALUE',
-            `Filter placeholder "${value}" was not supplied.`,
-            { column: column.databaseName, placeholder: value },
-          );
-        }
-        return parameters[name];
+    /**
+     * Resolves one filter value, in whichever mode this call is running (§3.1.1).
+     *
+     * `$name` means two different things at the two moments of a report's life. In
+     * **resolution** mode (execution) it is a reference that must resolve *now*, because
+     * the value is about to be bound into the query — so an unsupplied name is a
+     * `MISSING_FILTER_VALUE`, unchanged. In **declaration** mode (P6-06) the definition
+     * is only being stored, so the placeholder is accepted as a declaration and returned
+     * unresolved: the caller is supplying a definition, not a report run.
+     *
+     * This is the **only** place the mode changes any decision, which is what keeps the
+     * two paths from drifting: every other check in this method — the column allowlist,
+     * the operator set, `SCOPING_COLUMN_IN_DEFINITION`, per-operator arity, and the type
+     * check on every literal — runs identically in both modes.
+     *
+     * The name is never interpolated, only looked up in `parameters` (and, at execution,
+     * bound via `setParameter`), so an unresolved placeholder is a stored string rather
+     * than anything that reaches SQL as text.
+     *
+     * `declared: true` marks a value that must **not** be type-checked against the
+     * column. That exemption is the narrowest one that works: the type check exists to
+     * catch a value a caller can fix, and a placeholder's type is knowable only once it
+     * resolves. A literal beside it in the same filter is still checked.
+     */
+    const resolveValue = (value: unknown): { value: unknown; declared: boolean } => {
+      if (typeof value !== 'string' || !value.startsWith('$')) {
+        return { value, declared: false };
       }
-      return value;
+
+      if (mode === 'declaration') {
+        return { value, declared: true };
+      }
+
+      const name = value.slice(1);
+      if (!(name in parameters) || parameters[name] === undefined) {
+        throw new ReportQueryValidationError(
+          'MISSING_FILTER_VALUE',
+          `Filter placeholder "${value}" was not supplied.`,
+          { column: column.databaseName, placeholder: value },
+        );
+      }
+      return { value: parameters[name], declared: false };
     };
 
     if (LIST_OPERATORS.includes(operator as FilterOperator)) {
@@ -325,9 +392,18 @@ export class ReportQueryValidator {
           { column: column.databaseName, operator },
         );
       }
-      const values = clause.value.map(resolvePlaceholder);
-      for (const value of values) this.assertValueMatchesColumn(column, value, operator as string);
-      return { column, operator: operator as FilterOperator, value: values, parameter };
+      const resolved = clause.value.map(resolveValue);
+      for (const { value, declared } of resolved) {
+        // A literal in the same list is still type-checked; only a declared
+        // placeholder is exempt, and only until it resolves at execution.
+        if (!declared) this.assertValueMatchesColumn(column, value, operator as string);
+      }
+      return {
+        column,
+        operator: operator as FilterOperator,
+        value: resolved.map((entry) => entry.value),
+        parameter,
+      };
     }
 
     if (Array.isArray(clause.value)) {
@@ -337,9 +413,16 @@ export class ReportQueryValidator {
         { column: column.databaseName, operator },
       );
     }
-    const value = resolvePlaceholder(clause.value);
-    this.assertValueMatchesColumn(column, value, operator as string);
-    return { column, operator: operator as FilterOperator, value, parameter };
+    const resolved = resolveValue(clause.value);
+    if (!resolved.declared) {
+      this.assertValueMatchesColumn(column, resolved.value, operator as string);
+    }
+    return {
+      column,
+      operator: operator as FilterOperator,
+      value: resolved.value,
+      parameter,
+    };
   }
 
   /**
@@ -417,7 +500,15 @@ export class ReportQueryValidator {
   }
 
   /**
-   * Validates a definition and returns the only shape the builder accepts.
+   * Validates a definition at **execution** time and returns the only shape the
+   * builder accepts.
+   *
+   * Every `$name` placeholder must resolve from `context.parameters` (§3.1.1), so a
+   * definition whose parameters were not supplied fails here rather than binding its own
+   * `$name` text as a value. That strictness is why declaration-time validation is a
+   * separate entry point below rather than a relaxation of this one — and why
+   * `parameters` staying optional here is not an invitation to omit it on an execution
+   * path.
    *
    * A missing `organizationId` throws a plain `Error`, not a
    * `ReportQueryValidationError`: that is a wiring fault in the caller's own code, not
@@ -425,6 +516,48 @@ export class ReportQueryValidator {
    * error useless as a "bad request" signal.
    */
   async validate(definition: QueryDefinition, context: ValidateContext): Promise<ValidatedQuery> {
+    return this.run(definition, context, 'resolution');
+  }
+
+  /**
+   * Validates a definition at **declaration** time — §4.1's `POST` and `PUT
+   * /v1/report/schemas` (P6-06) — so a definition carrying `$name` filter placeholders
+   * can be stored before any report has supplied values for them.
+   *
+   * Everything except placeholder resolution is checked exactly as `validate()` checks
+   * it: the source resolves against real entity metadata, every column, operator, bucket
+   * unit and aggregate comes from its closed set, `organization_id` may not appear in
+   * the definition, `limit`/`group_by`/`order_by` are validated, and every **literal**
+   * filter value is still type-checked against its column. The single deferred check is
+   * the one that needs values no report has supplied yet (§3.1.1's "resolved from the
+   * report parameters at execution time"), and `ReportJobService` re-validates in
+   * resolution mode when the report actually runs, so the deferral moves a rejection
+   * later rather than removing it.
+   *
+   * Returns `void` deliberately. The declaration-mode pipeline still holds unresolved
+   * placeholders in `ResolvedFilter.value`, which is not a shape the builder may receive
+   * — `ValidatedQuery` promises "its value checked" — so returning nothing makes that
+   * unreachable rather than a comment asking callers to be careful.
+   */
+  async validateDeclaration(
+    definition: QueryDefinition,
+    context: ValidateDeclarationContext,
+  ): Promise<void> {
+    await this.run(definition, context, 'declaration');
+  }
+
+  /**
+   * The one validation pipeline both entry points share.
+   *
+   * `mode` reaches exactly one decision — whether a `$name` placeholder must resolve now
+   * or is a declaration — so the two paths cannot drift apart; a rule added here applies
+   * to creation and execution alike unless it is deliberately mode-dependent.
+   */
+  private async run(
+    definition: QueryDefinition,
+    context: ValidateContext,
+    mode: ValidationMode,
+  ): Promise<ValidatedQuery> {
     if (!context?.organizationId) {
       throw new Error('ReportQueryValidator.validate() requires an organizationId for scoping.');
     }
@@ -457,7 +590,7 @@ export class ReportQueryValidator {
 
     const parameters = context.parameters ?? {};
     const filters = (definition.filters ?? []).map((filter, index) =>
-      this.validateFilter(source.columns, filter, source.entityName, index, parameters),
+      this.validateFilter(source.columns, filter, source.entityName, index, parameters, mode),
     );
 
     const groupBy = (definition.group_by ?? []).map((target) => {
