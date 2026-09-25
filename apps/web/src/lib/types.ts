@@ -435,6 +435,11 @@ export interface AttendanceRecord {
   check_out_method?: string | null;
   /** Staff user that performed a manual check-in. */
   checked_in_by?: string | null;
+  /**
+   * Whole minutes between check-in and check-out; null/absent while still in
+   * (P6-38 — the value `Avg Session Duration` averages).
+   */
+  duration_minutes?: number | null;
 }
 
 /** The authorization outcome of an attendance event (audit trail). */

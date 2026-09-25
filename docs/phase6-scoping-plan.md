@@ -490,7 +490,7 @@ These are the platform-defined reports created as seed data. They are marked `is
 |---|---|---|---|---|
 | **Daily Check-ins** | Check-in count by day | `AttendanceRecord` | check_in_time, count, unique_members | date_range, branch |
 | **Peak Hours** | Check-in volume by hour | `AttendanceRecord` | hour, avg_count, peak_count | date_range, branch |
-| **Avg Session Duration** | Average workout duration | `AttendanceRecord` | member_id, avg_duration | date_range |
+| **Avg Session Duration** | Average attendance session duration, per member | `AttendanceRecord` | member_id, avg_duration (`AVG(duration_minutes)`) | date_range |
 | **Week-over-Week Trend** | Attendance trend comparison | `AttendanceRecord` | week, count, ww_change | branch |
 
 > **Definition — "Peak Hours" is redefined to use raw attendance timestamps, with hour-of-day statistics derived at read time (explicit decision)**: the catalog's `hour` key is not a valid `QueryDefinition` time bucket because `TimeBucketUnit` is deliberately closed to `day`, `week`, `month`, `quarter` and `year`; adding an hour unit would extend the executor contract for one catalog row. The catalog's `avg_count` and `peak_count` are also statistics over an already-grouped per-hour count, while a single `QueryDefinition` produces one grouped result set and has no subquery or second aggregation stage. Raw SQL expressions and executor extensions are therefore not the smallest change: the same contract limitation was already resolved for "Revenue by Plan" and "Membership Status Distribution" by redefining those rows rather than adding joins or changing the executor.

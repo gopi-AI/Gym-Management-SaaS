@@ -175,6 +175,23 @@ export const SYSTEM_REPORT_SCHEMAS = [
         },
     },
     {
+        name: 'Avg Session Duration',
+        description: 'Average attendance session duration per member, resolved at write time onto AttendanceRecord.duration_minutes',
+        category: 'attendance',
+        query_definition: {
+            source: 'AttendanceRecord',
+            columns: {
+                member_id: 'member_id',
+                avg_duration: { fn: 'AVG', column: 'duration_minutes' },
+            },
+            filters: [
+                { column: 'check_in_time', operator: 'BETWEEN', value: ['$from', '$to'] },
+            ],
+            group_by: ['member_id'],
+            order_by: [{ column: 'member_id', direction: 'ASC' }],
+        },
+    },
+    {
         name: 'Week-over-Week Trend',
         description: 'Attendance trend comparison',
         category: 'attendance',

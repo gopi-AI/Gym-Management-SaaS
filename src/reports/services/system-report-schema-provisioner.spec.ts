@@ -35,10 +35,10 @@ describe('provisionSystemReportSchemas', () => {
     } as unknown as EntityManager;
   });
 
-  it('provisions exactly 13 system rows with the required attributes', async () => {
+  it('provisions exactly 14 system rows with the required attributes', async () => {
     await provisionSystemReportSchemas(manager, organizationId);
 
-    expect(rows).toHaveLength(13);
+    expect(rows).toHaveLength(14);
     expect(rows.map((row) => row.name)).toEqual(SYSTEM_REPORT_SCHEMAS.map((schema) => schema.name));
     expect(rows.every((row) => row.organization_id === organizationId)).toBe(true);
     expect(rows.every((row) => row.is_system && row.is_active)).toBe(true);
@@ -76,12 +76,58 @@ describe('provisionSystemReportSchemas', () => {
     );
   });
 
+  /**
+   * P6-38's fix, asserted where the defect actually lived.
+   *
+   * The row was unexecutable because its measure was `AVG(check_out_time -
+   * check_in_time)` — an aggregate over a *difference of two columns*, which
+   * `ColumnRef` admits in none of its three shapes. Persisting the difference as
+   * `AttendanceRecord.duration_minutes` reduces it to `AVG(duration_minutes)`.
+   *
+   * This asserts the *shape* rather than a string, so it keeps meaning what it
+   * means if the row is ever reworded: the measure is an allowlisted aggregate over
+   * a single plain column, and no value in the row is an arithmetic expression.
+   */
+  it('declares P6-38\'s Avg Session Duration as an allowlisted aggregate over a real column', async () => {
+    await provisionSystemReportSchemas(manager, organizationId);
+
+    const row = rows.find((candidate) => candidate.name === 'Avg Session Duration');
+    expect(row).toBeDefined();
+
+    const definition = row?.query_definition as {
+      source: string;
+      columns: Record<string, unknown>;
+      group_by?: readonly string[];
+    };
+
+    expect(definition.source).toBe('AttendanceRecord');
+    expect(definition.columns.avg_duration).toEqual({
+      fn: 'AVG',
+      column: 'duration_minutes',
+    });
+
+    // The row's declared `member_id` dimension is preserved as the grouping key,
+    // so the AVG is per member rather than a single figure per organization.
+    expect(definition.columns.member_id).toBe('member_id');
+    expect(definition.group_by).toEqual(['member_id']);
+
+    // No column value may be anything other than a string, a bucket, or an
+    // aggregate object — this is what an arithmetic expression would break.
+    for (const ref of Object.values(definition.columns)) {
+      const isAggregate =
+        typeof ref === 'object' && ref !== null && 'fn' in (ref as object);
+      const isBucket =
+        typeof ref === 'object' && ref !== null && 'bucket' in (ref as object);
+      expect(typeof ref === 'string' || isAggregate || isBucket).toBe(true);
+    }
+  });
+
   it('is idempotent when run again for the same organization', async () => {
     await provisionSystemReportSchemas(manager, organizationId);
     await provisionSystemReportSchemas(manager, organizationId);
 
-    expect(rows).toHaveLength(13);
-    expect(repository.save).toHaveBeenCalledTimes(13);
+    expect(rows).toHaveLength(14);
+    expect(repository.save).toHaveBeenCalledTimes(14);
   });
 
   it('does not suppress or modify a custom same-name row', async () => {
@@ -101,7 +147,8 @@ describe('provisionSystemReportSchemas', () => {
 
     await provisionSystemReportSchemas(manager, organizationId);
 
-    expect(rows).toHaveLength(14);
+    // 14 provisioned system rows plus the pre-existing custom one.
+    expect(rows).toHaveLength(15);
     expect(rows.find((row) => row.id === 'custom-1')).toEqual(custom);
     expect(rows.filter((row) => row.name === custom.name)).toHaveLength(2);
   });
