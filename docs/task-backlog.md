@@ -1362,7 +1362,7 @@ This document contains the implementation tasks broken down by phase, with depen
   - **Two adjacent pieces belong with whoever takes this**: §10's "Export file too large (>100 MB)" check, which the plan says the worker performs **before** export, and §8.3's new S3 **read** method for the download endpoint. Both are S3-facing and neither is meaningful without a bucket.
 - **Risks**: A job reports `completed` with a row count while its rows exist only in the worker's memory, so a caller that expects a retrievable result finds nothing. That is visible in the response shape (`result_s3_key` is null) rather than silent, but it is a real gap in the contract §4.2's download endpoint will need.
 
-### P6-37: §6.3's "Peak Hours" groups by `hour`, which is neither a column nor an allowlisted bucket unit *(Open — defect)*
+### P6-37: §6.3's "Peak Hours" uses a raw-timestamp definition; hour-of-day derivation is a future read-layer concern *(No code change needed — re-scoped to a future read-layer task if one is ever built)*
 - **Objective**: Make "Peak Hours" executable — either by giving the row a grouping key that resolves, or by redefining the measure — so a seeded system row cannot fail `ReportExecutorService`'s validation on every execution.
 - **Dependencies**: §3.1.1's `columns` contract and its closed `TimeBucketUnit` set (`src/reports/types/query-definition.ts`). Same "declared name resolves against nothing" class as P6-30 and P6-31 for §1.2, and as P6-21/P6-24 for §6.2's rows.
 - **Files/modules affected**:
@@ -1383,6 +1383,7 @@ This document contains the implementation tasks broken down by phase, with depen
   - **This is a contract gap, not missing data.** `date_trunc('hour', check_in_time)` is well-defined for a `timestamptz`, so peak-hour analysis is available in principle; what is absent is any way to *declare* it. §6.3's sibling row "Week-over-Week Trend" (:486) is expressible for exactly the opposite reason — `week` is in the closed set.
   - **Adjacent and deliberately not folded in**: `avg_count` and `peak_count` (:484), and `unique_members` (:483), are legitimate aggregate aliases over real columns, not defects.
 - **Risks**: A seeded system row that cannot run; and a reader scoping peak-hour work from the catalog builds against a column that does not exist rather than against a stated contract limitation.
+- **Re-measurement addendum (2026-09-25)**: The original premise is stale. The current catalog and seed migration use the raw `check_in_time` shape intended by §6.3; the row no longer declares an invalid `hour` key. Grouping was not simply dropped as a workaround—the definition was redesigned to expose raw timestamps, leaving hour-of-day derivation to a read layer. No such read layer exists in this codebase, so whether it performs that derivation is outside P6-37's scope. No code change is needed for this ticket; revisit only as a future read-layer task if such a layer is built.
 
 ### P6-38: §6.3's "Avg Session Duration" needs a duration that exists only as an expression the allowlist forbids — and its own description names §6.4's measure *(Open — defect)*
 - **Objective**: Resolve "Avg Session Duration" onto something expressible, or record its redefinition or deletion, so the row stops declaring a value no `QueryDefinition` can produce.
