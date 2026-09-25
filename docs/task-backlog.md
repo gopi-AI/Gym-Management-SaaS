@@ -1176,6 +1176,43 @@ This document contains the implementation tasks broken down by phase, with depen
   - **The first acceptance criterion is marked Met for this row only, and that is not a formality.** Re-checking the whole column while applying this correction found two more absent names in *other* rows — `billing_cycle` (Memberships row; the real column is `MembershipPlan.billing_period`) and `package_price` (PT row; the real column is `PTPackage.price`), both 0-match across `src/**`. They are the same class of defect but sit outside this ticket's row, so they are not fixed here; they travel with the PT entity-name defect found during P6-24 and are tracked together as **P6-31**, filed in the same batch as this change and since applied — it corrected both names, and the sweep it then ran found five further absent terms in rows neither ticket names, tracked as **P6-33** — which resolved `price` by adopting a module-wide reading of the column and left the other four outstanding — those four are filed as **P6-35**.
 - **Risks**: A report author scoping work from §1.2 names a column that does not exist and meets either a validation failure at execution — the failure mode P6-21's row has — or, worse, a silently wrong sign convention for points. §1.2 is the plan's own inventory of "known reportable fields", so its accuracy is what makes that claim checkable.
 
+### P6-15: Materialized Views for Reporting *(Shipped — `7527ced6`; re-filed under Phase 6, see the note below)*
+
+> **Filing note — this ticket was mis-filed under `## Phase 7: Enterprise Scale`, and has been moved here (2026-09-25).** It sat at the end of the Phase 7 section under the heading `### P6-03: Materialized Views for Reporting`, where it (a) could not be found from Phase 6, (b) collided with this file's **P6-01/P6-02/P6-03**, which are the read replica, the Python reporting worker and reconciliation workers respectively — a **separate numbering space** from the one it was using, whose `P6-03` is the report execution worker (`docs/phase6-scoping-plan.md` §12, `:917`). The plan's §12 already files this work as **P6-15: Materialized view migration + refresh worker** (`:942`), so the ticket is renumbered onto that code and belongs to Phase 6 as its own **Phase 6.2 — Stretch** row. It was **moved, not deleted**: the body below is the text that sat under Phase 7, with its stale lines corrected in place. All other `P6-03` references in this file that name *catalog-creation* work — P6-25, P6-26, P6-27 and P6-29 — resolve to this ticket's old code and now point at the backlog's **P6-01: Read Replica and Reporting Schema**, which is their nearest live equivalent; reconciling each of those four dependencies is left to the owner rather than guessed at here.
+>
+> **Status is `Shipped`, not `Open`.** The work described below is done: `7527ced6` (*feat(reports): add materialized-view refresh engine (P6-15)*, 2026-09-25) created `src/migrations/1788965263406-CreateReportingMaterializedViews.ts` — which defines and registers the six §7.2 views (`reports_mv_daily_attendance`, `reports_mv_daily_revenue`, `reports_mv_membership_summary`, `reports_mv_daily_workouts`, `reports_mv_member_churn_monthly`, `reports_mv_membership_active_monthly`) in `REPORTS_MATERIALIZED_VIEWS` — plus `MaterializedViewRefreshService` and the §7.3 refresh worker, with cadence in `src/reports/constants/materialized-view-refresh.ts`. Two of the original bullet lines below were **not** delivered as written and say so where they sit. The registry table itself is **P6-29**'s subject (resolution (B), cadence stays in code) and the views' day-bucket convention is **P6-20**'s; both were resolved separately and are not re-opened here.
+>
+> **The surrounding Phase 7 region was already malformed, and this move neither caused nor repaired it.** Two tickets' bodies sit there with no heading of their own: a DLQ/retry body running `POST /v1/notification/dlq/{id}/retry` … `- **Risks**: DLQ buildup, retry storms`, and a report-jobs worker body ending `- **Risks**: Report inaccuracies, performance issues`. Both were headless **before** this pass — the lines after the old P6-03 block were never owned by a heading, so nothing was beheaded by the move. This edit touched only the 28 lines of the P6-03 block, and **every one of those orphaned lines is still on disk, unchanged**. Repairing them means deciding which Phase 5 ticket owns which half-fragment, which is out of scope here and would be guessing; they are left exactly as found, and flagged so the next editor does not read the region as damage this pass introduced.
+
+- **Objective**: Create materialized views for common reporting queries.
+- **Dependencies**: P6-01 (catalog and reporting schema), and the §3.3 registry shipped in `1788965263402-CreateMaterializedViewsTable.ts`. The original text read "P6-01"; under the old code that denoted catalog creation, and under the plan's §12 numbering this row depends on `P6-03: Report execution worker + ReportExecutorService` (`docs/phase6-scoping-plan.md:942`, which lists `P6-03` as this row's dependency). Both readings are recorded rather than one being chosen silently.
+- **Files/modules affected**:
+  - Database materialized view definitions → delivered as `src/migrations/1788965263406-CreateReportingMaterializedViews.ts`
+  - Refresh schedules and procedures → delivered as `src/reports/constants/materialized-view-refresh.ts` + `MaterializedViewRefreshService`
+- **Database changes**:
+  - Create materialized views:
+    - Member summary dashboard → `reports_mv_membership_summary` ✅ **Met**
+    - Monthly revenue by organization → `reports_mv_daily_revenue` ✅ **Met**
+    - Attendance trends and peak times → `reports_mv_daily_attendance` ✅ **Met**
+    - Membership growth and churn → `reports_mv_member_churn_monthly`, `reports_mv_membership_active_monthly` ✅ **Met**
+    - Financial summary reports → **not delivered as a separate view.** §7.2's six views are the closure of this requirement, and `reports_mv_daily_revenue` is the finance one; this list named five deliverables but only one finance view exists. Recorded rather than claimed.
+- **API changes**: None → **stale.** §4.3's materialized-view endpoints (list / refresh-now / query) shipped with the reports module.
+- **Frontend changes**: None
+- **Worker changes**:
+  - Materialized view refreshed worker → delivered as `src/reports/workers/materialized-view-refresh.worker.ts`
+- **Tests**:
+  - Materialized view accuracy → covered by `1788965263406-CreateReportingMaterializedViews.integration.spec.ts` and the migration's unit spec
+  - Refresh performance
+  - Concurrent refresh handling → covered by `materialized-view-refresh.db.spec.ts`
+  - Stale data detection
+- **Acceptance criteria**:
+  - Views match source query results
+  - Refresh completes within window
+  - Concurrent access handled
+  - Stale data indicated appropriately → satisfied by `last_refreshed`, stamped only on success (§7.4, P6-29)
+- **Risks**: View refresh failures, stale data — mitigated in `7527ced6` by a Redis consecutive-failure counter that alerts at the third failure, with a failed view retried on the next cron cycle rather than earning a stamp.
+
+
 ### P6-31: §1.2 and §6.6 spell the PT entities `PtEnrollment`/`PtSession`, which do not resolve — plus two §1.2 dimension names that exist nowhere *(Applied)*
 - **Objective**: Correct the two PT entity names where the plan uses them as resolvable identifiers, and the two remaining §1.2 "Reportable Dimension" names that no entity declares.
 - **Dependencies**: P6-24 — found while re-checking §1.2's rows there. Same defect class as P6-23 (a name with no corresponding entity) and P6-30 (a name with no corresponding column). Independent of P6-25 and P6-28.
@@ -1748,34 +1785,7 @@ This document contains the implementation tasks broken down by phase, with depen
   - Failed reports retry appropriately
 - **Risks**: Report inaccuracies, performance issues
 
-### P6-03: Materialized Views for Reporting
-- **Objective**: Create materialized views for common reporting queries.
-- **Dependencies**: P6-01
-- **Files/modules affected**:
-  - Database materialized view definitions
-  - Refresh schedules and procedures
-- **Database changes**:
-  - Create materialized views:
-    - Member summary dashboard
-    - Monthly revenue by organization
-    - Attendance trends and peak times
-    - Membership growth and churn
-    - Financial summary reports
-- **API changes**: None
-- **Frontend changes**: None
-- **Worker changes**:
-  - Materialized view refreshed worker
-- **Tests**:
-  - Materialized view accuracy
-  - Refresh performance
-  - Concurrent refresh handling
-  - Stale data detection
-- **Acceptance criteria**:
-  - Views match source query results
-  - Refresh completes within window
-  - Concurrent access handled
-  - Stale data indicated appropriately
-- **Risks**: View refresh failures, stale data
+> **Note — a `### P6-03: Materialized Views for Reporting` ticket sat here and was mis-filed**: its content is Phase 6 work — the §7.2 reporting materialized views — and it has been moved to `### P6-15: Materialized Views for Reporting` under `## Phase 6: Analytics`, renumbered onto the code `docs/phase6-scoping-plan.md` §12 already uses for it (:942). It was also carrying a code that belongs to a different ticket in this file ("Read Replica and Reporting Schema"). Nothing was deleted; see the filing note on the moved ticket for the full reconciliation.
   - POST /v1/notification/dlq/{id}/retry
 - **Frontend changes**: None
 - **Worker changes**:
