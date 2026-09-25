@@ -1488,6 +1488,36 @@ This document contains the implementation tasks broken down by phase, with depen
   - **5. Adjacent, deliberately not folded in.** **(a)** §3.1.1 (:240) claims *"the twelve catalog rows that group by one"* — I can account for **8** rows whose Key Columns name `period`/`week`/`month`/`hour` (:484, :486, :493, :512, :513, :530, :531, :554), or **7** if `hour` is excluded per P6-37. The *argument* is sound (buckets are load-bearing); the *count* looks stale, most plausibly from before several rows were redefined to snapshots. **(b)** §16.1's wireframe (:1000) still lists a report named "Active Members — Q4 2026", but §6.1's P6-21 redefinition replaced that row with "Membership Status Distribution" — a point-in-time snapshot with **no** time dimension — so the wireframe names a report and a period that no longer exist.
 - **Risks**: A reader following `ReportService` or `Q7` finds nothing at either end and cannot tell which side is incomplete; §14/Q2 invites re-opening a decision already implemented in code; and the "twelve" figure is quoted in `src/reports/types/query-definition.ts`, so if only the document is corrected the two copies disagree.
 
+### P6-43: PT session count report avoids the shared two-column-expression limitation *(Open — decision recorded)*
+- **Objective**: Record the executable, count-only resolution for the PT trainer report without widening the report DSL to support arithmetic expressions.
+- **Dependencies**: P6-38 and P6-39; §3.1.1's closed `QueryDefinition` column shapes.
+- **Files/modules affected**:
+  - docs/phase6-scoping-plan.md (§6.6)
+  - `src/reports/constants/system-report-catalog.ts`
+  - `src/migrations/1788965263408-SeedCompletedPtSessionsByTrainerSystemReport.ts`
+- **Database changes**: Additive system report seed for existing organizations; future organizations receive the catalog definition through the existing provisioner.
+- **API changes**: None.
+- **Frontend changes**: None.
+- **Worker changes**: None.
+- **Tests**: Provisioner spec update and migration integration coverage against a scratch PostgreSQL database.
+- **Decision**: Define “Completed PT Sessions by Trainer” as `COUNT(*)` of `PTSession` rows where `status = 'completed'`, grouped by trainer and the month of `scheduled_start`, with the date range also applied to `scheduled_start` and the optional branch filter applied to `branch_id`. Keep the shared P6-38/P6-39 limitation intact: the current DSL cannot express aggregates over differences of two columns, and this report does not require such an expression.
+- **Risks**: Do not describe this count as session duration or booked/actual hours; those measures remain subject to the separate DSL and data-model limitations recorded by P6-38/P6-39.
+
+### P6-47: PT completion defaults `actual_end` to `actual_start`, not to a measured end time *(Open — behavior recorded)*
+- **Objective**: Prevent PT reports and follow-up work from treating a completed session’s defaulted `actual_end` as an observed duration.
+- **Dependencies**: PT session completion behavior in `PtSessionsService.completeSession()`.
+- **Files/modules affected**:
+  - `src/pt/dto/complete-pt-session.dto.ts`
+  - `src/pt/services/pt-sessions.service.ts`
+  - docs/phase6-scoping-plan.md (§6.6)
+- **Database changes**: None.
+- **API changes**: None proposed by this note.
+- **Frontend changes**: None.
+- **Worker changes**: None.
+- **Tests**: None proposed by this note; existing PT service behavior is the source for the recorded default.
+- **Behavior**: `actual_end` is optional in `CompletePtSessionDto`. When omitted, `PtSessionsService.completeSession()` sets it to `actual_start`; when `actual_start` is also omitted, the service defaults that to the current time. Therefore, a completed session can have equal actual start/end timestamps by default. The proposed count-only report uses `scheduled_start` and does not infer duration from these fields.
+- **Risks**: A later duration report that relies on `actual_end - actual_start` could report zero for sessions completed without explicit actual timestamps. Any change to that default is a separate behavior/API decision, not part of this report.
+
 ### Record: Phase 6 migration reconciliation (`c7b54144`, `f0d9c124`) — filed retroactively *(2026-09-21)*
 - **What this records**: a transparency entry, not a correction. No code, no migration and no history is changed by it, and it is not a scheduled task — nothing in it is outstanding.
 - **What happened**: while this branch was reconciled against `main` from a different workspace, a cross-branch collision surfaced — Phase 3 Wave 1 on `main` had already taken `1788965263253-259`, five of which this branch had used for its own migrations. Fixed by moving Phase 6's migrations to `1788965263400-404` (relative order preserved; class names, the TypeORM `name` property, code comments and doc references all updated), deleting this branch's competing `1788965263256-CreateFinanceRefundsTable.ts` and its catalog-minimum `Refund` entity after confirming `main`'s P3-02 migration `1788965263258-CreateRefundAndCreditNoteTables.ts` ships a superset of the columns §6.2's Refund Report row declares, and porting the migration-loader contract spec from `main`. Landed as **`c7b54144`** (2026-09-21 14:17 +0530) and **`f0d9c124`** (2026-09-21 15:00 +0530); the ownership consequences are written up in the note after P6-21 above.

@@ -209,5 +209,28 @@ export const SYSTEM_REPORT_SCHEMAS = [
             ],
         },
     },
+    {
+        name: 'Completed PT Sessions by Trainer',
+        description: 'Count of completed PT sessions by trainer, grouped by scheduled month',
+        category: 'pt',
+        query_definition: {
+            source: 'PTSession',
+            columns: {
+                month: { bucket: 'scheduled_start', unit: 'month' },
+                trainer_id: 'trainer_id',
+                session_count: { fn: 'COUNT', column: '*' },
+            },
+            filters: [
+                { column: 'scheduled_start', operator: 'BETWEEN', value: ['$from', '$to'] },
+                { column: 'status', operator: '=', value: 'completed' },
+                { column: 'branch_id', operator: '=', value: '$branchId' },
+            ],
+            group_by: ['month', 'trainer_id'],
+            order_by: [
+                { column: 'month', direction: 'ASC' },
+                { column: 'trainer_id', direction: 'ASC' },
+            ],
+        },
+    },
 ] as const;
 

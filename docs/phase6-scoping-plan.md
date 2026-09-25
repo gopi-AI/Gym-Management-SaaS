@@ -529,7 +529,7 @@ These are the platform-defined reports created as seed data. They are marked `is
 
 | Report Name | Description | Source | Key Columns | Filters |
 |---|---|---|---|---|
-| **Trainer Session Count** | Sessions per trainer over period | `PTSession` | trainer_id, session_count, total_duration | date_range, branch |
+| **Completed PT Sessions by Trainer** | Count of completed PT sessions by trainer, grouped by scheduled month | `PTSession` | month (`scheduled_start`), trainer_id, session_count (`COUNT(*)`) | scheduled_start date_range, status=completed, branch |
 | **Commission Summary** | Commission earned by trainer | `TrainerCommission` | trainer_id, amount, currency, status | date_range, branch |
 | **Session Completion Rate** | Scheduled vs. completed PT sessions | `PTSession` | status, count | date_range |
 | **Trainer Utilization** | Trainer time utilization over period | `PTSession` | trainer_id, booked_hours, available_hours, pct | date_range |
