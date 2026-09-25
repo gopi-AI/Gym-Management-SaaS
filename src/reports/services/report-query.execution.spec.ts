@@ -278,5 +278,141 @@ describeDb('ReportQuery execution against a real database (Phase A)', () => {
     expect(built.getSql()).toMatch(/\$\d+/); // native placeholders only
     expect(built.getParameters()).toMatchObject({ f0: 'R', orgId: orgA });
   });
+
+  /**
+   * The catalog-integrity guard P6-37's **Tests** line asks for, and the one P6-38
+   * cites: **every** system-report catalog row must validate against real entity
+   * metadata. This is the guard that would have caught P6-38 at seed time — the
+   * `Avg Session Duration` row passed creation and then failed on every execution,
+   * because `avg_duration` resolved against nothing.
+   *
+   * Declaration mode is the right mode: it is exactly what `POST /v1/report/schemas`
+   * runs, so a row that cannot pass here is a row that cannot be stored — and it
+   * validates every column, bucket, aggregate and operator without needing values for
+   * the `$from`/`$to`/`$branchId` placeholders the rows carry.
+   */
+  it('every catalog row validates against real entity metadata (P6-37/P6-38 guard)', async () => {
+    const { SYSTEM_REPORT_SCHEMAS } = await import('../constants/system-report-catalog');
+
+    const failures: string[] = [];
+    for (const schema of SYSTEM_REPORT_SCHEMAS) {
+      try {
+        await validator.validateDeclaration(
+          def(schema.query_definition),
+          { organizationId: orgA },
+        );
+      } catch (error) {
+        failures.push(`${schema.name}: ${(error as Error).message}`);
+      }
+    }
+
+    expect(failures).toEqual([]);
+  });
+
+  /**
+   * P6-38 end-to-end: the shipped row, compiled by the real validator and builder,
+   * executed against real rows. The provisioner/unit test asserts the row's *shape*;
+   * this asserts that the shape actually produces the report.
+   *
+   * Three sessions of 60/90/120 minutes for one member must average to 90. The open
+   * session (duration NULL) must be excluded rather than counted as 0 — that is the
+   * whole reason the column is nullable.
+   */
+  it("§6.3 Avg Session Duration returns AVG(duration_minutes) per member (P6-38)", async () => {
+    const memberId = crypto.randomUUID();
+    await ds.query(
+      `INSERT INTO "MEMBERS_MEMBERS"
+        ("id", "organization_id", "branch_id", "global_uuid", "local_id", "first_name", "last_name")
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [memberId, orgA, branchA, crypto.randomUUID(), 99, 'Avg', 'Duration'],
+    );
+
+    await ds.query(
+      `INSERT INTO "ATTENDANCE_ATTENDANCE_RECORDS"
+        ("id", "organization_id", "branch_id", "member_id", "check_in_time", "check_out_time", "duration_minutes")
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        crypto.randomUUID(), orgA, branchA, memberId,
+        '2026-04-01T08:00:00Z', '2026-04-01T09:00:00Z', 60,
+      ],
+    );
+    await ds.query(
+      `INSERT INTO "ATTENDANCE_ATTENDANCE_RECORDS"
+        ("id", "organization_id", "branch_id", "member_id", "check_in_time", "check_out_time", "duration_minutes")
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        crypto.randomUUID(), orgA, branchA, memberId,
+        '2026-04-02T08:00:00Z', '2026-04-02T09:30:00Z', 90,
+      ],
+    );
+    await ds.query(
+      `INSERT INTO "ATTENDANCE_ATTENDANCE_RECORDS"
+        ("id", "organization_id", "branch_id", "member_id", "check_in_time", "check_out_time", "duration_minutes")
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        crypto.randomUUID(), orgA, branchA, memberId,
+        '2026-04-03T08:00:00Z', '2026-04-03T10:00:00Z', 120,
+      ],
+    );
+    // Still checked in — no duration, and it must not be averaged as a zero.
+    await ds.query(
+      `INSERT INTO "ATTENDANCE_ATTENDANCE_RECORDS"
+        ("id", "organization_id", "branch_id", "member_id", "check_in_time", "check_out_time", "duration_minutes")
+       VALUES ($1, $2, $3, $4, $5, NULL, NULL)`,
+      [crypto.randomUUID(), orgA, branchA, memberId, '2026-04-04T08:00:00Z'],
+    );
+
+    const { SYSTEM_REPORT_SCHEMAS } = await import('../constants/system-report-catalog');
+    const row = SYSTEM_REPORT_SCHEMAS.find((s) => s.name === 'Avg Session Duration');
+    expect(row).toBeDefined();
+
+    // The shipped definition, with its date_range filter bound for this window.
+    const rows = await run(row!.query_definition, orgA, {
+      from: '2026-04-01T00:00:00.000Z',
+      to: '2026-05-01T00:00:00.000Z',
+    });
+
+    const mine = rows.find((r) => r.member_id === memberId);
+    expect(mine).toBeDefined();
+    // (60 + 90 + 120) / 3 = 90 — the open session contributes nothing.
+    expect(Number(mine!.avg_duration)).toBe(90);
+
+    try {
+      await ds.query(`DELETE FROM "ATTENDANCE_ATTENDANCE_RECORDS" WHERE member_id = $1`, [memberId]);
+      await ds.query(`DELETE FROM "MEMBERS_MEMBERS" WHERE id = $1`, [memberId]);
+    } catch {
+      // afterAll cleans up orgA's rows regardless.
+    }
+  });
+
+  it('the unexpressible original measure is rejected — AVG over a two-column difference (P6-38)', async () => {
+    // This is the defect P6-38 was filed for, asserted as a *refusal* so the fix
+    // cannot be silently undone: an aggregate whose argument is an arithmetic
+    // expression is not one of `ColumnRef`'s three shapes.
+    await expect(
+      validator.validate(
+        def({
+          source: 'AttendanceRecord',
+          columns: {
+            member_id: 'member_id',
+            avg_duration: { fn: 'AVG', expression: 'check_out_time - check_in_time' },
+          },
+          group_by: ['member_id'],
+        }),
+        { organizationId: orgA },
+      ),
+    ).rejects.toThrow();
+
+    // And a bare expression string is not a column name either.
+    await expect(
+      validator.validate(
+        def({
+          source: 'AttendanceRecord',
+          columns: { avg_duration: 'check_out_time - check_in_time' },
+        }),
+        { organizationId: orgA },
+      ),
+    ).rejects.toThrow(/does not exist on AttendanceRecord/);
+  });
 });
 
