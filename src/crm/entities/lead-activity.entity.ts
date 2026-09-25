@@ -1,0 +1,4 @@
+import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
+@Entity('CRM_LEAD_ACTIVITIES')
+@Index(['organization_id', 'lead_id', 'occurred_at'])
+export class LeadActivity { @PrimaryGeneratedColumn('uuid') id!: string; @Column({ type: 'uuid' }) @Index() organization_id!: string; @Column({ type: 'uuid' }) lead_id!: string; @Column({ length: 50 }) activity_type!: string; @Column({ type: 'timestamptz', default: () => 'now()' }) occurred_at!: Date; @Column({ type: 'text', nullable: true }) notes?: string | null; @Column({ type: 'uuid', nullable: true }) created_by?: string | null; @CreateDateColumn({ type: 'timestamptz' }) created_at!: Date; }
