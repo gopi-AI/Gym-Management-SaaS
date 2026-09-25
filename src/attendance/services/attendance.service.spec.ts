@@ -279,7 +279,6 @@ describe('AttendanceService', () => {
       expect(result.record.check_out_time).toBeInstanceOf(Date);
       expect(result.record.check_out_method).toBe('manual');
       expect(result.decision.is_granted).toBe(true);
-
       const payload = mockOutboxService.saveEventEnvelope.mock.calls[0][3] as Record<
         string,
         unknown
@@ -303,6 +302,48 @@ describe('AttendanceService', () => {
         reason: 'no_open_check_in',
       });
       expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    /**
+     * P6-38. The stored duration is what §6.3's report averages, so its value and
+     * its rounding rule are the report's arithmetic — not an implementation detail.
+     *
+     * The check-out timestamp is server-generated (`resolveEventInput` stamps
+     * `new Date()`), so the test controls the *check-in* time instead and asserts
+     * against the elapsed difference, which is what the column means.
+     */
+    it('persists duration_minutes as the whole-minute visit length (P6-38)', async () => {
+      const durationMs = 90 * 60_000 + 30_000; // 90.5 minutes → rounds to 91
+      const checkIn = new Date(Date.now() - durationMs);
+      mockRecordRepo.findOne.mockResolvedValue({ ...savedRecord, check_in_time: checkIn });
+
+      const result = await service.recordCheckOut({ member_id: memberId });
+
+      expect(result.record.duration_minutes).toBe(91);
+    });
+
+    it('rounds down when the visit is just under the half minute (P6-38)', async () => {
+      const durationMs = 45 * 60_000 + 29_000; // 45.48 minutes → rounds to 45
+      const checkIn = new Date(Date.now() - durationMs);
+      mockRecordRepo.findOne.mockResolvedValue({ ...savedRecord, check_in_time: checkIn });
+
+      const result = await service.recordCheckOut({ member_id: memberId });
+
+      expect(result.record.duration_minutes).toBe(45);
+    });
+
+    /**
+     * An open session must carry NO duration rather than a placeholder zero: `0`
+     * would be indistinguishable from a real zero-length visit and would drag the
+     * report's `AVG` down. The column is only ever written on this path.
+     */
+    it('leaves duration_minutes null when a session is still open (P6-38)', async () => {
+      await service.recordCheckIn({ member_id: memberId });
+
+      expect(mockRecordRepo.create.mock.calls[0][0]).toMatchObject({
+        check_out_time: null,
+      });
+      expect(mockRecordRepo.create.mock.calls[0][0]).not.toHaveProperty('duration_minutes');
     });
   });
   // ---------------------------------------------------------------------------
