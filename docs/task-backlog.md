@@ -1430,7 +1430,7 @@ This document contains the implementation tasks broken down by phase, with depen
   - **Adjacent and deliberately not folded in**: `trainer_id` is a real column and resolves; the row's `date_range` and `branch` filters are filters, not Key Columns, and are unaffected.
 - **Risks**: A seeded row with one unresolvable column among resolvable ones, so it fails validation on every execution while looking nearly correct; and a "per trainer over period" measure that returns a single aggregate once the duration is fixed.
 
-### P6-40: §6.6's "Trainer Utilization" needs `booked_hours` and `available_hours`, and the availability data was deliberately never built *(Open — defect)*
+### P6-40: §6.6's "Trainer Utilization" needs `booked_hours` and `available_hours`, and the availability data was deliberately never built *(Reframed — blocked on a trainer-scheduling/availability feature)*
 - **Objective**: Resolve "Trainer Utilization" — a ratio whose denominator does not exist anywhere in the schema — by redefining or deleting the row and recording the decision, rather than leaving a catalog row that can never execute.
 - **Dependencies**: §3.1.1's `columns` allowlist for `booked_hours`; and the deliberately-absent trainer-availability model for `available_hours`. Same class as P6-21/P6-24. Shares its `booked_hours` expression problem with P6-38 and P6-39.
 - **Files/modules affected**:
@@ -1458,7 +1458,7 @@ This document contains the implementation tasks broken down by phase, with depen
   - **This is categorically different from P6-38.** P6-38 is blocked on a query-capability decision with its source data already present. P6-40 is blocked on an absent domain capability—trainer scheduling/availability—which does not yet exist as a product feature, not merely as a report definition.
   - **Recommendation:** Reframe P6-40 as blocked on a trainer-scheduling/availability feature; it is not resolvable as a reports-backlog item. Do not attempt report implementation until the product decision defining that feature exists.
 
-### P6-41: §6.7's "Points Issued/Burned" declares `total_points`; the entity column is `points` *(Open — defect)*
+### P6-41: §6.7's "Points Issued/Burned" declares `total_points`; the entity column is `points` *(Resolved — shipped as a system report with an existing-organization backfill)*
 - **Objective**: Correct the row's Key Column to a name that resolves on `LoyaltyTransaction`, and correct the same wrong name where it has propagated into a shipped DTO's provenance comment.
 - **Dependencies**: §3.1.1's column validation (§10). Same class as P6-30, which fixed an identical §1.2 defect on this very entity. Note §6.7's own note (:539) already records that this section's **other two** rows are unresolved and "deliberately not redefined here" — this ticket covers only `total_points` and should be closed alongside whichever ticket takes those.
 - **Files/modules affected**:
@@ -1500,7 +1500,7 @@ This document contains the implementation tasks broken down by phase, with depen
   - **5. Adjacent, deliberately not folded in.** **(a)** §3.1.1 (:240) claims *"the twelve catalog rows that group by one"* — I can account for **8** rows whose Key Columns name `period`/`week`/`month`/`hour` (:484, :486, :493, :512, :513, :530, :531, :554), or **7** if `hour` is excluded per P6-37. The *argument* is sound (buckets are load-bearing); the *count* looks stale, most plausibly from before several rows were redefined to snapshots. **(b)** §16.1's wireframe (:1000) still lists a report named "Active Members — Q4 2026", but §6.1's P6-21 redefinition replaced that row with "Membership Status Distribution" — a point-in-time snapshot with **no** time dimension — so the wireframe names a report and a period that no longer exist.
 - **Risks**: A reader following `ReportService` or `Q7` finds nothing at either end and cannot tell which side is incomplete; §14/Q2 invites re-opening a decision already implemented in code; and the "twelve" figure is quoted in `src/reports/types/query-definition.ts`, so if only the document is corrected the two copies disagree.
 
-### P6-43: PT session count report avoids the shared two-column-expression limitation *(Open — decision recorded)*
+### P6-43: PT session count report avoids the shared two-column-expression limitation *(Resolved — decision implemented as a system report)*
 - **Objective**: Record the executable, count-only resolution for the PT trainer report without widening the report DSL to support arithmetic expressions.
 - **Dependencies**: P6-38 and P6-39; §3.1.1's closed `QueryDefinition` column shapes.
 - **Files/modules affected**:
