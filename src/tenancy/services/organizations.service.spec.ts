@@ -42,7 +42,7 @@ describe('OrganizationsService.create', () => {
 
     expect(dataSource.transaction).toHaveBeenCalledTimes(1);
     expect(organizationRepository.save).toHaveBeenCalledTimes(1);
-    expect(reportRepository.save).toHaveBeenCalledTimes(11);
+    expect(reportRepository.save).toHaveBeenCalledTimes(13);
     expect(manager.getRepository).toHaveBeenCalledWith(Organization);
     expect(manager.getRepository).toHaveBeenCalledWith(ReportSchema);
   });
