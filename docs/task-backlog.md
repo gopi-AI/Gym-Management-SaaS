@@ -1389,7 +1389,7 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Objective**: Resolve "Avg Session Duration" onto something expressible, or record its redefinition or deletion, so the row stops declaring a value no `QueryDefinition` can produce.
 - **Dependencies**: §3.1.1's `columns` allowlist. Related: §7.2's `reports_mv_daily_attendance`, which computes this same figure as MV SQL and belongs to P6-15 (Phase 6.2 — Stretch), so it is not a `QueryDefinition` source. Same class as P6-21/P6-24.
 - **Files/modules affected**:
-  - docs/phase6-scoping-plan.md (§6.3's "Avg Session Duration" row, :485)
+  - docs/phase6-scoping-plan.md (§6.3's "Avg Session Duration" row, :493) — the citation read **:485** when this ticket was filed, and was correct at the time: at `f9d1444d`, :485 *was* the "Avg Session Duration" row. It went stale in `11c6ce97` (*docs(reports): resolve three catalog gaps — Peak Hours, Member Demographics, New Members*), which inserted 13 lines above §6.3 and pushed the row down to :493 — still the row's line at HEAD, so the target is a **renumbering, not a removal**. This is a stale pointer, not a moved row: the "Peak Hours" redefinition added a paragraph above it, and the row itself is unchanged.
 - **Database changes**: None
 - **API changes**: None
 - **Frontend changes**: None
