@@ -649,6 +649,15 @@ This document contains the implementation tasks broken down by phase, with depen
   - GET /v1/notification/dlq (paginated)
 ## Phase 6: Analytics
 
+> **Naming caution — `P6-NN` denotes two unrelated numbering spaces in this repository (2026-09-25).** The `P6-NN` codes in this section are this file's backlog ticket numbers. The `P6-NN` codes in `docs/phase6-scoping-plan.md` §12 (*Implementation Phasing*) are a **separate, local** numbering that does **not** correspond to them. §12 states this itself — `docs/phase6-scoping-plan.md:909`: *"The task codes below are local to this scoping document and should be aligned with the project's task-tracking system during implementation."*
+>
+> The collision misleads because both spaces run `P6-01`, `P6-02`, `P6-03` … and assign different work to the same digits. Three verified-at-HEAD examples:
+> - Plan §12 `P6-01` is *"`ReportSchema` entity + migration + CRUD service/controller"* (`:915`); this file's **P6-01** is *"Read Replica and Reporting Schema"*.
+> - Plan §12 `P6-03` is *"Report execution worker + `ReportExecutorService`"* (`:917`); this file's **P6-03** is *"Materialized Views for Reporting"*.
+> - Plan §12 `P6-15` is *"Materialized view migration + refresh worker"* (`:942`); this file's **P6-15** is the same work, and the two agree here only because that ticket was renumbered onto the plan's code on purpose.
+>
+> **How to read a `P6-NN` mention**: a reference written as `plan §12 P6-NN`, or one appearing inside a quotation from the plan, is the plan's *local* code. A bare `P6-NN` pointing at a section of *this* file is a backlog ticket. Where a ticket in this file cites the plan's §12 numbering — several Phase 6 entries do — it is citing the plan's code, and the backlog ticket carrying the same digits is unrelated work. Do not treat matching numbers across the two documents as the same task, and do not renumber one space to match the other without a decision: §12's codes are explicitly awaiting alignment, not already aligned.
+
 ### P6-01: Read Replica and Reporting Schema
 - **Objective**: Set up PostgreSQL read replica and reporting schema for analytics.
 - **Dependencies**: P0-03
