@@ -85,7 +85,10 @@ export class LoyaltyExpiryService {
     const pointsToExpire = earnTxn.remaining_points;
 
     await this.transactionRepository.manager.transaction(async (manager) => {
-      // 1. Fetch the account to get the organization_id for the event envelope.
+      // 1. Fetch the account to get the organization_id for the event envelope and
+      //    for the expire row's own organization_id (NOT NULL since
+      //    1788965263403-AddOrganizationIdToLoyaltyTransactions.ts). The column is
+      //    guaranteed non-null by LOYALTY_TRANSACTIONS.account_id's FK.
       const account = await manager.getRepository(LoyaltyAccount).findOne({
         where: { id: earnTxn.account_id },
       });
@@ -100,6 +103,7 @@ export class LoyaltyExpiryService {
       // 3. Write the expire transaction.
       const expireTxn = manager.getRepository(LoyaltyTransaction).create({
         account_id: earnTxn.account_id,
+        organization_id: organizationId,
         transaction_type: LOYALTY_TRANSACTION_TYPES.EXPIRE,
         points: pointsToExpire,
         remaining_points: 0,

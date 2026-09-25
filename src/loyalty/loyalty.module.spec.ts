@@ -4,7 +4,11 @@ import { getDataSourceToken, getRepositoryToken, TypeOrmModule } from '@nestjs/t
 import { LoyaltyModule } from './loyalty.module';
 import { LoyaltyAccrualService } from './services/loyalty-accrual.service';
 import { LoyaltyExpiryService } from './services/loyalty-expiry.service';
+import { LoyaltyReadService } from './services/loyalty-read.service';
 import { LoyaltyExpiryWorker } from './workers/loyalty-expiry.worker';
+import { MembersService } from '../members/services/members.service';
+import { MembersModule } from '../members/members.module';
+import { TenantContextService } from '../shared/tenant/tenant-context.service';
 import { LoyaltyAccount } from './entities/loyalty-account.entity';
 import { LoyaltyTransaction } from './entities/loyalty-transaction.entity';
 import { LoyaltyRule } from './entities/loyalty-rule.entity';
@@ -38,9 +42,12 @@ import { EventHandlerRegistry } from '../shared/event-handler/event-handler.regi
  * is ever missing from the module's own `forFeature` array, `compile()` throws and the suite
  * goes red immediately.
  *
- * External modules (`TenancyModule`, `WorkersModule`) and the `OutboxModule` are swapped
- * for minimal stubs so the test verifies the Loyalty module's OWN wiring in isolation —
- * the repository tokens registered by LoyaltyModule's `forFeature` are what matter here.
+ * External modules (`TenancyModule`, `WorkersModule`), the `OutboxModule` and —
+ * since P6-28's read path — `MembersModule` are swapped for minimal stubs so the
+ * test verifies the Loyalty module's OWN wiring in isolation. The repository tokens
+ * registered by LoyaltyModule's `forFeature` are what matter here; MembersModule's
+ * transitive graph (S3, memberships, attendance, PT, workouts, diet) is not this
+ * spec's subject, and booting it for real would test that graph instead.
  */
 
 @Module({})
@@ -53,6 +60,23 @@ class EmptyModule {}
   exports: [OutboxService],
 })
 class StubOutboxModule {}
+
+/**
+ * P6-28 added `MembersModule` to LoyaltyModule's imports because
+ * `LoyaltyReadService` rejects a cross-tenant member through the org-scoped
+ * `MembersService.findOne()`. The read service only needs that one method, so the
+ * stub provides exactly it — plus `TenantContextService`, which it reads the
+ * authorized organization from. `TenancyModule` is stubbed to `EmptyModule` above,
+ * so without this token the read service cannot be constructed at all.
+ */
+@Module({
+  providers: [
+    { provide: MembersService, useValue: { findOne: jest.fn() } },
+    { provide: TenantContextService, useValue: { getCurrentOrganizationId: jest.fn() } },
+  ],
+  exports: [MembersService, TenantContextService],
+})
+class StubMembersModule {}
 
 describe('LoyaltyModule (real DI container)', () => {
   let module: TestingModule;
@@ -67,6 +91,8 @@ describe('LoyaltyModule (real DI container)', () => {
       .useModule(EmptyModule)
       .overrideModule(OutboxModule)
       .useModule(StubOutboxModule)
+      .overrideModule(MembersModule)
+      .useModule(StubMembersModule)
       // The accrual service uses @InjectDataSource() directly. Register the token via
       // TypeOrmModule.forRoot above, then swap in an inert stub so no connection is
       // ever attempted.
@@ -102,6 +128,14 @@ describe('LoyaltyModule (real DI container)', () => {
 
   it('resolves LoyaltyExpiryService from the real container', () => {
     expect(module.get(LoyaltyExpiryService)).toBeDefined();
+  });
+
+  it('resolves LoyaltyReadService (P6-28) from the real container', () => {
+    expect(module.get(LoyaltyReadService)).toBeDefined();
+  });
+
+  it('resolves the MembersService that LoyaltyReadService depends on', () => {
+    expect(module.get(MembersService)).toBeDefined();
   });
 
   it('stubs LoyaltyExpiryWorker (needs ConfigService/SchedulerRegistry, not part of this DI validation)', () => {

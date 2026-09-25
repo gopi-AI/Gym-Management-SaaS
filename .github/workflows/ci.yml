@@ -10,6 +10,60 @@ jobs:
   ci:
     runs-on: ubuntu-latest
 
+    # ── Postgres (matches docker-compose.yml: postgres:16-alpine) ────────────────
+    # The same image the project runs locally, so the schema is built against the
+    # same server version CI's tests assume. Published on 5432 and reachable at
+    # localhost, because this job runs on the VM rather than inside a container.
+    # Credentials mirror docker-compose.yml's and src/data-source.ts's fallbacks.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gym_management
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # ── Redis service (matches docker-compose.yml: redis:7-alpine) ───────────────
+      # The same image the project runs locally, and the server the DB-backed report
+      # suites connect to at redis://127.0.0.1:6379 for §10's consecutive-failure
+      # counter and the §7.3 debounce lock. Those suites skip when DB_HOST is unset,
+      # but this job sets DB_HOST above, so they run here and need Redis reachable.
+      # No `env:` block: unlike Postgres, Redis here is unauthenticated, matching the
+      # compose service's shape (ports + healthcheck only).
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # Database and Redis connection for the DB-backed suites. Job-scoped so the
+    # migration step and the test step cannot drift apart. Suites that need a
+    # database run when these are set and skip when they are not, which is what
+    # keeps a local `npm test` with no Postgres passing. REDIS_HOST/REDIS_PORT are
+    # the keys src/app.module.ts's global CacheModule reads; their defaults are the
+    # same localhost:6379, but stating them keeps CI's Redis wiring explicit.
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_DATABASE: gym_management
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      DB_ADMIN_DATABASE: postgres
+      REPORTING_MV_INTEGRATION: "1"
+
     # Matches .nvmrc (Node 24, the pinned version used locally).
     strategy:
       matrix:
@@ -47,9 +101,27 @@ jobs:
       - name: Frontend typecheck
         run: cd apps/web && npm run typecheck
 
+      # ── Database setup for the DB-backed suites ────────────────────────────────────
+      # src/migrations/*.ts call uuid_generate_v4() and NO migration creates the
+      # extension, so it must exist before the schema is built -- the same
+      # requirement the DB-backed spec's own error message names for local runs.
+      - name: Create Postgres extensions
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d gym_management -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'
+
+      # Builds the schema the suites run against. The DB-backed loyalty spec also
+      # calls runMigrations() itself, so this is belt-and-braces: it makes the job's
+      # database state explicit and fails here, with a migration error, rather than
+      # somewhere inside a test.
+      - name: Run migrations
+        run: npm run migration:run
+
       # ── Full backend test suite ────────────────────────────────────────────────────
-      # Runs every Jest suite (currently 70 suites / 700+ tests), isolated from
-      # any .env file so tests never reach out to real services.
+      # Runs every Jest suite. Jest still never loads a .env file (jest.config.js is
+      # explicit about that); the DB_* variables above come from the job environment
+      # and point at the Postgres service, which is what makes the DB-backed suites
+      # run here instead of skipping.
       - name: Backend tests
         run: npx jest --passWithNoTests
 

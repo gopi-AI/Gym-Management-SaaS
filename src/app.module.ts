@@ -27,6 +27,7 @@ import { WorkoutsModule } from './workouts/workouts.module';
 import { PtModule } from './pt/pt.module';
 import { DietModule } from './diet/diet.module';
 import { LoyaltyModule } from './loyalty/loyalty.module';
+import { ReportsModule } from './reports/reports.module';
 import { WorkersModule } from './shared/workers/workers.module';
 import { EventHandlerModule } from './shared/event-handler/event-handler.module';
 
@@ -198,6 +199,11 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     WorkersModule,
     // Loyalty (Phase 2): points accrual, expiry, rules, rewards (schema-only).
     LoyaltyModule,
+    // Reports (Phase 6): the report executor's HTTP surface (§4.1/§4.2) — report-schema
+    // CRUD, the async-execution trigger and job status. The executor itself (Phase A/B)
+    // is reachable through WorkersModule below; importing the module here is what
+    // registers its controllers.
+    ReportsModule,
     // In-process event routing (transitional stand-in for the RabbitMQ target).
     EventHandlerModule,
     // AI foundation: provider abstraction, usage/audit telemetry, retention use case.

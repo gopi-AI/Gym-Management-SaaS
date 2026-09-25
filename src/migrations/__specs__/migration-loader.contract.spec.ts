@@ -19,9 +19,25 @@ import { join } from 'path';
  * `src/migrations/` makes `migration:run` **and** `migration:revert` fail
  * outright for *every* migration, in every environment, including deploys.
  *
- * That is exactly what `1788965263253-CreateFinanceLedgerViews.ts` used to do
- * with its three view-SQL builders. They now live in
- * `src/finance/ledger-views.constants.ts`, outside the glob.
+ * Ported from `main`, where the regression it was written for was real:
+ * `1788965263253-CreateFinanceLedgerViews.ts` used to export three view-SQL
+ * builders from inside the glob, and they now live in
+ * `src/finance/ledger-views.constants.ts`.
+ *
+ * While the two histories were apart this file adapted two of `main`'s
+ * assertions, because both name files that existed only there. The histories
+ * are now merged and both files are present under `src/`, so `main`'s fourth
+ * assertion — the one that pins the extracted builders to
+ * `src/finance/ledger-views.constants.ts` — is carried here again and the
+ * adaptation is retired.
+ *
+ * One deliberate difference remains: the first assertion anchors on
+ * `1788965263227-InitialSchema.ts`, the oldest migration, present on every
+ * branch, rather than on `main`'s `1788965263253-CreateFinanceLedgerViews.ts`.
+ * The guard is about the loader rather than about any one migration, so it is
+ * anchored to a file guaranteed to exist. The `…253` slot is a poor anchor for
+ * a further reason: this branch once used it for `CreateReportSchemasTable`,
+ * since renumbered to `1788965263400` to clear the timestamps `main` had taken.
  *
  * These assertions are static (they read the source rather than booting a
  * DataSource) so they fail fast and point at the offending file and line.
@@ -41,7 +57,7 @@ describe('migration loader contract', () => {
   it('finds the migration files it is meant to be guarding', () => {
     // Guards against the guard silently passing on an empty directory.
     expect(files.length).toBeGreaterThan(20);
-    expect(files).toContain('1788965263253-CreateFinanceLedgerViews.ts');
+    expect(files).toContain('1788965263227-InitialSchema.ts');
   });
 
   it('exports no function from any file the CLI loads as a migration', () => {
@@ -60,8 +76,7 @@ describe('migration loader contract', () => {
     }
 
     // The message names the file and line so the fix is obvious: move the
-    // helper out of `src/migrations/` (see ledger-views.constants.ts) rather
-    // than deleting the export.
+    // helper out of `src/migrations/` rather than deleting the export.
     expect(offenders).toEqual([]);
   });
 
