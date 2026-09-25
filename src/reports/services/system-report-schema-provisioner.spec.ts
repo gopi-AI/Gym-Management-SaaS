@@ -35,23 +35,34 @@ describe('provisionSystemReportSchemas', () => {
     } as unknown as EntityManager;
   });
 
-  it('provisions exactly 11 system rows with the required attributes', async () => {
+  it('provisions exactly 12 system rows with the required attributes', async () => {
     await provisionSystemReportSchemas(manager, organizationId);
 
-    expect(rows).toHaveLength(11);
+    expect(rows).toHaveLength(12);
     expect(rows.map((row) => row.name)).toEqual(SYSTEM_REPORT_SCHEMAS.map((schema) => schema.name));
     expect(rows.every((row) => row.organization_id === organizationId)).toBe(true);
     expect(rows.every((row) => row.is_system && row.is_active)).toBe(true);
     expect(rows.every((row) => row.created_by === null)).toBe(true);
     expect(rows.every((row) => Array.isArray(row.parameters) && row.parameters.length === 0)).toBe(true);
+
+    const pointsReport = rows.find((row) => row.name === 'Points Issued/Burned');
+    expect(pointsReport?.query_definition).toEqual(
+      expect.objectContaining({
+        source: 'LoyaltyTransaction',
+        columns: expect.objectContaining({
+          total_points: { fn: 'SUM', column: 'points' },
+        }),
+        group_by: ['period', 'transaction_type'],
+      }),
+    );
   });
 
   it('is idempotent when run again for the same organization', async () => {
     await provisionSystemReportSchemas(manager, organizationId);
     await provisionSystemReportSchemas(manager, organizationId);
 
-    expect(rows).toHaveLength(11);
-    expect(repository.save).toHaveBeenCalledTimes(11);
+    expect(rows).toHaveLength(12);
+    expect(repository.save).toHaveBeenCalledTimes(12);
   });
 
   it('does not suppress or modify a custom same-name row', async () => {
@@ -71,7 +82,7 @@ describe('provisionSystemReportSchemas', () => {
 
     await provisionSystemReportSchemas(manager, organizationId);
 
-    expect(rows).toHaveLength(12);
+    expect(rows).toHaveLength(13);
     expect(rows.find((row) => row.id === 'custom-1')).toEqual(custom);
     expect(rows.filter((row) => row.name === custom.name)).toHaveLength(2);
   });

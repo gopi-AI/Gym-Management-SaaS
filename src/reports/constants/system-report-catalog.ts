@@ -189,5 +189,25 @@ export const SYSTEM_REPORT_SCHEMAS = [
             order_by: [{ column: 'week', direction: 'ASC' }],
         },
     },
+    {
+        name: 'Points Issued/Burned',
+        description: 'Loyalty points movements over time',
+        category: 'loyalty',
+        query_definition: {
+            source: 'LoyaltyTransaction',
+            columns: {
+                period: { bucket: 'created_at', unit: 'month' },
+                transaction_type: 'transaction_type',
+                count: { fn: 'COUNT', column: '*' },
+                total_points: { fn: 'SUM', column: 'points' },
+            },
+            filters: [{ column: 'created_at', operator: 'BETWEEN', value: ['$from', '$to'] }],
+            group_by: ['period', 'transaction_type'],
+            order_by: [
+                { column: 'period', direction: 'ASC' },
+                { column: 'transaction_type', direction: 'ASC' },
+            ],
+        },
+    },
 ] as const;
 

@@ -1505,6 +1505,8 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Re-measured after the Phase 3 finance merge (`55a22b9b`, 2026-09-25)**: the dev database's 46 `typeorm_migrations` rows now compare against 40 files in the merged tree (up from 33 pre-merge), leaving 6 unbacked — down from the original 13. The `253`–`259` finance migration files arrived with the merge and now exist in-tree, resolving 7 of the original 13 by name. The remaining 6 are: `AddPaymentGatewayAndWebhookEvents`, `CreateFinancePaymentMethods`, `CreateInventorySchema`, `CreateInvoiceDiscountSnapshots`, `CreateMembershipDiscounts`, `ProvisionInventoryPermissions`. Not further investigated — in particular, whether the tables these named migrations would have created still exist in the dev database has not been checked.
 - **Database changes**: none. **API changes**: none. **Frontend changes**: none. **Worker changes**: none. **Tests**: none.
 
+### P6-46: `LOYALTY_TRANSACTIONS.points` is documented as always positive but has no DB-level constraint; the accrual writer passes values through without validation *(Flagged during P6-41; not investigated)*
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy
