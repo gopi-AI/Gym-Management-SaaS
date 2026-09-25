@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Payment } from '../entities/payment.entity';
+import { Refund } from '../entities/refund.entity';
+import { PaymentMethod } from '../entities/payment-method.entity';
 
 /**
  * Outcome of a single gateway charge attempt.
@@ -16,6 +18,9 @@ export interface PaymentAttemptOutcome {
   failureReason?: string;
   /** Machine-readable failure code (PaymentFailed.failureCode). */
   failureCode?: string;
+  gatewayReference?: string;
+  gatewayStatus?: string;
+  gatewayResponse?: string;
 }
 
 /**
@@ -34,6 +39,8 @@ export interface PaymentGatewayPort {
    */
   readonly isConfigured: boolean;
   attempt(payment: Payment): Promise<PaymentAttemptOutcome>;
+  charge(payment: Payment, paymentMethod?: PaymentMethod): Promise<PaymentAttemptOutcome>;
+  refund(refund: Refund): Promise<PaymentAttemptOutcome>;
 }
 
 /** DI token for the active `PaymentGatewayPort` implementation. */
@@ -50,7 +57,19 @@ export const PAYMENT_GATEWAY = 'PAYMENT_GATEWAY';
 export class UnavailablePaymentGateway implements PaymentGatewayPort {
   readonly isConfigured = false;
 
-  async attempt(): Promise<PaymentAttemptOutcome> {
+  async attempt(payment: Payment): Promise<PaymentAttemptOutcome> {
+    return this.charge(payment);
+  }
+
+  async charge(_payment?: Payment): Promise<PaymentAttemptOutcome> {
+    return {
+      succeeded: false,
+      failureReason: 'No payment gateway is configured for this deployment',
+      failureCode: 'GATEWAY_NOT_CONFIGURED',
+    };
+  }
+
+  async refund(): Promise<PaymentAttemptOutcome> {
     return {
       succeeded: false,
       failureReason: 'No payment gateway is configured for this deployment',

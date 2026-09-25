@@ -118,6 +118,8 @@ export const FINANCE_EVENT_TYPES = {
   // reserved in `docs/domain-map.md` line 96.
   REFUND_ISSUED: 'RefundIssued',
   CREDIT_NOTE_ISSUED: 'CreditNoteIssued',
+  INVOICE_OVERDUE: 'InvoiceOverdue',
+  DUNNING_ESCALATED: 'DunningEscalated',
 } as const;
 
 /** Human-readable message for each check-in / payment blocking state. */

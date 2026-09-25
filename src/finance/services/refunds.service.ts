@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
+import { randomUUID } from 'crypto';
 import { Refund } from '../entities/refund.entity';
 import { Payment } from '../entities/payment.entity';
 import { CreateRefundDto } from '../dto/create-refund.dto';
@@ -79,6 +80,11 @@ export class RefundsService {
     private readonly outboxService: OutboxService,
   ) {}
 
+  private static isUniqueViolation(error: unknown): boolean {
+    const candidate = error as { code?: string; driverError?: { code?: string } };
+    return (candidate?.driverError?.code ?? candidate?.code) === '23505';
+  }
+
   /** Authorized organization, mirroring PaymentsService.resolveAuthorizedOrg. */
   private async resolveAuthorizedOrg(): Promise<string> {
     const currentOrgId = await this.tenantContextService.getCurrentOrganizationId();
@@ -127,6 +133,7 @@ export class RefundsService {
   async create(paymentId: string, dto: CreateRefundDto): Promise<Refund> {
     const organizationId = await this.resolveAuthorizedOrg();
     const amount = toMoney(dto.amount);
+    const idempotencyKey = dto.idempotency_key?.trim() || `refund:${paymentId}:${randomUUID()}`;
 
     return this.dataSource.transaction(async (manager) => {
       const payment = await manager.getRepository(Payment).findOne({
@@ -134,6 +141,8 @@ export class RefundsService {
         lock: { mode: 'pessimistic_write' },
       });
       if (!payment) throw new NotFoundException('Payment not found');
+      const existing = await manager.getRepository(Refund).findOne({ where: { organization_id: organizationId, idempotency_key: idempotencyKey } });
+      if (existing) return existing;
 
       if (payment.status !== PAYMENT_STATUS.SUCCEEDED) {
         throw new BadRequestException(
@@ -162,16 +171,25 @@ export class RefundsService {
       const refundDate = dto.refund_date ? new Date(dto.refund_date) : new Date();
       const repository = manager.getRepository(Refund);
 
-      const refund = await repository.save(
-        repository.create({
+      let refund: Refund;
+      try {
+        refund = await repository.save(
+          repository.create({
           organization_id: organizationId,
           payment_id: payment.id,
           reason: dto.reason,
           amount,
           refund_date: refundDate,
           status: REFUND_STATUS.SUCCEEDED,
-        }),
-      );
+            idempotency_key: idempotencyKey,
+          }),
+        );
+      } catch (error) {
+        if (!RefundsService.isUniqueViolation(error)) throw error;
+        const replay = await repository.findOne({ where: { organization_id: organizationId, idempotency_key: idempotencyKey } });
+        if (replay) return replay;
+        throw error;
+      }
 
       const payload: RefundIssuedPayloadShape = {
         refundId: refund.id,
@@ -197,6 +215,50 @@ export class RefundsService {
 
       return refund;
     });
+  }
+
+  /**
+   * Apply a gateway refund confirmation inside the caller's transaction.
+   * The refund row is locked here so duplicate deliveries and races with a
+   * synchronous refund path can only produce one transition and one event.
+   */
+  async applyGatewayOutcome(
+    manager: EntityManager,
+    refundId: string,
+    outcome: { succeeded: boolean; gatewayStatus?: string },
+  ): Promise<Refund | null> {
+    const refund = await manager.getRepository(Refund).findOne({
+      where: { id: refundId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!refund || !outcome.succeeded || refund.status !== REFUND_STATUS.PENDING) return refund;
+
+    refund.status = REFUND_STATUS.SUCCEEDED;
+    const saved = await manager.getRepository(Refund).save(refund);
+    const payment = await manager.getRepository(Payment).findOne({
+      where: { id: refund.payment_id, organization_id: refund.organization_id },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!payment) throw new NotFoundException('Payment not found');
+
+    await this.outboxService.saveEventEnvelope(
+      FINANCE_EVENT_TYPES.REFUND_ISSUED,
+      FINANCE_EVENT_VERSION,
+      refund.organization_id,
+      {
+        refundId: refund.id,
+        paymentId: payment.id,
+        invoiceId: payment.invoice_id,
+        amount: refund.amount,
+        reason: refund.reason,
+        refundDate: refund.refund_date.toISOString(),
+        status: refund.status,
+      } satisfies RefundIssuedPayloadShape,
+      payment.invoice_id,
+      undefined,
+      manager,
+    );
+    return saved;
   }
 
   /** Paginated, tenant-scoped refund list (newest first). */

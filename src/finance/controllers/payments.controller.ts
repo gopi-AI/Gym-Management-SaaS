@@ -39,6 +39,13 @@ export class PaymentsController {
     return this.paymentsService.findOne(id);
   }
 
+  @Post('payments/:id/process')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions({ resource: 'finance', action: 'record-payment' })
+  async process(@Param('id', new ParseUUIDPipe({ version: '4' })) id: string) {
+    return this.paymentsService.process(id);
+  }
+
   @Post('invoices/:id/payments')
   @HttpCode(HttpStatus.CREATED)
   @RequirePermissions({ resource: 'finance', action: 'record-payment' })

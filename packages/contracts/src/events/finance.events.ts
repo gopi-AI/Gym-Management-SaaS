@@ -72,18 +72,40 @@ export interface CreditNoteIssuedPayload {
   status: string;
 }
 
+export interface InvoiceOverduePayload {
+  invoiceId: string;
+  memberId: string;
+  organizationId: string;
+  amountOutstanding: string;
+  /** ISO-8601 timestamp. */
+  dueDate: string;
+  daysOverdue: number;
+}
+
+export interface DunningEscalatedPayload {
+  invoiceId: string;
+  organizationId: string;
+  attemptCount: number;
+  /** ISO-8601 timestamp. */
+  escalatedAt: string;
+}
+
 export type InvoiceCreatedEvent = EventEnvelope<InvoiceCreatedPayload>;
 export type PaymentSucceededEvent = EventEnvelope<PaymentSucceededPayload>;
 export type PaymentFailedEvent = EventEnvelope<PaymentFailedPayload>;
 export type RefundIssuedEvent = EventEnvelope<RefundIssuedPayload>;
 export type CreditNoteIssuedEvent = EventEnvelope<CreditNoteIssuedPayload>;
+export type InvoiceOverdueEvent = EventEnvelope<InvoiceOverduePayload>;
+export type DunningEscalatedEvent = EventEnvelope<DunningEscalatedPayload>;
 
 export type FinanceEvent =
   | InvoiceCreatedEvent
   | PaymentSucceededEvent
   | PaymentFailedEvent
   | RefundIssuedEvent
-  | CreditNoteIssuedEvent;
+  | CreditNoteIssuedEvent
+  | InvoiceOverdueEvent
+  | DunningEscalatedEvent;
 
 export const FINANCE_EVENT_TYPES = {
   INVOICE_CREATED: 'InvoiceCreated',
@@ -91,4 +113,6 @@ export const FINANCE_EVENT_TYPES = {
   PAYMENT_FAILED: 'PaymentFailed',
   REFUND_ISSUED: 'RefundIssued',
   CREDIT_NOTE_ISSUED: 'CreditNoteIssued',
+  INVOICE_OVERDUE: 'InvoiceOverdue',
+  DUNNING_ESCALATED: 'DunningEscalated',
 } as const;

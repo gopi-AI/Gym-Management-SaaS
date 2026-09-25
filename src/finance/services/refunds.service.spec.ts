@@ -139,6 +139,19 @@ describe('RefundsService', () => {
       });
     });
 
+    it('replays the existing refund for the same idempotency key and emits it once', async () => {
+      const key = 'refund-retry-1';
+      const first = await service.create(paymentId, { ...dto, idempotency_key: key });
+      mockRefundRepo.findOne.mockResolvedValue(first);
+
+      const second = await service.create(paymentId, { ...dto, idempotency_key: key });
+
+      expect(second).toBe(first);
+      expect(mockRefundRepo.save).toHaveBeenCalledTimes(1);
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledTimes(1);
+      expect(mockRefundRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
+    });
+
     it('normalises the amount to a 2-decimal money string', async () => {
       const refund = await service.create(paymentId, { amount: 33.335, reason: 'rounding' });
 

@@ -9,6 +9,7 @@ import { DataSource, EntityManager, Repository, In } from 'typeorm';
 import { Invoice } from '../entities/invoice.entity';
 import { InvoiceItem } from '../entities/invoice-item.entity';
 import { TaxLine } from '../entities/tax-line.entity';
+import { InvoiceDiscount } from '../entities/invoice-discount.entity';
 import { TaxRate } from '../entities/tax-rate.entity';
 import { Payment } from '../entities/payment.entity';
 import { CreditNote } from '../entities/credit-note.entity';
@@ -70,6 +71,11 @@ export interface MembershipSaleInvoiceInput {
   description: string;
   /** Plan price as a decimal string (MembershipPlan.price). */
   amount: string;
+  discount?: {
+    id: string;
+    discount_type: 'fixed' | 'percentage';
+    amount: string;
+  };
   dueDate?: Date;
   /** Caller's transaction: the invoice must commit with the membership. */
   manager: EntityManager;
@@ -527,6 +533,13 @@ export class InvoicesService {
   async createForMembershipSale(
     input: MembershipSaleInvoiceInput,
   ): Promise<{ invoice: Invoice; items: InvoiceItem[]; taxLines: TaxLine[] }> {
+    const price = Number(input.amount);
+    const discountAmount = input.discount
+      ? input.discount.discount_type === 'percentage'
+        ? Math.min(price, price * Number(input.discount.amount) / 100)
+        : Math.min(price, Number(input.discount.amount))
+      : 0;
+    const netAmount = toMoney(price - discountAmount);
     return this.persistInvoice(input.manager, {
       organizationId: input.organizationId,
       memberId: input.memberId,
@@ -536,13 +549,14 @@ export class InvoicesService {
         {
           description: input.description,
           quantity: 1,
-          unit_price: Number(input.amount),
+          unit_price: Number(netAmount),
         },
       ],
       status: INVOICE_STATUS.SENT,
       // A counter sale is due on receipt, not on 14-day terms.
       dueDate: input.dueDate ?? new Date(),
       causationId: input.membershipId,
+      discount: input.discount ? { ...input.discount, applied_amount: toMoney(discountAmount) } : undefined,
     });
   }
 
@@ -719,6 +733,7 @@ export class InvoicesService {
       status: string;
       dueDate: Date;
       causationId?: string;
+      discount?: { id: string; discount_type: string; amount: string; applied_amount: string };
     },
   ): Promise<{ invoice: Invoice; items: InvoiceItem[]; taxLines: TaxLine[] }> {
     const invoiceDate = new Date();
@@ -785,6 +800,18 @@ export class InvoicesService {
         }),
       ),
     );
+
+    if (input.discount) {
+      const discountRepository = manager.getRepository(InvoiceDiscount);
+      await discountRepository.save(discountRepository.create({
+        invoice_id: invoice.id,
+        organization_id: input.organizationId,
+        membership_discount_id: input.discount.id,
+        discount_type: input.discount.discount_type,
+        amount: toMoney(input.discount.amount),
+        applied_amount: input.discount.applied_amount,
+      }));
+    }
 
     let savedTaxLines: TaxLine[] = [];
     if (taxLines.length > 0) {
