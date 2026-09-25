@@ -7,6 +7,7 @@ import { Invoice } from '../entities/invoice.entity';
 import { InvoiceItem } from '../entities/invoice-item.entity';
 import { Payment } from '../entities/payment.entity';
 import { TaxLine } from '../entities/tax-line.entity';
+import { InvoiceDiscount } from '../entities/invoice-discount.entity';
 import { TaxRate } from '../entities/tax-rate.entity';
 import { CreditNote } from '../entities/credit-note.entity';
 import { TaxRatesService } from './tax-rates.service';
@@ -29,6 +30,7 @@ describe('InvoicesService', () => {
   let mockPaymentRepo: Record<string, jest.Mock>;
   let mockTaxLineRepo: Record<string, jest.Mock>;
   let mockTaxRateRepo: Record<string, jest.Mock>;
+  let mockInvoiceDiscountRepo: Record<string, jest.Mock>;
   /** P3-02: standing credit notes, read to derive the invoice balance. */
   let mockCreditNoteRepo: Record<string, jest.Mock>;
   /** Rows `mockCreditNoteRepo`'s SUM(gross_amount) query resolves. */
@@ -127,6 +129,10 @@ describe('InvoicesService', () => {
       ),
       find: jest.fn().mockResolvedValue([]),
     };
+    mockInvoiceDiscountRepo = {
+      create: jest.fn().mockImplementation((dto) => dto),
+      save: jest.fn().mockResolvedValue({}),
+    };
 
     mockTaxRateRepo = {
       find: jest.fn().mockResolvedValue([]),
@@ -174,6 +180,7 @@ describe('InvoicesService', () => {
             if (entity === Payment) return mockPaymentRepo;
             if (entity === TaxLine) return mockTaxLineRepo;
             if (entity === TaxRate) return mockTaxRateRepo;
+            if (entity === InvoiceDiscount) return mockInvoiceDiscountRepo;
             return {};
           }),
           // Used by `isMemberTaxExempt`, which reads MEMBERS_MEMBERS on the
@@ -206,6 +213,7 @@ describe('InvoicesService', () => {
         { provide: getRepositoryToken(InvoiceItem), useValue: mockItemRepo },
         { provide: getRepositoryToken(Payment), useValue: mockPaymentRepo },
         { provide: getRepositoryToken(TaxLine), useValue: mockTaxLineRepo },
+        { provide: getRepositoryToken(InvoiceDiscount), useValue: mockInvoiceDiscountRepo },
         { provide: getRepositoryToken(CreditNote), useValue: mockCreditNoteRepo },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         { provide: TenantContextService, useValue: mockTenantContext },
@@ -307,6 +315,59 @@ describe('InvoicesService', () => {
     };
 
     const createdInvoice = () => mockInvoiceRepo.create.mock.calls[0][0] as Record<string, unknown>;
+
+    const membershipSaleManager = {
+      getRepository: jest.fn().mockImplementation((entity: unknown) => {
+        if (entity === Invoice) return mockInvoiceRepo;
+        if (entity === InvoiceItem) return mockItemRepo;
+        if (entity === TaxLine) return mockTaxLineRepo;
+        if (entity === InvoiceDiscount) return mockInvoiceDiscountRepo;
+        return {};
+      }),
+      createQueryBuilder: () => memberQuery(false),
+    } as any;
+
+    it('computes tax on the discounted amount, not the original membership price', async () => {
+      resolveGst();
+
+      // MembershipsService applies the $20 discount before handing the $80
+      // membership line to Finance. Finance must tax that discounted line.
+      await service.create({
+        member_id: memberId,
+        line_items: [{
+          description: 'Monthly membership',
+          quantity: 1,
+          unit_price: 80,
+          tax_code: 'GST',
+        }],
+      });
+
+      expect(createdInvoice()).toMatchObject({
+        subtotal: '80.00',
+        tax_amount: '14.40',
+        total_amount: '94.40',
+      });
+    });
+
+    it('leaves invoice generation unchanged when there is no active discount', async () => {
+      resolveGst();
+
+      await service.createForMembershipSale({
+        organizationId: orgId,
+        memberId,
+        membershipId: 'membership-1',
+        description: 'Monthly membership',
+        amount: '100.00',
+        manager: membershipSaleManager,
+      });
+
+      expect(createdInvoice()).toMatchObject({
+        subtotal: '100.00',
+        tax_amount: '0.00',
+        total_amount: '100.00',
+      });
+      expect(mockInvoiceDiscountRepo.save).not.toHaveBeenCalled();
+    });
 
     it('stays untaxed when no line carries a tax_code (Phase 1 backwards compatibility)', async () => {
       await service.create({

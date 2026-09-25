@@ -4,6 +4,8 @@ import { Invoice } from './entities/invoice.entity';
 import { InvoiceItem } from './entities/invoice-item.entity';
 import { Payment } from './entities/payment.entity';
 import { Refund } from './entities/refund.entity';
+import { WebhookEvent } from './entities/webhook-event.entity';
+import { PaymentMethod } from './entities/payment-method.entity';
 import { CreditNote } from './entities/credit-note.entity';
 import { InvoiceNumberCounter } from './entities/invoice-number-counter.entity';
 import { TaxRate } from './entities/tax-rate.entity';
@@ -27,6 +29,8 @@ import { LedgerService } from './services/ledger.service';
 import { MembersService } from '../members/services/members.service';
 import { TenantContextService } from '../shared/tenant/tenant-context.service';
 import { OutboxService } from '../shared/outbox/outbox.service';
+import { PaymentMethodsService } from './services/payment-methods.service';
+import { PaymentMethodsController } from './controllers/payment-methods.controller';
 
 /**
  * Wiring verification for the finance feature module.
@@ -55,6 +59,8 @@ describe('FinanceModule wiring', () => {
           TaxLine,
           Refund,
           CreditNote,
+          WebhookEvent,
+          PaymentMethod,
         ]),
       ],
       controllers: [
@@ -65,6 +71,7 @@ describe('FinanceModule wiring', () => {
         CreditNotesController,
         MemberOutstandingBalanceController,
         FinancialReportsController,
+        PaymentMethodsController,
       ],
       providers: [
         InvoiceNumberService,
@@ -75,6 +82,7 @@ describe('FinanceModule wiring', () => {
         CreditNotesService,
         PaymentRetryService,
         LedgerService,
+        PaymentMethodsService,
         UnavailablePaymentGateway,
         { provide: PAYMENT_GATEWAY, useExisting: UnavailablePaymentGateway },
         { provide: TenantContextService, useValue: {} },
@@ -84,6 +92,7 @@ describe('FinanceModule wiring', () => {
         // dependency of this module. It is stubbed here; MembersModule itself
         // cannot be imported without booting its own graph.
         { provide: MembersService, useValue: {} },
+        { provide: PaymentMethodsService, useValue: {} },
         { provide: getDataSourceToken(), useValue: {} },
       ],
     })
@@ -102,6 +111,10 @@ describe('FinanceModule wiring', () => {
       .overrideProvider(getRepositoryToken(Refund))
       .useValue({})
       .overrideProvider(getRepositoryToken(CreditNote))
+      .useValue({})
+      .overrideProvider(getRepositoryToken(WebhookEvent))
+      .useValue({})
+      .overrideProvider(getRepositoryToken(PaymentMethod))
       .useValue({})
       .compile();
   });

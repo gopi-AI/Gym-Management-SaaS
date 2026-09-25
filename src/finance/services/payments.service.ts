@@ -3,18 +3,23 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { Invoice } from '../entities/invoice.entity';
 import { Payment } from '../entities/payment.entity';
+import { PaymentMethod } from '../entities/payment-method.entity';
 import { CreatePaymentDto } from '../dto/create-payment.dto';
 import { QueryPaymentDto } from '../dto/query-payment.dto';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
 import { InvoicesService } from './invoices.service';
 import { PaymentAttemptOutcome } from './payment-gateway.port';
+import { Inject } from '@nestjs/common';
+import { PAYMENT_GATEWAY, PaymentGatewayPort } from './payment-gateway.port';
+import { PaymentMethodsService } from './payment-methods.service';
 import {
   FINANCE_EVENT_TYPES,
   FINANCE_EVENT_VERSION,
@@ -22,6 +27,7 @@ import {
   INVOICE_STATUS_MESSAGES,
   PAYABLE_INVOICE_STATUSES,
   PAYMENT_STATUS,
+  PAYMENT_RETRY_DEFAULTS,
   VALID_INVOICE_TRANSITIONS,
   paymentRetryDelayMs,
   toMoney,
@@ -65,6 +71,11 @@ export class PaymentsService {
     private readonly tenantContextService: TenantContextService,
     private readonly outboxService: OutboxService,
     private readonly invoicesService: InvoicesService,
+    @Optional()
+    private readonly paymentMethodsService: PaymentMethodsService,
+    @Optional()
+    @Inject(PAYMENT_GATEWAY)
+    private readonly paymentGateway: PaymentGatewayPort,
   ) {}
 
   /** Authorized organization, mirroring InvoicesService.resolveAuthorizedOrg. */
@@ -328,6 +339,60 @@ export class PaymentsService {
     return payment;
   }
 
+  async process(id: string): Promise<Payment> {
+    const organizationId = await this.resolveAuthorizedOrg();
+    const payment = await this.paymentRepository.findOne({ where: { id, organization_id: organizationId } });
+    if (!payment) throw new NotFoundException('Payment not found');
+    if (payment.status !== PAYMENT_STATUS.PENDING) return payment;
+    const savedPaymentMethod = await this.paymentMethodsService.getDefaultPaymentMethod(payment.member_id);
+    if (!savedPaymentMethod) {
+      throw new BadRequestException('NO_SAVED_PAYMENT_METHOD');
+    }
+    const gateway = this.paymentGateway ?? new (require('./payment-gateway.port').UnavailablePaymentGateway)();
+    const outcome = await gateway.charge(payment, savedPaymentMethod);
+    await this.applyRetryOutcome(payment.id, outcome, { maxAttempts: 1 });
+    return this.paymentRepository.findOneOrFail({ where: { id, organization_id: organizationId } });
+  }
+
+  /**
+   * WORKER-ONLY gateway attempt for a payment already selected from a globally
+   * scanned batch. The saved method lookup is pinned to the payment's own
+   * organization, and the transition still goes through applyGatewayOutcome().
+   */
+  async attemptWithSavedMethod(
+    payment: Payment,
+    now: Date = new Date(),
+    maxAttempts: number = PAYMENT_RETRY_DEFAULTS.MAX_ATTEMPTS,
+  ): Promise<{ status: string; retryCount: number; exhausted: boolean }> {
+    const current = await this.paymentRepository.findOne({
+      where: { id: payment.id, organization_id: payment.organization_id },
+    });
+    if (!current || current.status !== PAYMENT_STATUS.PENDING) {
+      return { status: current?.status ?? PAYMENT_STATUS.FAILED, retryCount: current?.retry_count ?? 0, exhausted: false };
+    }
+    if (!this.paymentGateway?.isConfigured) {
+      return { status: current.status, retryCount: current.retry_count, exhausted: false };
+    }
+    if (current.last_attempt_at && current.next_retry_at && current.next_retry_at > now) {
+      return { status: current.status, retryCount: current.retry_count, exhausted: false };
+    }
+    const savedPaymentMethod = await this.paymentMethodsService.getDefaultPaymentMethodForOrganization(
+      current.member_id,
+      current.organization_id,
+    );
+    if (!savedPaymentMethod) {
+      return this.applyRetryOutcome(current.id, {
+        succeeded: false,
+        failureReason: 'No saved payment method is available for renewal',
+        failureCode: 'NO_SAVED_PAYMENT_METHOD',
+        gatewayStatus: 'not_attempted',
+      }, { maxAttempts, now });
+    }
+    const gateway = this.paymentGateway ?? new (require('./payment-gateway.port').UnavailablePaymentGateway)();
+    const outcome = await gateway.charge(current, savedPaymentMethod);
+    return this.applyRetryOutcome(current.id, outcome, { maxAttempts, now });
+  }
+
   /**
    * WORKER-ONLY: pending payments whose retry is due, across ALL organizations.
    *
@@ -360,93 +425,100 @@ export class PaymentsService {
     outcome: PaymentAttemptOutcome,
     options: { maxAttempts: number; now?: Date },
   ): Promise<{ status: string; retryCount: number; exhausted: boolean }> {
+    return this.dataSource.transaction(async (manager) =>
+      this.applyGatewayOutcome(manager, paymentId, outcome, options),
+    );
+  }
+
+  /** Apply one provider outcome while participating in an existing transaction. */
+  async applyGatewayOutcome(
+    manager: EntityManager,
+    paymentId: string,
+    outcome: PaymentAttemptOutcome,
+    options: { maxAttempts?: number; now?: Date } = {},
+  ): Promise<{ status: string; retryCount: number; exhausted: boolean }> {
     const now = options.now ?? new Date();
+    const maxAttempts = options.maxAttempts ?? 1;
+    const repository = manager.getRepository(Payment);
+    const payment = await repository.findOne({
+      where: { id: paymentId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!payment) throw new NotFoundException('Payment not found');
+    if (payment.status !== PAYMENT_STATUS.PENDING) {
+      return { status: payment.status, retryCount: payment.retry_count, exhausted: false };
+    }
 
-    return this.dataSource.transaction(async (manager) => {
-      const repository = manager.getRepository(Payment);
-      const payment = await repository.findOne({
-        where: { id: paymentId },
-        lock: { mode: 'pessimistic_write' },
-      });
-      if (!payment) throw new NotFoundException('Payment not found');
+    const retryCount = payment.retry_count + 1;
+    const organizationId = payment.organization_id;
+    payment.retry_count = retryCount;
+    payment.last_attempt_at = now;
 
-      if (payment.status !== PAYMENT_STATUS.PENDING) {
-        return { status: payment.status, retryCount: payment.retry_count, exhausted: false };
-      }
-
-      const retryCount = payment.retry_count + 1;
-      const organizationId = payment.organization_id; // owns the payment: the only valid scope here
-      payment.retry_count = retryCount;
-      payment.last_attempt_at = now;
-
-      if (outcome.succeeded) {
-        payment.status = PAYMENT_STATUS.SUCCEEDED;
-        payment.next_retry_at = null;
-        payment.last_failure_reason = null;
-        if (outcome.transactionId) payment.transaction_id = outcome.transactionId;
-        await repository.save(payment);
-
-        const invoice = await manager.getRepository(Invoice).findOne({
-          where: { id: payment.invoice_id, organization_id: organizationId },
-        });
-        // A voided/paid invoice cannot be re-transitioned; the money is still
-        // recorded as succeeded and flagged for manual reconciliation instead of
-        // failing (and endlessly retrying) the charge.
-        if (invoice && PAYABLE_INVOICE_STATUSES.includes(invoice.status)) {
-          await this.applySuccessfulPaymentToInvoice(manager, invoice, organizationId);
-        }
-
-        const payload: PaymentSucceededPayloadShape = {
-          paymentId: payment.id,
-          invoiceId: payment.invoice_id,
-          amount: payment.amount,
-          paymentMethod: payment.payment_method,
-          paymentDate: now.toISOString(),
-          ...(payment.transaction_id ? { transactionId: payment.transaction_id } : {}),
-        };
-        await this.outboxService.saveEventEnvelope(
-          FINANCE_EVENT_TYPES.PAYMENT_SUCCEEDED, // docs/event-contracts.md §PaymentSucceeded.v1
-          FINANCE_EVENT_VERSION,
-          organizationId,
-          payload,
-          payment.invoice_id, // correlationId = invoice id (money trail of that invoice)
-          undefined,
-          manager,
-        );
-
-        return { status: payment.status, retryCount, exhausted: false };
-      }
-
-      const exhausted = retryCount >= options.maxAttempts;
-      const failureReason = outcome.failureReason ?? 'Payment attempt failed';
-      payment.status = exhausted ? PAYMENT_STATUS.FAILED : PAYMENT_STATUS.PENDING;
-      payment.last_failure_reason = failureReason;
-      payment.next_retry_at = exhausted
-        ? null
-        : new Date(now.getTime() + paymentRetryDelayMs(retryCount));
+    if (outcome.succeeded) {
+      payment.status = PAYMENT_STATUS.SUCCEEDED;
+      payment.next_retry_at = null;
+      payment.last_failure_reason = null;
+      if (outcome.transactionId) payment.transaction_id = outcome.transactionId;
+      payment.gateway_reference = outcome.gatewayReference ?? outcome.transactionId ?? null;
+      payment.gateway_status = outcome.gatewayStatus ?? 'succeeded';
+      payment.gateway_response = outcome.gatewayResponse ?? null;
       await repository.save(payment);
 
-      if (exhausted) {
-        const payload: PaymentFailedPayloadShape = {
-          paymentId: payment.id,
-          invoiceId: payment.invoice_id,
-          amount: payment.amount,
-          failureReason,
-          failureCode: outcome.failureCode ?? 'UNKNOWN',
-          paymentDate: now.toISOString(),
-        };
-        await this.outboxService.saveEventEnvelope(
-          FINANCE_EVENT_TYPES.PAYMENT_FAILED, // docs/event-contracts.md §PaymentFailed.v1
-          FINANCE_EVENT_VERSION,
-          organizationId,
-          payload,
-          payment.invoice_id,
-          undefined,
-          manager,
-        );
+      const invoice = await manager.getRepository(Invoice).findOne({
+        where: { id: payment.invoice_id, organization_id: organizationId },
+      });
+      if (invoice && PAYABLE_INVOICE_STATUSES.includes(invoice.status)) {
+        await this.applySuccessfulPaymentToInvoice(manager, invoice, organizationId);
       }
 
-      return { status: payment.status, retryCount, exhausted };
-    });
+      const payload: PaymentSucceededPayloadShape = {
+        paymentId: payment.id,
+        invoiceId: payment.invoice_id,
+        amount: payment.amount,
+        paymentMethod: payment.payment_method,
+        paymentDate: now.toISOString(),
+        ...(payment.transaction_id ? { transactionId: payment.transaction_id } : {}),
+      };
+      await this.outboxService.saveEventEnvelope(
+        FINANCE_EVENT_TYPES.PAYMENT_SUCCEEDED,
+        FINANCE_EVENT_VERSION,
+        organizationId,
+        payload,
+        payment.invoice_id,
+        undefined,
+        manager,
+      );
+      return { status: payment.status, retryCount, exhausted: false };
+    }
+
+    const exhausted = retryCount >= maxAttempts;
+    const failureReason = outcome.failureReason ?? 'Payment attempt failed';
+    payment.status = exhausted ? PAYMENT_STATUS.FAILED : PAYMENT_STATUS.PENDING;
+    payment.last_failure_reason = failureReason;
+    payment.gateway_status = outcome.gatewayStatus ?? 'failed';
+    payment.gateway_response = outcome.gatewayResponse ?? null;
+    payment.next_retry_at = exhausted ? null : new Date(now.getTime() + paymentRetryDelayMs(retryCount));
+    await repository.save(payment);
+    if (exhausted) {
+      const payload: PaymentFailedPayloadShape = {
+        paymentId: payment.id,
+        invoiceId: payment.invoice_id,
+        amount: payment.amount,
+        failureReason,
+        failureCode: outcome.failureCode ?? 'UNKNOWN',
+        paymentDate: now.toISOString(),
+      };
+      await this.outboxService.saveEventEnvelope(
+        FINANCE_EVENT_TYPES.PAYMENT_FAILED,
+        FINANCE_EVENT_VERSION,
+        organizationId,
+        payload,
+        payment.invoice_id,
+        undefined,
+        manager,
+      );
+    }
+    return { status: payment.status, retryCount, exhausted };
   }
+
 }

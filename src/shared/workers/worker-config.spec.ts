@@ -74,6 +74,7 @@ describe('worker configuration', () => {
     expect(workerIntervalMs(config({}), 'OUTBOX')).toBe(WORKER_INTERVALS.OUTBOX);
     expect(workerIntervalMs(config({}), 'MEMBERSHIP_EXPIRY')).toBe(WORKER_INTERVALS.MEMBERSHIP_EXPIRY);
     expect(workerIntervalMs(config({}), 'PAYMENT_RETRY')).toBe(WORKER_INTERVALS.PAYMENT_RETRY);
+    expect(workerIntervalMs(config({}), 'DUNNING')).toBe(WORKER_INTERVALS.DUNNING);
     expect(workerIntervalMs(config({ WORKERS_OUTBOX_INTERVAL_MS: '15000' }), 'OUTBOX')).toBe(15000);
     // Below the floor (or not a number at all) -> the default is used instead.
     expect(workerIntervalMs(config({ WORKERS_OUTBOX_INTERVAL_MS: '1' }), 'OUTBOX')).toBe(

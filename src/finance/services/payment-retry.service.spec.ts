@@ -22,13 +22,15 @@ describe('PaymentRetryService', () => {
   const buildGateway = (overrides: Partial<PaymentGatewayPort> = {}): PaymentGatewayPort => ({
     isConfigured: true,
     attempt: jest.fn().mockResolvedValue({ succeeded: true, transactionId: 'txn-1' }),
+    charge: jest.fn().mockResolvedValue({ succeeded: true, transactionId: 'txn-1' }),
+    refund: jest.fn().mockResolvedValue({ succeeded: true, transactionId: 'refund-1' }),
     ...overrides,
   });
 
   const buildService = async (gateway: PaymentGatewayPort): Promise<void> => {
     mockPaymentsService = {
       findDueRetries: jest.fn().mockResolvedValue([duePayment]),
-      applyRetryOutcome: jest.fn().mockResolvedValue({
+      attemptWithSavedMethod: jest.fn().mockResolvedValue({
         status: 'succeeded',
         retryCount: 1,
         exhausted: false,
@@ -59,12 +61,12 @@ describe('PaymentRetryService', () => {
       skippedReason: 'gateway_not_configured',
     });
     expect(mockPaymentsService.findDueRetries).not.toHaveBeenCalled();
-    expect(mockPaymentsService.applyRetryOutcome).not.toHaveBeenCalled();
+    expect(mockPaymentsService.attemptWithSavedMethod).not.toHaveBeenCalled();
   });
 
   it('charges every due payment and counts settled attempts', async () => {
     await buildService(buildGateway());
-    mockPaymentsService.applyRetryOutcome.mockResolvedValue({
+    mockPaymentsService.attemptWithSavedMethod.mockResolvedValue({
       status: 'succeeded',
       retryCount: 1,
       exhausted: false,
@@ -77,16 +79,16 @@ describe('PaymentRetryService', () => {
       expect.any(Date),
       PAYMENT_RETRY_DEFAULTS.BATCH_SIZE,
     );
-    expect(mockPaymentsService.applyRetryOutcome).toHaveBeenCalledWith(
-      'payment-1',
-      expect.objectContaining({ succeeded: true }),
-      { maxAttempts: PAYMENT_RETRY_DEFAULTS.MAX_ATTEMPTS, now: expect.any(Date) },
+    expect(mockPaymentsService.attemptWithSavedMethod).toHaveBeenCalledWith(
+      duePayment,
+      expect.any(Date),
+      PAYMENT_RETRY_DEFAULTS.MAX_ATTEMPTS,
     );
   });
 
   it('reports a rescheduled attempt as rescheduled, not as a failure', async () => {
     await buildService(buildGateway());
-    mockPaymentsService.applyRetryOutcome.mockResolvedValue({
+    mockPaymentsService.attemptWithSavedMethod.mockResolvedValue({
       status: 'pending',
       retryCount: 1,
       exhausted: false,
@@ -99,7 +101,7 @@ describe('PaymentRetryService', () => {
 
   it('counts an exhausted payment as failed', async () => {
     await buildService(buildGateway());
-    mockPaymentsService.applyRetryOutcome.mockResolvedValue({
+    mockPaymentsService.attemptWithSavedMethod.mockResolvedValue({
       status: 'failed',
       retryCount: PAYMENT_RETRY_DEFAULTS.MAX_ATTEMPTS,
       exhausted: true,
@@ -115,7 +117,7 @@ describe('PaymentRetryService', () => {
     const gateway = buildGateway();
     await buildService(gateway);
     mockPaymentsService.findDueRetries.mockResolvedValue([duePayment, second]);
-    mockPaymentsService.applyRetryOutcome
+    mockPaymentsService.attemptWithSavedMethod
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce({ status: 'succeeded', retryCount: 1, exhausted: false });
 
@@ -123,7 +125,7 @@ describe('PaymentRetryService', () => {
 
     expect(result.attempted).toBe(2);
     expect(result.succeeded).toBe(1);
-    expect(mockPaymentsService.applyRetryOutcome).toHaveBeenCalledTimes(2);
+    expect(mockPaymentsService.attemptWithSavedMethod).toHaveBeenCalledTimes(2);
   });
 
   it('honours an explicit limit and maxAttempts', async () => {
@@ -132,10 +134,10 @@ describe('PaymentRetryService', () => {
     await service.retryDuePayments({ limit: 5, maxAttempts: 1 });
 
     expect(mockPaymentsService.findDueRetries).toHaveBeenCalledWith(expect.any(Date), 5);
-    expect(mockPaymentsService.applyRetryOutcome).toHaveBeenCalledWith(
-      'payment-1',
-      expect.anything(),
-      { maxAttempts: 1, now: expect.any(Date) },
+    expect(mockPaymentsService.attemptWithSavedMethod).toHaveBeenCalledWith(
+      duePayment,
+      expect.any(Date),
+      1,
     );
   });
 });

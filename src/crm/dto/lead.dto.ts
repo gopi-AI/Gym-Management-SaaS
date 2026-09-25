@@ -1,0 +1,6 @@
+import { IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Min } from 'class-validator';
+import { CRM_LEAD_STATUS } from '../crm.constants';
+export class CreateLeadDto { @IsUUID() branch_id!: string; @IsString() @Length(1,255) first_name!: string; @IsString() @Length(1,255) last_name!: string; @IsOptional() @IsString() phone?: string; @IsOptional() @IsEmail() email?: string; @IsOptional() @IsUUID() source_id?: string; @IsOptional() @IsUUID() stage_id?: string; }
+export class UpdateLeadDto { @IsOptional() @IsString() @Length(1,255) first_name?: string; @IsOptional() @IsString() @Length(1,255) last_name?: string; @IsOptional() @IsString() phone?: string; @IsOptional() @IsEmail() email?: string; @IsOptional() @IsUUID() source_id?: string; @IsOptional() @IsUUID() stage_id?: string; @IsOptional() @IsIn(Object.values(CRM_LEAD_STATUS)) status?: string; }
+export class ListLeadsDto { @IsOptional() @IsUUID() branch_id?: string; @IsOptional() @IsIn(Object.values(CRM_LEAD_STATUS)) status?: string; @IsOptional() @IsInt() @Min(1) page = 1; @IsOptional() @IsInt() @Min(1) limit = 20; }
+export class CreateActivityDto { @IsString() @Length(1,50) activity_type!: string; @IsOptional() @IsString() notes?: string; }

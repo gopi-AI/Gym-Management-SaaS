@@ -58,6 +58,15 @@ export class Payment {
   @Column({ type: 'varchar', length: 255, nullable: true })
   transaction_id?: string | null;
 
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  gateway_reference?: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  gateway_status?: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  gateway_response?: string | null;
+
   @Column({ type: 'decimal', precision: 15, scale: 2 })
   amount!: string;
 

@@ -21,6 +21,8 @@ import {
 import { AuthModule } from './shared/auth/auth.module';
 import { CryptoModule } from './shared/crypto/crypto.module';
 import { HealthModule } from './shared/health/health.module';
+import { InventoryModule } from './inventory/inventory.module';
+import { CrmModule } from './crm/crm.module';
 import { FinanceModule } from './finance/finance.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { WorkoutsModule } from './workouts/workouts.module';
@@ -206,6 +208,8 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     CryptoModule,
     // Unauthenticated liveness + build provenance (no tenant or config data).
     HealthModule,
+    InventoryModule,
+    CrmModule,
   ],
   providers: [
     // Sentry's catch-all exception filter. When SENTRY_DSN is unset (the

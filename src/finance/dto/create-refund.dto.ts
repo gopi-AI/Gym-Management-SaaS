@@ -32,4 +32,9 @@ export class CreateRefundDto {
   @IsDateString()
   @IsOptional()
   refund_date?: string;
+
+  @IsString()
+  @IsOptional()
+  @Length(1, 255)
+  idempotency_key?: string;
 }

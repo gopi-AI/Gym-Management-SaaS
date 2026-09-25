@@ -1,0 +1,19 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { Reflector } from '@nestjs/core';
+import { InventoryController } from './inventory.controller';
+import { InventoryService } from '../services/inventory.service';
+import { PERMISSIONS_KEY, RequiredPermission } from '../../shared/auth/permissions.guard';
+
+describe('InventoryController', () => {
+  let controller: InventoryController; let service: Record<string, jest.Mock>; const reflector = new Reflector();
+  const permissionsFor = (handler: string): RequiredPermission[] | undefined => reflector.get<RequiredPermission[]>(PERMISSIONS_KEY, controller[handler as keyof InventoryController] as Function);
+  beforeEach(async () => { service = { listSuppliers: jest.fn(), createSupplier: jest.fn(), listItems: jest.fn(), createItem: jest.fn(), listPurchaseOrders: jest.fn(), createPurchaseOrder: jest.fn(), receivePurchaseOrder: jest.fn(), stock: jest.fn(), consumeStock: jest.fn() }; const module: TestingModule = await Test.createTestingModule({ controllers: [InventoryController], providers: [{ provide: InventoryService, useValue: service }] }).compile(); controller = module.get(InventoryController); });
+  it('delegates all nine routes', async () => {
+    const supplier = {}; const item = {}; const po = {}; const receipt = {}; const consumed = {}; service.listSuppliers.mockResolvedValue([supplier]); service.createSupplier.mockResolvedValue(supplier); service.listItems.mockResolvedValue([item]); service.createItem.mockResolvedValue(item); service.listPurchaseOrders.mockResolvedValue([po]); service.createPurchaseOrder.mockResolvedValue(po); service.receivePurchaseOrder.mockResolvedValue(receipt); service.stock.mockResolvedValue([]); service.consumeStock.mockResolvedValue(consumed);
+    await expect(controller.listSuppliers()).resolves.toEqual([supplier]); await expect(controller.createSupplier({ name: 'S' } as never)).resolves.toBe(supplier); await expect(controller.listItems('branch-a')).resolves.toEqual([item]); await expect(controller.createItem({} as never)).resolves.toBe(item); await expect(controller.listPurchaseOrders()).resolves.toEqual([po]); await expect(controller.createPurchaseOrder({} as never)).resolves.toBe(po); await expect(controller.receive('po-1', receipt as never)).resolves.toBe(receipt); await expect(controller.stock('branch-a')).resolves.toEqual([]); await expect(controller.consume(consumed as never)).resolves.toBe(consumed);
+    expect(service.listItems).toHaveBeenCalledWith('branch-a'); expect(service.receivePurchaseOrder).toHaveBeenCalledWith('po-1', receipt); expect(service.stock).toHaveBeenCalledWith('branch-a'); expect(service.consumeStock).toHaveBeenCalledWith(consumed);
+  });
+  it('guards all nine routes with the intended permissions', () => {
+    expect(permissionsFor('listSuppliers')).toEqual([{ resource: 'inventory', action: 'read' }]); expect(permissionsFor('createSupplier')).toEqual([{ resource: 'inventory', action: 'create' }]); expect(permissionsFor('listItems')).toEqual([{ resource: 'inventory', action: 'read' }]); expect(permissionsFor('createItem')).toEqual([{ resource: 'inventory', action: 'create' }]); expect(permissionsFor('listPurchaseOrders')).toEqual([{ resource: 'inventory', action: 'read' }]); expect(permissionsFor('createPurchaseOrder')).toEqual([{ resource: 'inventory', action: 'create' }]); expect(permissionsFor('receive')).toEqual([{ resource: 'inventory', action: 'receive' }]); expect(permissionsFor('stock')).toEqual([{ resource: 'inventory', action: 'read' }]); expect(permissionsFor('consume')).toEqual([{ resource: 'inventory', action: 'update' }]);
+  });
+});

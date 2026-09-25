@@ -25,9 +25,13 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, Index } from 
 @Index(['organization_id', 'status'])
 @Index(['payment_id'])
 @Index(['organization_id', 'refund_date'])
+@Index(['organization_id', 'idempotency_key'], { unique: true })
 export class Refund {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
+
+  @Column({ type: 'varchar', length: 255 })
+  idempotency_key!: string;
 
   /**
    * The organization that owns the refund. Taken from the authorized tenant

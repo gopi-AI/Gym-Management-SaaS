@@ -7,8 +7,11 @@ import { Invoice } from './entities/invoice.entity';
 import { InvoiceItem } from './entities/invoice-item.entity';
 import { TaxRate } from './entities/tax-rate.entity';
 import { TaxLine } from './entities/tax-line.entity';
+import { InvoiceDiscount } from './entities/invoice-discount.entity';
 import { Payment } from './entities/payment.entity';
 import { Refund } from './entities/refund.entity';
+import { WebhookEvent } from './entities/webhook-event.entity';
+import { PaymentMethod } from './entities/payment-method.entity';
 import { CreditNote } from './entities/credit-note.entity';
 import { InvoiceNumberCounter } from './entities/invoice-number-counter.entity';
 import { InvoiceNumberService } from './services/invoice-number.service';
@@ -20,6 +23,12 @@ import { CreditNotesService } from './services/credit-notes.service';
 import { PaymentRetryService } from './services/payment-retry.service';
 import { LedgerService } from './services/ledger.service';
 import { PAYMENT_GATEWAY, UnavailablePaymentGateway } from './services/payment-gateway.port';
+import { StripePaymentGatewayAdapter } from './services/stripe-payment-gateway.adapter';
+import { GatewayWebhookService } from './services/gateway-webhook.service';
+import { WebhookEventProcessor } from './services/webhook-event.processor';
+import { PaymentMethodsService } from './services/payment-methods.service';
+import { DunningAttempt } from './entities/dunning-attempt.entity';
+import { DunningService } from './services/dunning.service';
 import { InvoicesController } from './controllers/invoices.controller';
 import { TaxRatesController } from './controllers/tax-rates.controller';
 import { PaymentsController } from './controllers/payments.controller';
@@ -27,6 +36,8 @@ import { RefundsController } from './controllers/refunds.controller';
 import { CreditNotesController } from './controllers/credit-notes.controller';
 import { MemberOutstandingBalanceController } from './controllers/member-outstanding-balance.controller';
 import { FinancialReportsController } from './controllers/financial-reports.controller';
+import { GatewayWebhookController } from './controllers/gateway-webhook.controller';
+import { PaymentMethodsController } from './controllers/payment-methods.controller';
 
 /**
  * Finance (Phase 1): invoices, payments and the payment-retry use case.
@@ -52,8 +63,12 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
       InvoiceNumberCounter,
       TaxRate,
       TaxLine,
+      InvoiceDiscount,
       Refund,
       CreditNote,
+      WebhookEvent,
+      PaymentMethod,
+      DunningAttempt,
     ]),
     OutboxModule,
     TenancyModule,
@@ -77,6 +92,8 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
     CreditNotesController,
     MemberOutstandingBalanceController,
     FinancialReportsController,
+    GatewayWebhookController,
+    PaymentMethodsController,
   ],
   providers: [
     InvoiceNumberService,
@@ -88,7 +105,12 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
     PaymentRetryService,
     LedgerService,
     UnavailablePaymentGateway,
-    { provide: PAYMENT_GATEWAY, useExisting: UnavailablePaymentGateway },
+    StripePaymentGatewayAdapter,
+    GatewayWebhookService,
+    WebhookEventProcessor,
+    PaymentMethodsService,
+    DunningService,
+    { provide: PAYMENT_GATEWAY, useFactory: (stripe: StripePaymentGatewayAdapter) => stripe.isConfigured ? stripe : new UnavailablePaymentGateway(), inject: [StripePaymentGatewayAdapter] },
   ],
   // InvoicesService/PaymentsService are exported because a membership sale
   // generates its invoice inside the membership transaction (MembershipsModule).
@@ -106,6 +128,9 @@ import { FinancialReportsController } from './controllers/financial-reports.cont
     CreditNotesService,
     PaymentRetryService,
     LedgerService,
+    PaymentMethodsService,
+    DunningService,
+    WebhookEventProcessor,
     TypeOrmModule,
   ],
 })

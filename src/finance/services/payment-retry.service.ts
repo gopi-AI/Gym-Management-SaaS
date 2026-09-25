@@ -78,11 +78,7 @@ export class PaymentRetryService {
 
     for (const payment of due) {
       try {
-        const outcome = await this.gateway.attempt(payment);
-        const applied = await this.paymentsService.applyRetryOutcome(payment.id, outcome, {
-          maxAttempts,
-          now,
-        });
+        const applied = await this.paymentsService.attemptWithSavedMethod(payment, now, maxAttempts);
 
         if (applied.status === 'succeeded') result.succeeded += 1;
         else if (applied.exhausted) result.failed += 1;
