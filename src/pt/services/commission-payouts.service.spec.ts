@@ -164,4 +164,45 @@ describe('CommissionPayoutsService', () => {
     await expect(service.process(runId)).rejects.toBeInstanceOf(ConflictException);
     expect(itemRepo.find).not.toHaveBeenCalled();
   });
+
+  it('maps a create() race lost to the payout-item unique index to a 409, not a raw database error', async () => {
+    // Both creates pass the reservation check: the shared find sees nothing yet.
+    // The second INSERT is then refused by UQ_pt_payout_items_org_commission,
+    // exactly as Postgres decides the race.
+    let itemSaveCalls = 0;
+    itemRepo.save.mockImplementation(async (value) => {
+      itemSaveCalls += 1;
+      if (itemSaveCalls > 1) throw { driverError: { code: '23505' } };
+      return value;
+    });
+
+    const results = await Promise.allSettled([
+      service.create({ period_start: '2026-08-01', period_end: '2026-08-31', currency: 'USD' }),
+      service.create({ period_start: '2026-08-01', period_end: '2026-08-31', currency: 'USD' }),
+    ]);
+
+    // Both reached the insert, i.e. the belt check missed the race entirely ...
+    expect(itemSaveCalls).toBe(2);
+    // ... and exactly one run survived, the loser reporting a retryable 409.
+    const fulfilled = results.filter((result) => result.status === 'fulfilled');
+    const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toBeInstanceOf(ConflictException);
+    expect((rejected[0].reason as Error).message).toBe(
+      'One or more commissions in this period were already reserved by a concurrent payout run — retry the run',
+    );
+  });
+
+  it('leaves a non-unique database failure untouched rather than relabelling it a 409', async () => {
+    const foreignKeyViolation = { code: '23503', message: 'insert or update on table violates foreign key constraint' };
+    itemRepo.save.mockRejectedValue(foreignKeyViolation);
+
+    const rejection = await service.create({
+      period_start: '2026-08-01', period_end: '2026-08-31', currency: 'USD',
+    }).catch((error: unknown) => error);
+
+    expect(rejection).toBe(foreignKeyViolation);
+    expect(rejection).not.toBeInstanceOf(ConflictException);
+  });
 });

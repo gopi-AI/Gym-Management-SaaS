@@ -10,6 +10,9 @@ import { CommissionPayoutItem } from '../entities/commission-payout-item.entity'
 import { CreateCommissionPayoutDto } from '../dto/create-commission-payout.dto';
 import { PT_EVENT_TYPES, PT_EVENT_VERSION } from '../pt.constants';
 
+/** PostgreSQL SQLSTATE for a unique-constraint violation. */
+const UNIQUE_VIOLATION_CODE = '23505';
+
 @Injectable()
 export class CommissionPayoutsService {
   constructor(
@@ -82,17 +85,34 @@ export class CommissionPayoutsService {
         created_by: creator ?? null,
       }));
       const itemRepo = manager.getRepository(CommissionPayoutItem);
-      if (eligible.length) await itemRepo.save(eligible.map((commission) => itemRepo.create({
-        organization_id: org,
-        payout_run_id: run.id,
-        trainer_commission_id: commission.id,
-        trainer_id: commission.trainer_id,
-        amount: commission.amount,
-        currency: commission.currency,
-        status: 'pending',
-        paid_at: null,
-        paid_amount: null,
-      })));
+      try {
+        if (eligible.length) await itemRepo.save(eligible.map((commission) => itemRepo.create({
+          organization_id: org,
+          payout_run_id: run.id,
+          trainer_commission_id: commission.id,
+          trainer_id: commission.trainer_id,
+          amount: commission.amount,
+          currency: commission.currency,
+          status: 'pending',
+          paid_at: null,
+          paid_amount: null,
+        })));
+      } catch (error) {
+        // Overlapping payout periods are allowed by design, so the reservation
+        // check above is a belt: the real guard is the unique index
+        // UQ_pt_payout_items_org_commission on (organization_id,
+        // trainer_commission_id). Two creates racing on the same window both pass
+        // that check, and the loser is decided here by the index — its whole
+        // transaction, run row included, rolls back. 409 tells the operator this
+        // was a race on the window, not a bad request. The transaction is already
+        // aborted at this point, so nothing may be queried inside it.
+        if (CommissionPayoutsService.isUniqueViolation(error)) {
+          throw new ConflictException(
+            'One or more commissions in this period were already reserved by a concurrent payout run — retry the run',
+          );
+        }
+        throw error;
+      }
       return run;
     });
   }
@@ -148,5 +168,10 @@ export class CommissionPayoutsService {
     if (!run) throw new NotFoundException('Commission payout run not found');
     const items = await this.itemRepository.find({ where: { payout_run_id: id, organization_id: org } });
     return Object.assign(run, { items });
+  }
+
+  private static isUniqueViolation(error: unknown): boolean {
+    const candidate = error as { code?: string; driverError?: { code?: string } };
+    return (candidate?.driverError?.code ?? candidate?.code) === UNIQUE_VIOLATION_CODE;
   }
 }
