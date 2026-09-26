@@ -8,7 +8,7 @@
  */
 
 /** Contract version for every PT event (§1 event contracts). */
-export const PT_EVENT_VERSION = '1';
+export const PT_EVENT_VERSION = 'v1';
 
 /** Event types published by this module (§1 event contracts). */
 export const PT_EVENT_TYPES = {
