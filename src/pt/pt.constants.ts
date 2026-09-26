@@ -17,6 +17,7 @@ export const PT_EVENT_TYPES = {
   SESSION_COMPLETED: 'PTSessionCompleted.v1',
   SESSION_CANCELLED: 'PTSessionCancelled.v1',
   TRAINER_COMMISSION_EARNED: 'TrainerCommissionEarned.v1',
+  TRAINER_COMMISSION_CLAWED_BACK: 'TrainerCommissionClawedBack.v1',
 } as const;
 
 /**

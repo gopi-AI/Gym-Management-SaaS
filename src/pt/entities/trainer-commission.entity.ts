@@ -20,9 +20,9 @@ import { TrainerCommissionStatus } from './trainer-commission-status.enum';
  * session completions).
  *
  * `status` is 3-state (`pending` / `earned` / `clawed_back`) and defaults to
- * `earned`. **Phase 2 sets it once and never transitions it** — there is no
- * clawback API, no cancellation handler and no worker in this module; the column
- * exists so Phase 3 refund/cancellation logic has something to act on.
+ * `earned`. P3-11 transitions it to `clawed_back` only, through the PT-owned
+ * enrollment cancellation transaction; the state value was pre-deployed, so that
+ * transition needs no schema migration.
  *
  * Two Phase 2 deviations from the §1 key-field list, both deliberate:
  *   - `organization_id` is added (NOT NULL) for the row-level org-scoping used by

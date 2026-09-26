@@ -16,7 +16,7 @@ import { OutboxService } from '../../shared/outbox/outbox.service';
 import { MembersService } from '../../members/services/members.service';
 import { WorkoutsService } from '../../workouts/services/workouts.service';
 import { WorkoutPlanAssignment } from '../../workouts/entities/workout-plan-assignment.entity';
-import { computeCommissionAmount } from '../pt.constants';
+import { computeCommissionAmount, PT_EVENT_VERSION } from '../pt.constants';
 
 /**
  * Recursively list the module's production TypeScript sources (spec files
@@ -92,6 +92,7 @@ describe('PtEnrollmentsService', () => {
     mockEnrollmentRepo = {
       create: jest.fn().mockImplementation((dto) => ({ id: 'enrollment-1', ...dto })),
       save: jest.fn().mockImplementation((e) => Promise.resolve(e)),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
       find: jest.fn().mockResolvedValue([enrollmentFixture]),
       findOne: jest.fn().mockResolvedValue(enrollmentFixture),
     };
@@ -113,6 +114,7 @@ describe('PtEnrollmentsService', () => {
     mockCommissionRepo = {
       create: jest.fn().mockImplementation((dto) => ({ id: 'commission-1', ...dto })),
       save: jest.fn().mockImplementation((c) => Promise.resolve(c)),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
       find: jest.fn().mockResolvedValue([]),
       findOne: jest.fn().mockResolvedValue(null),
     };
@@ -400,44 +402,13 @@ describe('PtEnrollmentsService', () => {
       expect(mockCommissionRepo.save).not.toHaveBeenCalled();
     });
 
-    it('has NO code path in src/pt that transitions a commission status (Q2 addendum)', () => {
+    it('keeps cancellation and clawback writes exclusively in PtEnrollmentsService', () => {
       const ptDir = path.join(__dirname, '..');
       const files = listTypeScriptFiles(ptDir);
-
-      // 1. The two states Phase 2 must never write are only DEFINED (in the enum),
-      //    never referenced by code. A transition would have to name
-      //    `TrainerCommissionStatus.CLAWED_BACK` / `.PENDING` somewhere.
-      const enumFile = path.join(ptDir, 'entities', 'trainer-commission-status.enum.ts');
-      const referencing = files.filter(
-        (file) =>
-          file !== enumFile &&
-          /TrainerCommissionStatus\.(PENDING|CLAWED_BACK)/.test(
-            fs.readFileSync(file, 'utf8'),
-          ),
-      );
-      expect(referencing).toEqual([]);
-
-      // 2. No clawback / cancellation handler exists anywhere in the module
-      //    (code-shaped match: an identifier/call, not a prose mention).
-      for (const file of files) {
-        expect(fs.readFileSync(file, 'utf8')).not.toMatch(
-          /clawback\(|clawBack|clawedBack|Clawback\w*\(/,
-        );
-      }
-
-      // 3. Single write path for commissions: exactly ONE production file writes
-      //    a commission row, and it is the enrollment service that computes the
-      //    amount once, at creation.
-      const writers = files.filter((file) =>
-        /commissionRepo(sitory)?\.(save|update|insert|delete)\(/.test(
-          fs.readFileSync(file, 'utf8'),
-        ),
-      );
+      const writers = files.filter((file) => /commissionRepo\.(save|update|insert|delete)\(/.test(fs.readFileSync(file, 'utf8')));
       expect(writers).toEqual([
         path.join(ptDir, 'services', 'pt-enrollments.service.ts'),
       ]);
-
-      // 4. ...and the commission service itself exposes no write method at all.
       const commissionService = fs.readFileSync(
         path.join(__dirname, 'trainer-commissions.service.ts'),
         'utf8',
@@ -446,6 +417,96 @@ describe('PtEnrollmentsService', () => {
         /\.update\(|\.save\(|\.insert\(|\.delete\(/,
       );
       expect(commissionService).not.toMatch(/async (create|update|remove)/);
+    });
+  });
+
+  describe('cancel (P3-11 clawback)', () => {
+    const commission = {
+      id: 'commission-1', organization_id: orgId, pt_enrollment_id: 'enrollment-1',
+      trainer_id: 'trainer-1', amount: '50.00', currency: 'USD', status: TrainerCommissionStatus.EARNED,
+    } as TrainerCommission;
+
+    it('locks enrollment and commission, cancels and claws back atomically, and writes the event on that transaction', async () => {
+      mockDataSource.getRepository.mockImplementation((target: unknown) => {
+        if (target === PTEnrollment) return mockEnrollmentRepo;
+        if (target === TrainerCommission) return mockCommissionRepo;
+        throw new Error(`unexpected repository ${(target as any)?.name}`);
+      });
+      mockEnrollmentRepo.findOne.mockResolvedValue(enrollmentFixture);
+      mockCommissionRepo.findOne.mockResolvedValue(commission);
+
+      const result = await service.cancel('enrollment-1', { reason: 'Member requested cancellation' });
+
+      expect(mockEnrollmentRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'enrollment-1', organization_id: orgId }, lock: { mode: 'pessimistic_write' },
+      });
+      expect(mockCommissionRepo.findOne).toHaveBeenCalledWith({
+        where: { pt_enrollment_id: 'enrollment-1', organization_id: orgId }, lock: { mode: 'pessimistic_write' },
+      });
+      expect(mockEnrollmentRepo.update).toHaveBeenCalledWith(
+        { id: 'enrollment-1', organization_id: orgId }, { status: PTEnrollmentStatus.CANCELLED },
+      );
+      expect(mockCommissionRepo.update).toHaveBeenCalledWith(
+        { id: 'commission-1', organization_id: orgId }, { status: TrainerCommissionStatus.CLAWED_BACK },
+      );
+      const [eventType, version, eventOrg, payload, correlationId, , tx] = mockOutbox.saveEventEnvelope.mock.calls[0];
+      expect(eventType).toBe('TrainerCommissionClawedBack.v1');
+      expect(version).toBe(PT_EVENT_VERSION);
+      expect(eventOrg).toBe(orgId);
+      expect(payload).toEqual({
+        commissionId: 'commission-1', enrollmentId: 'enrollment-1', trainerId: 'trainer-1',
+        organizationId: orgId, amount: '50.00', currency: 'USD',
+        reason: 'Member requested cancellation', clawedBackAt: expect.any(String),
+      });
+      expect(correlationId).toBe('enrollment-1');
+      expect(tx).toBeDefined();
+      expect(result.status).toBe(PTEnrollmentStatus.CANCELLED);
+      expect(commission.amount).toBe('50.00');
+    });
+
+    it('uses a conservative default reason and preserves a commission amount as a full clawback', async () => {
+      mockDataSource.getRepository.mockImplementation((target: unknown) => target === PTEnrollment ? mockEnrollmentRepo : mockCommissionRepo);
+      mockEnrollmentRepo.findOne.mockResolvedValue({ ...enrollmentFixture, status: PTEnrollmentStatus.ACTIVE });
+      mockCommissionRepo.findOne.mockResolvedValue(commission);
+
+      await service.cancel('enrollment-1', { reason: '   ' });
+      expect(mockOutbox.saveEventEnvelope.mock.calls[0][3]).toMatchObject({
+        reason: 'Enrollment cancelled', amount: '50.00', currency: 'USD',
+      });
+      expect(mockCommissionRepo.update).toHaveBeenCalledWith(
+        { id: commission.id, organization_id: orgId }, { status: TrainerCommissionStatus.CLAWED_BACK },
+      );
+    });
+
+    it('does not expose or change a foreign-organization enrollment', async () => {
+      mockDataSource.getRepository.mockImplementation((target: unknown) => target === PTEnrollment ? mockEnrollmentRepo : mockCommissionRepo);
+      mockEnrollmentRepo.findOne.mockResolvedValue(null);
+      await expect(service.cancel('foreign-enrollment')).rejects.toThrow(NotFoundException);
+      expect(mockEnrollmentRepo.findOne).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'foreign-enrollment', organization_id: orgId },
+      }));
+      expect(mockCommissionRepo.update).not.toHaveBeenCalled();
+      expect(mockOutbox.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('rejects completed and already-cancelled enrollments without transitions', async () => {
+      mockDataSource.getRepository.mockImplementation((target: unknown) => target === PTEnrollment ? mockEnrollmentRepo : mockCommissionRepo);
+      mockEnrollmentRepo.findOne.mockResolvedValueOnce({ ...enrollmentFixture, status: PTEnrollmentStatus.COMPLETED });
+      await expect(service.cancel('enrollment-1')).rejects.toThrow(ConflictException);
+      mockEnrollmentRepo.findOne.mockResolvedValueOnce({ ...enrollmentFixture, status: PTEnrollmentStatus.CANCELLED });
+      await expect(service.cancel('enrollment-1')).rejects.toThrow(ConflictException);
+      expect(mockCommissionRepo.update).not.toHaveBeenCalled();
+      expect(mockOutbox.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-earned commission before changing the enrollment', async () => {
+      mockDataSource.getRepository.mockImplementation((target: unknown) => target === PTEnrollment ? mockEnrollmentRepo : mockCommissionRepo);
+      mockEnrollmentRepo.findOne.mockResolvedValue(enrollmentFixture);
+      mockCommissionRepo.findOne.mockResolvedValue({ ...commission, status: TrainerCommissionStatus.CLAWED_BACK });
+      await expect(service.cancel('enrollment-1')).rejects.toThrow(ConflictException);
+      expect(mockEnrollmentRepo.update).not.toHaveBeenCalled();
+      expect(mockCommissionRepo.update).not.toHaveBeenCalled();
+      expect(mockOutbox.saveEventEnvelope).not.toHaveBeenCalled();
     });
   });
 

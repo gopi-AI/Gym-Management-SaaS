@@ -14,6 +14,7 @@ import { PersonalTrainersService } from './services/personal-trainers.service';
 import { PtEnrollmentsService } from './services/pt-enrollments.service';
 import { PtSessionsService } from './services/pt-sessions.service';
 import { TrainerCommissionsService } from './services/trainer-commissions.service';
+import { PtEnrollmentsController } from './controllers/pt-enrollments.controller';
 
 /**
  * Personal Training domain module (Phase 2, Module 4 of 8).
@@ -22,9 +23,8 @@ import { TrainerCommissionsService } from './services/trainer-commissions.servic
  * repository — so no other module can bypass the service-layer invariants:
  *   - `PTEnrollment.sessions_used` is only ever incremented by
  *     `PtSessionsService.completeSession()` (§12 Q1).
- *   - A `TrainerCommission` row is only ever created by
- *     `PtEnrollmentsService.create()` (§12 Q2), and its `status` never
- *     transitions in Phase 2.
+ *   - A `TrainerCommission` row is created with its enrollment and can only be
+ *     clawed back by `PtEnrollmentsService.cancel()` inside that PT transaction.
  *
  * **Naming-collision resolution (one-directional)**: this module owns NO
  * exercise/template/assignment content and NO `PT_` workout tables. Workout plan
@@ -52,6 +52,7 @@ import { TrainerCommissionsService } from './services/trainer-commissions.servic
     forwardRef(() => MembersModule),
     WorkoutsModule,
   ],
+  controllers: [PtEnrollmentsController],
   providers: [
     PtPackagesService,
     PersonalTrainersService,

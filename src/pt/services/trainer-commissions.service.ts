@@ -6,14 +6,14 @@ import { ListTrainerCommissionsDto } from '../dto/list-trainer-commissions.dto';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 
 /**
- * READ-ONLY service for `TrainerCommission` rows (Phase 2).
+ * READ-ONLY service for `TrainerCommission` rows.
  *
  * Deliberately exposes no create / update / delete:
  *
  * - The single write path is `PtEnrollmentsService.create()` (§12 Q2 — the amount
  *   is computed once, at enrollment creation, and never recalculated).
- * - §12 Q2's addendum forbids any Phase 2 transition of `status`. A write method
- *   here would be exactly the clawback API this task must not build.
+ * - P3-11 clawback writes live on `PtEnrollmentsService.cancel()` so enrollment
+ *   cancellation and commission reversal share one row-locked transaction.
  */
 @Injectable()
 export class TrainerCommissionsService {

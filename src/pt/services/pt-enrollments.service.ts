@@ -20,6 +20,7 @@ import { AssignEnrollmentWorkoutPlanDto } from '../dto/assign-enrollment-workout
 import { computeCommissionAmount, PT_EVENT_TYPES, PT_EVENT_VERSION } from '../pt.constants';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
+import { CancelPtEnrollmentDto } from '../dto/cancel-pt-enrollment.dto';
 import { MembersService } from '../../members/services/members.service';
 import { WorkoutsService } from '../../workouts/services/workouts.service';
 import { WorkoutPlanAssignment } from '../../workouts/entities/workout-plan-assignment.entity';
@@ -32,10 +33,9 @@ import { AssignPlanInput } from '../../workouts/dto/assign-plan.input';
  *
  * 1. **Q2 — commission is computed once, at enrollment creation.** Both rows are
  *    written in ONE transaction, together with the `PTEnrollmentCreated.v1` and
- *    `TrainerCommissionEarned.v1` outbox events. Nothing else in this module ever
- *    writes a `TrainerCommission`, and no code path transitions its `status`
- *    (Phase 2 sets `earned` exactly once — no clawback API, no cancellation
- *    handler, no worker).
+ *    `TrainerCommissionEarned.v1` outbox events. Phase 3 adds the cancellation
+ *    write path here (and nowhere else): enrollment cancellation and commission
+ *    clawback are one row-locked transaction, preserving the commission snapshot.
  *
  * 2. **PT owns no workout/assignment tables.** `assignWorkoutPlan()` delegates the
  *    entire write to `WorkoutsService.assignPlan()` — the same exported method the
@@ -220,6 +220,67 @@ export class PtEnrollmentsService {
       throw new NotFoundException('PTEnrollment not found');
     }
     return enrollment;
+  }
+
+  /**
+   * Cancel an active enrollment and claw back its one earned commission
+   * atomically. Q16 is all-or-nothing: the commission amount is never rewritten.
+   */
+  async cancel(id: string, dto: CancelPtEnrollmentDto = {}): Promise<PTEnrollment> {
+    const organizationId = await this.getOrganizationId();
+    return this.dataSource.transaction(async (manager) => {
+      const enrollmentRepo = manager.getRepository(PTEnrollment);
+      const commissionRepo = manager.getRepository(TrainerCommission);
+      const enrollment = await enrollmentRepo.findOne({
+        where: { id, organization_id: organizationId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!enrollment) throw new NotFoundException('PTEnrollment not found');
+      if (enrollment.status === PTEnrollmentStatus.CANCELLED) {
+        throw new ConflictException('PTEnrollment is already cancelled');
+      }
+      if (enrollment.status === PTEnrollmentStatus.COMPLETED) {
+        throw new ConflictException('PTEnrollment is completed and cannot be cancelled');
+      }
+
+      const commission = await commissionRepo.findOne({
+        where: { pt_enrollment_id: enrollment.id, organization_id: organizationId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!commission) throw new NotFoundException('TrainerCommission not found');
+      if (commission.status !== TrainerCommissionStatus.EARNED) {
+        throw new ConflictException(`TrainerCommission is '${commission.status}' and cannot be clawed back`);
+      }
+
+      await enrollmentRepo.update(
+        { id: enrollment.id, organization_id: organizationId },
+        { status: PTEnrollmentStatus.CANCELLED },
+      );
+      await commissionRepo.update(
+        { id: commission.id, organization_id: organizationId },
+        { status: TrainerCommissionStatus.CLAWED_BACK },
+      );
+      await this.outboxService.saveEventEnvelope(
+        PT_EVENT_TYPES.TRAINER_COMMISSION_CLAWED_BACK,
+        PT_EVENT_VERSION,
+        organizationId,
+        {
+          commissionId: commission.id,
+          enrollmentId: enrollment.id,
+          trainerId: commission.trainer_id,
+          organizationId,
+          amount: commission.amount,
+          currency: commission.currency,
+          reason: dto.reason?.trim() || 'Enrollment cancelled',
+          clawedBackAt: new Date().toISOString(),
+        },
+        enrollment.id,
+        undefined,
+        manager,
+      );
+      enrollment.status = PTEnrollmentStatus.CANCELLED;
+      return enrollment;
+    });
   }
 
   /**

@@ -203,6 +203,19 @@ DTO or HTTP endpoint in `src/memberships`, so nothing publishes it yet.**
   modified by a credit note, so `taxAmount` here is the authoritative record of
   the reversal.
 
+### PT Events
+- `PTEnrollmentCreated.v1`: `{ enrollmentId, memberId, packageId, trainerId, startDate, sessionCount }`
+- `PTSessionBooked.v1`: `{ sessionId, enrollmentId, memberId, trainerId, scheduledStart, scheduledEnd }`
+- `PTSessionCompleted.v1`: `{ sessionId, enrollmentId, actualStart, actualEnd }`
+- `TrainerCommissionEarned.v1`: `{ commissionId, enrollmentId, trainerId, amount }`
+- `TrainerCommissionClawedBack.v1`: `{ commissionId, enrollmentId, trainerId, organizationId, amount, currency, reason, clawedBackAt }`
+
+PT preserves its existing convention of inlining `.v1` into event type names. The
+event-contract interfaces live in `packages/contracts/src/events/pt.events.ts`;
+the backend mirror lives in `src/pt/pt.constants.ts`. Enrollment cancellation and
+its full commission clawback are written with the clawback event in one PT-owned
+transaction. A completed enrollment emits no cancellation/clawback event.
+
 ### Attendance Events
 - `AttendanceEventRecorded.v1`
   ```json

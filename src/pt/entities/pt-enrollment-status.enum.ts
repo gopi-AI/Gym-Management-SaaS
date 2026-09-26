@@ -4,11 +4,9 @@
  * - `active`    — the enrollment is live; PT sessions may be booked against it.
  * - `completed` — all purchased sessions have been consumed, so booking against
  *                 it is rejected (§12 Q1). Terminal for booking purposes.
- * - `cancelled` — reserved. **No code path sets this in Phase 2.** The value is
- *                 pre-deployed for the same reason as the 3-state commission
- *                 status: the Phase 3 cancellation/refund flow then needs no
- *                 schema migration. `pt:delete` ("Cancel enrollments") is not
- *                 implemented in this task.
+ * - `cancelled` — terminal for scheduling/commission purposes. P3-11 sets it
+ *                 through the PT-owned enrollment cancellation transaction;
+ *                 it was pre-deployed, so this needs no schema migration.
  */
 export enum PTEnrollmentStatus {
   ACTIVE = 'active',

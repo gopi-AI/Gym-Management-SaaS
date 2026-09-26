@@ -20,6 +20,7 @@ import { OutboxService } from '../shared/outbox/outbox.service';
 import { WorkoutPlanAssignment } from '../workouts/entities/workout-plan-assignment.entity';
 import { WorkoutSession } from '../workouts/entities/workout-session.entity';
 import { Exercise } from '../workouts/entities/exercise.entity';
+import { PtEnrollmentsController } from './controllers/pt-enrollments.controller';
 
 /**
  * Structural verification of the PT module boundary (Phase 2, Module 4 of 8).
@@ -64,6 +65,12 @@ describe('PtModule', () => {
         PtEnrollmentsService,
         PtSessionsService,
         TrainerCommissionsService,
+      ]);
+    });
+
+    it('registers the PT enrollment controller', () => {
+      expect(moduleMetadata('controllers', PtModule)).toEqual([
+        PtEnrollmentsController,
       ]);
     });
 
