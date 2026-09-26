@@ -9,10 +9,12 @@ export enum TrainerCommissionStatus {
   PENDING = 'pending',
   EARNED = 'earned',
   CLAWED_BACK = 'clawed_back',
+  PAID = 'paid',
 }
 
 export const TRAINER_COMMISSION_STATUS_VALUES = [
   TrainerCommissionStatus.PENDING,
   TrainerCommissionStatus.EARNED,
   TrainerCommissionStatus.CLAWED_BACK,
+  TrainerCommissionStatus.PAID,
 ] as const;

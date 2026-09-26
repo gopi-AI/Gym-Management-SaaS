@@ -19,10 +19,11 @@ import { TrainerCommissionStatus } from './trainer-commission-status.enum';
  * enrollment creation and never recalculated (not per session, not on later
  * session completions).
  *
- * `status` is 3-state (`pending` / `earned` / `clawed_back`) and defaults to
- * `earned`. P3-11 transitions it to `clawed_back` only, through the PT-owned
- * enrollment cancellation transaction; the state value was pre-deployed, so that
- * transition needs no schema migration.
+ * `status` uses the additive lifecycle (`pending` / `earned` / `clawed_back` /
+ * `paid`) and defaults to `earned`. P3-11 transitions to `clawed_back` only
+ * through enrollment cancellation; P3-12 transitions earned commissions to
+ * `paid` through the payout service. Payment timestamps/amounts remain on the
+ * payout-item table; this entity retains the Phase 2 column invariant.
  *
  * Two Phase 2 deviations from the §1 key-field list, both deliberate:
  *   - `organization_id` is added (NOT NULL) for the row-level org-scoping used by

@@ -21,6 +21,10 @@ import { WorkoutPlanAssignment } from '../workouts/entities/workout-plan-assignm
 import { WorkoutSession } from '../workouts/entities/workout-session.entity';
 import { Exercise } from '../workouts/entities/exercise.entity';
 import { PtEnrollmentsController } from './controllers/pt-enrollments.controller';
+import { CommissionPayoutsController } from './controllers/commission-payouts.controller';
+import { CommissionPayoutsService } from './services/commission-payouts.service';
+import { CommissionPayoutRun } from './entities/commission-payout-run.entity';
+import { CommissionPayoutItem } from './entities/commission-payout-item.entity';
 
 /**
  * Structural verification of the PT module boundary (Phase 2, Module 4 of 8).
@@ -47,8 +51,8 @@ function registeredRepositoryTokens(target: object): unknown[] {
 }
 
 describe('PtModule', () => {
-  describe('single-write-path encapsulation', () => {
-    it('exports ONLY the five domain services — no repository, no TypeOrmModule', () => {
+  describe('write-path encapsulation: services are exported, repositories are not', () => {
+    it('exports only domain services — no repository, no TypeOrmModule', () => {
       expect(moduleMetadata('exports', PtModule)).toEqual([
         PtPackagesService,
         PersonalTrainersService,
@@ -58,19 +62,21 @@ describe('PtModule', () => {
       ]);
     });
 
-    it('provides exactly the five services', () => {
+    it('provides the domain services', () => {
       expect(moduleMetadata('providers', PtModule)).toEqual([
         PtPackagesService,
         PersonalTrainersService,
         PtEnrollmentsService,
         PtSessionsService,
         TrainerCommissionsService,
+        CommissionPayoutsService,
       ]);
     });
 
-    it('registers the PT enrollment controller', () => {
+    it('registers PT enrollment and commission payout controllers', () => {
       expect(moduleMetadata('controllers', PtModule)).toEqual([
         PtEnrollmentsController,
+        CommissionPayoutsController,
       ]);
     });
 
@@ -86,13 +92,15 @@ describe('PtModule', () => {
   });
 
   describe('naming-collision resolution: PT owns no workout/assignment tables', () => {
-    it('registers only its own five entities', () => {
+    it('registers PT and payout-run entities only', () => {
       expect(registeredRepositoryTokens(PtModule)).toEqual([
         getRepositoryToken(PTPackage),
         getRepositoryToken(PersonalTrainer),
         getRepositoryToken(PTEnrollment),
         getRepositoryToken(PTSession),
         getRepositoryToken(TrainerCommission),
+        getRepositoryToken(CommissionPayoutRun),
+        getRepositoryToken(CommissionPayoutItem),
       ]);
     });
 

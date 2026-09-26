@@ -15,6 +15,10 @@ import { PtEnrollmentsService } from './services/pt-enrollments.service';
 import { PtSessionsService } from './services/pt-sessions.service';
 import { TrainerCommissionsService } from './services/trainer-commissions.service';
 import { PtEnrollmentsController } from './controllers/pt-enrollments.controller';
+import { CommissionPayoutRun } from './entities/commission-payout-run.entity';
+import { CommissionPayoutItem } from './entities/commission-payout-item.entity';
+import { CommissionPayoutsService } from './services/commission-payouts.service';
+import { CommissionPayoutsController } from './controllers/commission-payouts.controller';
 
 /**
  * Personal Training domain module (Phase 2, Module 4 of 8).
@@ -46,19 +50,22 @@ import { PtEnrollmentsController } from './controllers/pt-enrollments.controller
       PTEnrollment,
       PTSession,
       TrainerCommission,
+      CommissionPayoutRun,
+      CommissionPayoutItem,
     ]),
     OutboxModule,
     TenancyModule,
     forwardRef(() => MembersModule),
     WorkoutsModule,
   ],
-  controllers: [PtEnrollmentsController],
+  controllers: [PtEnrollmentsController, CommissionPayoutsController],
   providers: [
     PtPackagesService,
     PersonalTrainersService,
     PtEnrollmentsService,
     PtSessionsService,
     TrainerCommissionsService,
+    CommissionPayoutsService,
   ],
   exports: [
     PtPackagesService,

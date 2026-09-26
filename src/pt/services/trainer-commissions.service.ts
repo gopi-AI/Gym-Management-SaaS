@@ -14,6 +14,8 @@ import { TenantContextService } from '../../shared/tenant/tenant-context.service
  *   is computed once, at enrollment creation, and never recalculated).
  * - P3-11 clawback writes live on `PtEnrollmentsService.cancel()` so enrollment
  *   cancellation and commission reversal share one row-locked transaction.
+ * - P3-12 paid transitions live on `CommissionPayoutsService.process()` so the
+ *   payout-run/item audit and commission state update share one transaction.
  */
 @Injectable()
 export class TrainerCommissionsService {

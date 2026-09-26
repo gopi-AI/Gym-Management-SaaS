@@ -402,11 +402,12 @@ describe('PtEnrollmentsService', () => {
       expect(mockCommissionRepo.save).not.toHaveBeenCalled();
     });
 
-    it('keeps cancellation and clawback writes exclusively in PtEnrollmentsService', () => {
+    it('keeps commission writes limited to the enrollment and payout services', () => {
       const ptDir = path.join(__dirname, '..');
       const files = listTypeScriptFiles(ptDir);
       const writers = files.filter((file) => /commissionRepo\.(save|update|insert|delete)\(/.test(fs.readFileSync(file, 'utf8')));
       expect(writers).toEqual([
+        path.join(ptDir, 'services', 'commission-payouts.service.ts'),
         path.join(ptDir, 'services', 'pt-enrollments.service.ts'),
       ]);
       const commissionService = fs.readFileSync(

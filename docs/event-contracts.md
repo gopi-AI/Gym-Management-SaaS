@@ -207,8 +207,10 @@ DTO or HTTP endpoint in `src/memberships`, so nothing publishes it yet.**
 - `PTEnrollmentCreated.v1`: `{ enrollmentId, memberId, packageId, trainerId, startDate, sessionCount }`
 - `PTSessionBooked.v1`: `{ sessionId, enrollmentId, memberId, trainerId, scheduledStart, scheduledEnd }`
 - `PTSessionCompleted.v1`: `{ sessionId, enrollmentId, actualStart, actualEnd }`
+- `PTSessionCancelled.v1`: `{ sessionId, enrollmentId, reason, cancelledBy }`
 - `TrainerCommissionEarned.v1`: `{ commissionId, enrollmentId, trainerId, amount }`
 - `TrainerCommissionClawedBack.v1`: `{ commissionId, enrollmentId, trainerId, organizationId, amount, currency, reason, clawedBackAt }`
+- `TrainerCommissionPaid.v1`: `{ commissionId, payoutRunId, trainerId, organizationId, amount, currency, paidAt }`
 
 PT preserves its existing convention of inlining `.v1` into event type names. The
 event-contract interfaces live in `packages/contracts/src/events/pt.events.ts`;
