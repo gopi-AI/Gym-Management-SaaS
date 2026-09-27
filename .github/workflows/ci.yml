@@ -63,6 +63,15 @@ jobs:
       REDIS_PORT: 6379
       DB_ADMIN_DATABASE: postgres
       REPORTING_MV_INTEGRATION: "1"
+      # The three sibling system-report backfill suites gate on a flag of their own
+      # and `describe.skip` when it is unset (3407:21, 3408:21, 3410:21), so without
+      # these they skip here and execute nowhere. Same opt-in shape and job scope as
+      # the line above; the specs create and drop their own scratch databases through
+      # DB_ADMIN_DATABASE, so all four suites share this job without interfering.
+      # Filed as P6-52.
+      P6_38_REPORT_INTEGRATION: "1"
+      P6_41_REPORT_INTEGRATION: "1"
+      P6_43_REPORT_INTEGRATION: "1"
 
     # Matches .nvmrc (Node 24, the pinned version used locally).
     strategy:
