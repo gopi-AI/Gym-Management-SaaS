@@ -1787,6 +1787,28 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Risks**: Enabling the three flags converts silent skips into real CI assertions, so any latent defect in the backfills surfaces as a build failure on the next push — that is the point, but it means the fix should be validated against the same Postgres image the service block pins (`postgres:16-alpine`) before it is relied on. The narrower risk is that this gap is treated as closed by **P6-32**'s success: P6-32 proved a database exists in CI, and it does, but the three suites above still skip inside that database. A database being provisioned is not the same as a suite using it.
 - **Note on the standing process rule**: this ticket records a coverage gap, and its status is `Open` — the fix it recommends is not implemented here. Per the standing rule that a status flip must not precede its verifying evidence, it should only be marked Resolved once the flags are set in `ci.yml` **and** a GitHub-hosted CI run is observed green with the four tests executing rather than skipping.
 
+### P6-53: §6.3's report rounds per session then averages, while §7.2's view averages then rounds — so a day that mixes rounding directions gives two different "Avg Session Duration" numbers *(Open — flagged during P6-38 remediation; pre-existing, deliberately not fixed there)*
+- **Objective**: Decide and record which of the two shipped "Avg Session Duration" figures is authoritative for a day whose sessions round in different directions, so a reader comparing §6.3's report output with §7.2's `reports_mv_daily_attendance` column knows which number to trust — and so P6-38's closure text, which says the two expressions are "kept intentionally in agreement", is not read as a blanket guarantee.
+- **Dependencies**: **P6-15** (owns `1788965263406-CreateReportingMaterializedViews.ts`); **P6-52** (the CI flag that would put the spec's parity assertion on the build, where the fixture proposed below would fail); §6.3's row (`docs/phase6-scoping-plan.md:493`) and §7.2 (`:602`). Filed alongside **P6-38**, which shipped both expressions.
+- **Files/modules affected** (none changed by this ticket):
+  - `src/migrations/1788965263406-CreateReportingMaterializedViews.ts:55` — `AVG(EXTRACT(EPOCH FROM (r.check_out_time - r.check_in_time)) / 60)::int AS avg_duration_minutes`: the **average of the raw differences, rounded once at the end**, cast to `integer`.
+  - `src/attendance/services/attendance.service.ts` (`elapsedMinutes` → `AttendanceRecord.duration_minutes`) with `docs/phase6-scoping-plan.md:493` — **each session is rounded on its own at check-out**, and the report averages those integers, so its result is a `numeric` that can carry a fraction.
+- **Database changes**: None proposed. Any fix is a decision, not a repair: either the view reads `AVG(duration_minutes)` (making it depend on the column being backfilled before its next refresh, which P6-15's design deliberately avoids), or the report adopts the view's aggregation order, or the column stores unrounded seconds. All three are larger than this ticket.
+- **API changes**: None. **Frontend changes**: None. **Worker changes**: None.
+- **Defect detail** — measured, not reasoned: PostgreSQL **16.15**, the two expressions evaluated over the same session sets (`VALUES` fixtures, read-only, no table involved):
+
+  | sessions in the group | §7.2 view (average → round → `::int`) | §6.3 report (`AVG` of the rounded column) |
+  |---|---|---|
+  | 0.5m + 0.4m | `0` | `0.5` |
+  | −0.5m + −0.4m | `0` | `−0.5` |
+  | −1.5m + −0.4m | `−1` | `−1` |
+  | 0.5m alone | `1` | `1` |
+  | −0.5m alone | `−1` | `−1` |
+
+  Two distinct differences ride on the same pair. The **aggregation order** is the one named in the title: the view rounds one average, the report averages per-session rounded values. The **output type** compounds it: the view's `::int` cannot emit a fraction at all, while the report emits `0.5`. Single-session groups agree, because both reduce to the same per-session figure — which is exactly why the shipped parity assertion does not catch this.
+- **Tests**: `src/migrations/__specs__/1788965263410-SeedAvgSessionDurationSystemReport.integration.spec.ts` asserts that the report and the view agree on the same rows, and passes because its fixture puts one session on each date (`:132-140`: three closed sessions on three different dates, plus one open one). It should gain a **mixed-rounding day** — two sessions on one date whose rounded minutes average non-integrally. That is a coverage addition, deliberately not made here. **Note for whoever writes that fixture**: it only runs with `P6_38_REPORT_INTEGRATION=1`, which CI does not yet set — that is **P6-52**.
+- **Risks**: A dashboard reading both artifacts shows two figures for the same question, differing by up to a minute on mixed days, with no error raised anywhere; and P6-38's closure text ("kept intentionally in agreement", "asserted equal on the same rows by the integration spec") invites the conclusion that they always agree. The sharper risk is a future parity attempt that changes the view's expression without noticing the aggregation order is the actual cause. One disambiguation, to prevent a false citation: `1788965263406:122`'s `AVG(duration_minutes)::int` belongs to `reports_mv_daily_workouts` over `WORKOUTS_WORKOUT_SESSIONS`, a different entity — it is not the attendance view's form.
+
 ## Phase 7: Enterprise Scale
 
 ### P7-01: Partitioning and Archival Strategy

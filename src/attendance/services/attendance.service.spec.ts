@@ -333,6 +333,64 @@ describe('AttendanceService', () => {
     });
 
     /**
+     * P6-38, exact half-minute boundaries — the only values where the tie rule is
+     * observable. PostgreSQL's `ROUND(numeric)` sends a tie **away from zero**, so
+     * `+0.5 → 1` and `+1.5 → 2` but `−0.5 → −1` and `−1.5 → −2`; `Math.round` agrees
+     * on the positive pairs and disagrees on the negative ones (`Math.round(-0.5)`
+     * is `-0`), which is why the service rounds through `roundHalfAwayFromZero`.
+     *
+     * The check-out timestamp is server-generated and cannot be injected, so the
+     * system clock is frozen for these tests: the difference is then exactly the
+     * offset below, not a boundary missed by a millisecond.
+     */
+    describe('half-minute rounding boundaries (P6-38)', () => {
+      const CHECK_OUT_AT = '2026-02-01T09:00:00.000Z';
+
+      beforeEach(() => {
+        jest.useFakeTimers().setSystemTime(new Date(CHECK_OUT_AT));
+      });
+      afterEach(() => {
+        jest.useRealTimers();
+      });
+
+      /**
+       * Check in `elapsedMs` before the frozen check-out instant, then check out.
+       * A positive value is an ordinary visit; a negative one means the check-in
+       * lands *after* the check-out — the reversed case.
+       */
+      async function checkOutAfterElapsed(
+        elapsedMs: number,
+      ): Promise<number | null | undefined> {
+        mockRecordRepo.findOne.mockResolvedValue({
+          ...savedRecord,
+          check_in_time: new Date(Date.now() - elapsedMs),
+        });
+
+        const result = await service.recordCheckOut({ member_id: memberId });
+
+        return result.record.duration_minutes;
+      }
+
+      it('rounds a 30-second visit up to 1 minute', async () => {
+        await expect(checkOutAfterElapsed(30_000)).resolves.toBe(1);
+      });
+
+      it('rounds a 90-second visit up to 2 minutes', async () => {
+        await expect(checkOutAfterElapsed(90_000)).resolves.toBe(2);
+      });
+
+      it('rounds a 30-second skew away from zero to -1, not 0', async () => {
+        // The check-out is 30s BEFORE the check-in: -0.5 minutes. PostgreSQL's
+        // ROUND gives -1 here; `Math.round` gave -0, which is the bug this pins.
+        await expect(checkOutAfterElapsed(-30_000)).resolves.toBe(-1);
+      });
+
+      it('rounds a 90-second skew away from zero to -2, not -1', async () => {
+        await expect(checkOutAfterElapsed(-90_000)).resolves.toBe(-2);
+      });
+    });
+
+    /**
      * An open session must carry NO duration rather than a placeholder zero: `0`
      * would be indistinguishable from a real zero-length visit and would drag the
      * report's `AVG` down. The column is only ever written on this path.

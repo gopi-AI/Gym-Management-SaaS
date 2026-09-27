@@ -87,7 +87,10 @@ export class AttendanceRecord {
    * stamps `check_out_time`, so the two can never disagree. Kept in lockstep with
    * the SQL in `1788965263409-AddAttendanceDurationMinutes.ts` (the backfill) and
    * with §7.2's `reports_mv_daily_attendance`, which computes the identical figure
-   * over the same two timestamps.
+   * over the same two timestamps. Rounded half away from zero on both paths, and
+   * never clamped: a session whose `check_out_time` precedes its `check_in_time`
+   * stores the negative difference rather than 0, because that value is the only
+   * signal the row's two timestamps disagree.
    */
   @Column({ type: 'int', nullable: true })
   duration_minutes?: number | null;

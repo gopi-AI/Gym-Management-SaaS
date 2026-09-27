@@ -90,14 +90,36 @@ interface AttendanceEventInput {
 const UNIQUE_VIOLATION_CODE = '23505';
 
 /**
- * Whole minutes between check-in and check-out, rounded half away from zero
- * (P6-38).
+ * Rounds `value` to the nearest integer with an exact half going **away from
+ * zero** — the rule PostgreSQL's `ROUND(numeric)` applies, and therefore the rule
+ * the backfill in `1788965263409-AddAttendanceDurationMinutes` applies.
  *
- * Deliberately the same arithmetic as §7.2's `reports_mv_daily_attendance`
- * (`AVG(EXTRACT(EPOCH FROM (check_out_time - check_in_time)) / 60)`) and as the
- * backfill in `1788965263409-AddAttendanceDurationMinutes`, so the stored value,
- * the backfilled value and the materialized view's own figure agree on the same
- * session rather than differing by a rounding rule.
+ * `Math.round` cannot express it: it resolves ties toward `+Infinity`
+ * (`Math.round(-0.5)` is `-0`, `Math.round(-1.5)` is `-1`), so on the same
+ * reversed session the application and the backfill would land a minute apart.
+ * Mirroring the input, rounding, and mirroring back is that same rule stated
+ * directly, and it leaves every non-tie value bit-identical to `Math.round`
+ * (P6-38).
+ */
+function roundHalfAwayFromZero(value: number): number {
+  return value < 0 ? -Math.round(-value) : Math.round(value);
+}
+
+/**
+ * Whole minutes between check-in and check-out, rounded half away from zero
+ * (P6-38) — PostgreSQL's `ROUND(numeric)` rule, via `roundHalfAwayFromZero`.
+ *
+ * Deliberately the same arithmetic as the backfill in
+ * `1788965263409-AddAttendanceDurationMinutes` and as §7.2's
+ * `reports_mv_daily_attendance`
+ * (`AVG(EXTRACT(EPOCH FROM (check_out_time - check_in_time)) / 60)`), so the
+ * stored value, the backfilled value and the materialized view's own figure agree
+ * on the same session rather than differing by a rounding rule. That agreement
+ * holds across the whole domain, negative differences included: on a reversed
+ * session the backfill writes −1 for −0.5 minutes and −2 for −1.5 minutes, and so
+ * does this function. (How a *group* of sessions is aggregated is a separate,
+ * pre-existing question — the view's `AVG(...)::int` versus the report's
+ * `AVG(duration_minutes)` — filed as **P6-53** and not changed here.)
  *
  * A clock skew that puts the check-out before the check-in (a mis-stamped device
  * event, or an operator correcting a timestamp) yields a negative duration rather
@@ -106,7 +128,7 @@ const UNIQUE_VIOLATION_CODE = '23505';
  * value is never used as a constraint or a multiplier.
  */
 function elapsedMinutes(checkIn: Date, checkOut: Date): number {
-  return Math.round((checkOut.getTime() - checkIn.getTime()) / 60_000);
+  return roundHalfAwayFromZero((checkOut.getTime() - checkIn.getTime()) / 60_000);
 }
 
 /** `YYYY-MM-DD` label of `date`'s UTC calendar day. */

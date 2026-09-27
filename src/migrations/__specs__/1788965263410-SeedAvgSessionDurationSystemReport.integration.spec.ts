@@ -133,7 +133,10 @@ describeDb('Avg Session Duration migration and provisioner PostgreSQL integratio
     // exists, so the backfill is what has to produce their durations.
     const closed = [
       { in: '2026-03-02T08:00:00Z', out: '2026-03-02T09:30:00Z', expected: 90 },
-      // 90.5 minutes — rounds half away from zero, matching the MV.
+      // 90.5 minutes — rounds half away from zero, matching the MV. The parity
+      // assertion below holds for these fixtures, which are all positive; a group
+      // mixing rounding directions is a separate, pre-existing question filed as
+      // P6-53, not covered here.
       { in: '2026-03-03T08:00:00Z', out: '2026-03-03T09:30:30Z', expected: 91 },
       // 45.48 minutes — rounds down.
       { in: '2026-03-04T08:00:00Z', out: '2026-03-04T08:45:29Z', expected: 45 },

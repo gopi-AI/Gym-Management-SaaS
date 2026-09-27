@@ -51,8 +51,26 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  * `EXTRACT`'s return type is version-dependent (`numeric` on PostgreSQL 16, where
  * `::int` rounds; `double precision` on others, where `::int` would truncate) —
  * the MV relies on the `numeric` behaviour, so the explicit `ROUND` keeps the two
- * copies in agreement on any supported server. Both round half away from zero:
- * 90.5 minutes → 91.
+ * copies in agreement on any supported server. `numeric`'s `ROUND` resolves an
+ * exact half **away from zero**, and the application's `elapsedMinutes`
+ * (`attendance.service.ts`) applies that same rule rather than `Math.round`'s
+ * tie-toward-`+Infinity`, which would put the stored and the backfilled value a
+ * minute apart on the same reversed session. The two therefore agree over the
+ * **whole** domain, not only the positive half of it: 90.5 minutes → 91,
+ * −0.5 minutes → −1, −1.5 minutes → −2.
+ *
+ * **Negative durations are stored, never clamped.** The `UPDATE` below filters
+ * only `check_out_time IS NOT NULL`: there is no ordering guard and no
+ * `GREATEST(..., 0)`. If `check_out_time` precedes `check_in_time` — a
+ * mis-stamped device event, a backwards server-clock step, or an operator
+ * correction — the backfill writes the negative number the arithmetic produces,
+ * exactly as the application's check-out path writes it for the same row.
+ * Clamping it here would replace the value the two timestamps state with one they
+ * do not, and the report's `AVG(duration_minutes)` would carry that substitution
+ * silently; a negative duration is the signal that the timestamps disagree, so it
+ * is deliberately left visible. `elapsedMinutes` in `attendance.service.ts`
+ * records the same decision on the write path. That is also why the column stays
+ * `integer` and nullable below, with no `CHECK` added.
  *
  * The application writes this column on the check-out path
  * (`AttendanceService.checkOut()`), in the same transaction that stamps
