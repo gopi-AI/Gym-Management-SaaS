@@ -13,6 +13,8 @@ import {
   PAYMENT_STATUS,
   toMoney,
 } from '../finance.constants';
+import { PAYMENT_GATEWAY } from './payment-gateway.port';
+import { PaymentMethodsService } from './payment-methods.service';
 
 /**
  * Behavioral verification of payment recording and retry application.
@@ -30,6 +32,8 @@ describe('PaymentsService', () => {
   let mockTenantContext: Record<string, jest.Mock>;
   let mockOutboxService: Record<string, jest.Mock>;
   let mockInvoicesService: Record<string, jest.Mock>;
+  let mockPaymentMethodsService: Record<string, jest.Mock>;
+  let mockPaymentGateway: { charge: jest.Mock; isConfigured: boolean };
 
   const orgId = '11111111-1111-4111-8111-111111111111';
   const memberId = '22222222-2222-4222-8222-222222222222';
@@ -105,6 +109,18 @@ describe('PaymentsService', () => {
       creditNoteTotalsByInvoice: jest.fn().mockResolvedValue(new Map()),
     };
 
+    mockPaymentMethodsService = {
+      getDefaultPaymentMethod: jest.fn().mockResolvedValue({
+        stripe_customer_id: 'cus-1',
+        stripe_payment_method_id: 'pm-1',
+      }),
+      getDefaultPaymentMethodForOrganization: jest.fn().mockResolvedValue({
+        stripe_customer_id: 'cus-1',
+        stripe_payment_method_id: 'pm-1',
+      }),
+    };
+    mockPaymentGateway = { charge: jest.fn().mockResolvedValue({ succeeded: true, transactionId: 'renewal-txn' }), isConfigured: true };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         PaymentsService,
@@ -114,10 +130,65 @@ describe('PaymentsService', () => {
         { provide: TenantContextService, useValue: mockTenantContext },
         { provide: OutboxService, useValue: mockOutboxService },
         { provide: InvoicesService, useValue: mockInvoicesService },
+        { provide: PaymentMethodsService, useValue: mockPaymentMethodsService },
+        {
+          provide: PAYMENT_GATEWAY,
+          useValue: mockPaymentGateway,
+        },
       ],
     }).compile();
 
     service = module.get<PaymentsService>(PaymentsService);
+  });
+
+  describe('process', () => {
+    it('rejects a pending payment when the member has no saved payment method', async () => {
+      const pendingPayment = {
+        id: 'payment-pending-1',
+        organization_id: orgId,
+        member_id: memberId,
+        invoice_id: invoiceId,
+        amount: '65.00',
+        status: PAYMENT_STATUS.PENDING,
+      } as Payment;
+      mockPaymentRepo.findOne.mockResolvedValue(pendingPayment);
+      mockPaymentMethodsService.getDefaultPaymentMethod.mockResolvedValue(null);
+
+      await expect(service.process(pendingPayment.id)).rejects.toThrow('NO_SAVED_PAYMENT_METHOD');
+      expect(mockPaymentMethodsService.getDefaultPaymentMethod).toHaveBeenCalledWith(memberId);
+    });
+  });
+
+  describe('attemptWithSavedMethod (worker renewal/retry)', () => {
+    it('scopes the payment and saved method to its organization and applies outcome through shared path', async () => {
+      const pendingPayment = {
+        id: 'renewal-payment', organization_id: orgId, member_id: memberId,
+        invoice_id: invoiceId, amount: '65.00', status: PAYMENT_STATUS.PENDING,
+        retry_count: 0, next_retry_at: null,
+      } as Payment;
+      mockPaymentRepo.findOne.mockResolvedValue(pendingPayment);
+      const applySpy = jest.spyOn(service, 'applyRetryOutcome').mockResolvedValue({
+        status: PAYMENT_STATUS.SUCCEEDED, retryCount: 1, exhausted: false,
+      });
+      const now = new Date('2026-09-24T00:00:00.000Z');
+
+      await expect(service.attemptWithSavedMethod(pendingPayment, now, 1)).resolves.toMatchObject({
+        status: PAYMENT_STATUS.SUCCEEDED,
+      });
+
+      expect(mockPaymentRepo.findOne).toHaveBeenCalledWith({
+        where: { id: pendingPayment.id, organization_id: orgId },
+      });
+      expect(mockPaymentMethodsService.getDefaultPaymentMethodForOrganization).toHaveBeenCalledWith(memberId, orgId);
+      expect(mockPaymentGateway.charge).toHaveBeenCalledWith(pendingPayment, expect.objectContaining({
+        stripe_customer_id: 'cus-1', stripe_payment_method_id: 'pm-1',
+      }));
+      expect(applySpy).toHaveBeenCalledWith(
+        pendingPayment.id,
+        expect.objectContaining({ succeeded: true, transactionId: 'renewal-txn' }),
+        { maxAttempts: 1, now },
+      );
+    });
   });
 
   describe('recordForInvoice', () => {

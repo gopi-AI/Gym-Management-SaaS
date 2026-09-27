@@ -20,7 +20,14 @@ export const WORKER_INTERVALS: Record<string, number> = {
   OUTBOX: 10_000,
   MEMBERSHIP_EXPIRY: 60 * 60 * 1000,
   PAYMENT_RETRY: 15 * 60 * 1000,
+  DUNNING: 24 * 60 * 60 * 1000,
+  WEBHOOK: 5_000,
   EXPIRY: 60 * 60 * 1000,
+  // P3-07. The scheduler only needs to keep up with policy intervals measured in
+  // hours, so half-hourly is ample; the SLA monitor runs more often because a
+  // breach detected late is an escalation raised late.
+  CRM_FOLLOW_UPS: 30 * 60 * 1000,
+  CRM_SLA_MONITOR: 15 * 60 * 1000,
   // Report jobs execute real queries, so the cadence is short enough to feel
   // synchronous but not so short that a batch queues behind itself.
   REPORT_JOBS: 15_000,
@@ -36,6 +43,10 @@ export const WORKER_BATCH_SIZES: Record<string, number> = {
   OUTBOX: 25,
   MEMBERSHIP_EXPIRY: 200,
   PAYMENT_RETRY: 50,
+  DUNNING: 50,
+  WEBHOOK: 50,
+  CRM_FOLLOW_UPS: 100,
+  CRM_SLA_MONITOR: 100,
   // §5.1 serializes execution to one job globally; the batch is the queue-drain unit.
   REPORT_JOBS: 5,
 };
