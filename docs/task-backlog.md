@@ -33,8 +33,8 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Files/modules affected**:
   - packages/contracts/src/
   - packages/contracts/package.json
-### P0-03: Database Setup with Multi-tenancy and RLS *(Completed)*
-- **Objective**: Create database entities and schema for multi-tenancy support with Row Level Security.
+### P0-03: Database Setup with Multi-tenancy *(Completed; RLS requirement withdrawn)*
+- **Objective**: Create database entities and schema for multi-tenancy support. Tenant isolation is enforced at the **application layer** (per-query `organization_id` predicates resolved from `TenantContextService`); **RLS is formally deferred** — see `docs/database-plan.md`, "Tenant Isolation — Application-Layer Enforcement (RLS Deferred)". The original objective named Row Level Security; that requirement is withdrawn, not outstanding.
 - **Dependencies**: P0-01
 - **Files/modules affected**:
   - src/tenancy/entities/
@@ -1766,8 +1766,8 @@ This document contains the implementation tasks broken down by phase, with depen
   - Backward/forward compatibility tested
 - **Risks**: Schema design mistakes requiring breaking changes later
 
-### P0-03: Database Setup with Multi-tenancy and RLS
-- **Objective**: Configure PostgreSQL with multi-tenancy schema and row-level security.
+### P0-03: Database Setup with Multi-tenancy *(RLS requirement withdrawn)*
+- **Objective**: Configure PostgreSQL with multi-tenancy schema. Tenant isolation is enforced at the **application layer** — per-query `organization_id` predicates resolved from `TenantContextService` — not via PostgreSQL RLS. **RLS is formally deferred**; see `docs/database-plan.md`, "Tenant Isolation — Application-Layer Enforcement (RLS Deferred)", for the rationale (no per-request connection affinity, so the session GUC RLS policies depend on cannot be reliably populated; implementing it was estimated at 6–11 weeks) and the revisit triggers.
 - **Dependencies**: P0-01
 - **Files/modules affected**:
   - Database migration scripts
@@ -1777,21 +1777,21 @@ This document contains the implementation tasks broken down by phase, with depen
   - Create organizations table
   - Create branches table
   - Create shared tables: outbox, inbox, audit_log
-  - Enable RLS on all tenant tables
+  - Enable RLS on all tenant tables — **amended: withdrawn** (RLS deferred; isolation is the application-layer predicate, not a policy)
   - Add indexes for tenant queries
 - **API changes**: None
 - **Frontend changes**: None
 - **Worker changes**: None
 - **Tests**:
-  - RLS policy testing (cross-tenant access blocked)
+  - RLS policy testing (cross-tenant access blocked) — **amended:** there are no policies to test; the equivalent control is **cross-organization rejection tests at the service layer** (a spec asserting that another organization's row is rejected)
   - Migration script validity
   - Index effectiveness
 - **Acceptance criteria**:
   - Database deployed with multi-tenancy support
-  - RLS policies enforce tenant isolation
+  - RLS policies enforce tenant isolation — **amended:** tenant isolation is enforced by **application-layer scoping**, which was verified to be applied consistently across every checked service with zero exceptions found. This criterion is satisfied by the amended mechanism, not waived.
   - Migrations run successfully in dev/test
   - Basic CRUD operations work with tenant context
-- **Risks**: RLS misconfiguration leading to data leaks
+- **Risks**: RLS misconfiguration leading to data leaks — **no longer applicable** (RLS deferred). The residual risk under this ruling is that **a query written without an `organization_id` predicate has no database-level backstop**; the mitigations are code review and the scoped-service/`TenantContextService` pattern.
 
 ## Known Defects
 

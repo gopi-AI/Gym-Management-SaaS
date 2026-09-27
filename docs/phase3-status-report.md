@@ -74,6 +74,8 @@ is_active=FALSE -> typeof=boolean value=true  errors=0
 
 `?is_active=false` filters for **active** plans and raises no validation error, exactly as the backlog's DEF-01 entry describes.
 
+> **FIXED (2026-09-27) — `3dee318a`.** The transcript above is preserved unchanged as the observation made on the date of this report. `QueryMembershipPlanDto.is_active` has since been converted to the explicit `@Transform(({ value }) => value === true || value === 'true')` form, and the regression spec the backlog named now exists, so the behaviour above no longer reproduces. See the DEF-01 entry in §3.
+
 ---
 
 ## 2. Repository state and the commit boundary
@@ -311,9 +313,9 @@ GET   /v1/pt/commission-payouts/:id         (pt:read for detail)
 
 Migrations `…270`/`…271`. This follows §15 Q15's **recommended option (a)** — a separate payout-run table pair — which preserves the Phase 2 invariant that `TrainerCommission` carries no `paid_at` / `paid_amount`.
 
-### ❌ DEF-01 — `QueryMembershipPlanDto.is_active` inversion (**not fixed**)
+### ✅ DEF-01 — `QueryMembershipPlanDto.is_active` inversion (**fixed in `3dee318a`**)
 
-`@Type(() => Boolean)` is still present at `query-membership-plan.dto.ts:18`, and the regression spec `query-membership-plan.dto.spec.ts` named in the backlog **does not exist**. Behaviour reproduced in §1.3: every one of `true`, `false`, `0`, `1`, `FALSE` becomes `true` with `errors=0`. The defect is still live exactly as filed (`30fc54b2`, `889448c4`).
+**Fixed in `3dee318a`.** `@Type(() => Boolean)` is gone: `query-membership-plan.dto.ts` now parses `is_active` with `@Transform(({ value }) => value === true || value === 'true')` (line 34) — the same form `QueryTaxRateDto.is_active` and `QueryInvoiceDto.outstanding_only` already use — and the regression spec `query-membership-plan.dto.spec.ts` named in the backlog now exists. `@Type(() => Boolean)` no longer appears anywhere in `src/`. As filed (`30fc54b2`, `889448c4`) the defect was live exactly as reproduced in §1.3, which remains the transcription of the state observed on 2026-09-25.
 
 
 ---
@@ -349,7 +351,15 @@ The outbox envelope's version is a **routing key**, not decoration: `outbox.poll
 
 **Recommendation:** either revert to `'1'` to keep P3-11/P3-12 minimal, or record it as an intentional ruling (and align `docs/event-contracts.md`). Do not leave it as incidental churn. Note that `'v1'` matches the other Phase 3 modules (`FINANCE_EVENT_VERSION`, `ATTENDANCE_EVENT_VERSION`, `LOYALTY_EVENT_VERSION`, `INVENTORY_EVENT_VERSION`, `CRM_EVENT_VERSION`, `WORKOUT_EVENT_VERSION` are all `'v1'`), so the *new* value is the more consistent one — which makes this a defensible cleanup that was simply never declared.
 
-### 4.3 ⚠️ RLS is mandated by `docs/database-plan.md` but is **not implemented** anywhere
+### 4.3 ✅ RESOLVED — RLS formally deferred (Q11 ruled)
+
+> **RULING (2026-09-26): RLS will not be implemented at this time.** Tenant isolation remains enforced at the **application layer only** — explicit `organization_id` predicates in every repository query, resolved through `TenantContextService` — which was confirmed to be applied consistently across every checked service with **zero exceptions found**.
+>
+> RLS was evaluated and deferred because **no per-request connection affinity exists in the current architecture**: TypeORM's connection-pooled, non-request-scoped design means `SET LOCAL` cannot reliably propagate the session GUC that the policies depend on without a broader request-lifecycle change (connection pinning + re-issuing the GUC at every transaction boundary). Implementing it properly was estimated at **6–11 weeks**, which is disproportionate to the risk given the consistent existing predicate-based enforcement.
+>
+> `docs/database-plan.md` has been amended accordingly: its "Row-Level Security (RLS) Policies" section is now **"Tenant Isolation — Application-Layer Enforcement (RLS Deferred)"**, which states the decision, the rationale, the consequences (no database-level backstop), and the revisit triggers. The mandate and its worked SQL example are retained there as superseded history. The backlog (`P0-03`), `implementation-roadmap.md`, `domain-map.md` and `COMPLETION_SUMMARY.md` were updated so no document still asserts RLS as an outstanding requirement.
+>
+> **The finding below is preserved as observed on the date of this report; its recommendation has been answered.**
 
 This is a documented-but-unmet requirement, not merely an absence of a feature nobody asked for. `docs/database-plan.md` has a §**Row-Level Security (RLS) Policies** section that says:
 
@@ -376,6 +386,8 @@ This has two implications worth separating:
 2. **But Phase 3 materially expands what is unprotected.** P3-05's six inventory entities, P3-06/P3-07's eight CRM entities, and P3-03's webhook/payment-method/dunning tables add 17+ tenant-scoped tables, several holding payment-adjacent data (payment methods, webhook payloads). Combined with the §4.1 finding that the gates cannot boot the app, this is the weakest-covered surface the project has had.
 
 **Recommendation:** raise `database-plan.md`'s RLS section as an explicit, ruled decision — either implement the policies plus the session-GUC plumbing (a cross-cutting migration and a TypeORM transaction hook), or amend the plan to record that app-level scoping is the accepted, permanent mechanism. Leaving a plan document asserting a requirement that eleven phases of code have all skipped is the kind of divergence that misleads the next reader.
+
+> **ANSWERED (2026-09-26) — the second option was taken.** RLS is formally deferred and `database-plan.md` now records app-level scoping as the accepted permanent mechanism; see the ruling banner at the top of §4.3.
 
 ⚠️ Likewise `database-plan.md`'s concurrency table specifies an advisory lock for membership renewal; `renew()` is implemented without one. If concurrent renewal of the same membership is possible, the plan's own prescribed technique is unimplemented. This is **UNVERIFIED** as a live defect — I did not test concurrent renewal — but the divergence from the plan is confirmed by grep.
 
@@ -425,7 +437,7 @@ Also ❌ absent: the **combined tax + discount** scenario spec. Given §4's find
 | Q8 | Is an operator-triggered renewal route required for P3-09's acceptance criteria? | Renewal is currently service/worker-only. |
 | Q9 | What is the ruling on Q14(a)/(b) for dunning (attempt counter owner; fixed vs. exponential schedule)? | Implementation is unruled. |
 | Q10 | Does P3-10's S3 gap now need priority, given P3-05/P3-06 introduced the first non-document attachments? | §10 called it opportunistic; its premise has changed. |
-| Q11 | Definitive position on RLS — implement `database-plan.md`'s policies, or amend the plan to accept app-level scoping permanently? | The plan mandates it; 17+ new tenant-scoped tables arrived this phase. |
+| Q11 | Definitive position on RLS — implement `database-plan.md`'s policies, or amend the plan to accept app-level scoping permanently? | **RULED (2026-09-26): RLS formally deferred.** `database-plan.md` amended to record application-layer scoping as the accepted permanent mechanism (no per-request connection affinity for the session GUC; 6–11 week estimate); backlog/roadmap/domain-map/completion-summary updated to match. No longer blocking — see §4.3 |
 
 ---
 
@@ -434,8 +446,9 @@ Also ❌ absent: the **combined tax + discount** scenario spec. Given §4's find
 | Status | Items |
 |--------|-------|
 | ✅ Complete (committed on `main` / `origin/main` @ `c7f84c08`) | **P3-01, P3-02, P3-04** |
+| ✅ Complete (fixed in `3dee318a`) | **DEF-01** |
 | 🚧 Partial (uncommitted) | **P3-03** (blocked), **P3-04b**, **P3-05**, **P3-06**, **P3-07**, **P3-08**, **P3-09**, **P3-11**, **P3-12** |
-| ❌ Missing | **P3-10** (not started), **DEF-01** (not fixed) |
+| ❌ Missing | **P3-10** (not started) |
 
 **The headline is not the feature status — it is the commit boundary.** Twelve of the thirteen Phase 3 items are implemented to some degree, but **only three are committed**, and the uncommitted supermajority contains a defect that prevents the application from starting. Every automated gate is green on that broken tree, because the gates cannot boot the application by construction and the module specs hand-assemble their provider lists.
 
@@ -446,7 +459,7 @@ Also ❌ absent: the **combined tax + discount** scenario spec. Given §4's find
 3. **Add `app.module.spec.ts`** asserting `AppModule` compiles with `STRIPE_SECRET_KEY` unset, so neither regression can recur.
 4. **Document the two Stripe keys** in `.env.example`.
 5. **Then** resolve the commit decision (Q1) and commit, followed by the P3-04b / P3-11 / dunning / renewal rulings.
-6. **Separately**, settle the RLS divergence in §4.3 by ruling on Q11 — the plan document currently asserts a requirement no phase has implemented, and Phase 3 added 17+ tenant-scoped tables on top of that gap.
+6. ~~**Separately**, settle the RLS divergence in §4.3 by ruling on Q11~~ — **done (2026-09-26): RLS formally deferred; `database-plan.md` and the backlog/roadmap/domain-map now record application-layer scoping as the accepted mechanism (§4.3).**
 
 **Verification honesty note:** the four gates and the fresh-DB migration replay are reported from captured command output and are trustworthy. The **boot-blocker findings are reproduced**, but the probe harness was a temporary `ts-node` script that has since been deleted, and the worktree used for the HEAD baseline check was removed — so re-verification requires re-running §1.1's three-variant probe. Nothing in this report is based on a prior session's summary; every claim was re-derived against the repository during this run.
 

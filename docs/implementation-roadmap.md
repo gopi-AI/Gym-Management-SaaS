@@ -8,7 +8,7 @@ This document outlines the phased implementation plan for the Gym Management Saa
 ### Features
 - Monorepo setup with workspace management (e.g., Nx, Turborepo, or simple workspace)
 - Core tenancy and identity modules
-- Database schema with multi-tenancy and RLS
+- Database schema with multi-tenancy; tenant isolation via application-layer `organization_id` scoping (RLS deferred — see `docs/database-plan.md`)
 - Outbox/inbox infrastructure for event-driven architecture
 - Basic API gateway and authentication
 - CI/CD pipeline with linting, testing, and security scans
@@ -19,8 +19,8 @@ This document outlines the phased implementation plan for the Gym Management Saa
 ### Database Changes
 - Create tables for organizations, branches, users, roles, permissions
 - Create shared tables: outbox, inbox, audit_log
-- Enable RLS on all tenant tables
-- Add indexes for tenant queries
+- Enable RLS on all tenant tables — **amended: withdrawn** (RLS formally deferred; tenant isolation is the application-layer `organization_id` predicate, not a database policy — see `docs/database-plan.md`)
+- Tenant-aware indexes on all tenant tables
 
 ### API Changes
 - Authentication endpoints (login, logout, refresh)

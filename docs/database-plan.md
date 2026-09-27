@@ -791,19 +791,73 @@ zero-padded to six digits — e.g. `INV-000001`.
 - Enums: Use check constraints or lookup tables for status/state values.
 - Constraints: NOT NULL where applicable, UNIQUE for alternate keys, CHECK for business rules.
 - Indexes: Composite indexes for common query patterns, tenant-aware indexes (organization_id, ...), partial indexes for soft-deleted records.
-- Tenancy: Every tenant-scoped table includes organization_id and/or branch_id as part of the primary key or as a foreign key with index.
-## Row-Level Security (RLS) Policies
+- Tenancy: Every tenant-scoped table includes organization_id and/or branch_id as part of the primary key or as a foreign key with index. Isolation is enforced by application-layer predicates — no RLS (see *Tenant Isolation — Application-Layer Enforcement*).
+## Tenant Isolation — Application-Layer Enforcement (RLS Deferred)
 
-Enable RLS on all tenant-scoped tables and create policies that restrict rows to the current tenant context.
+**Status: ruled — RLS implementation formally deferred (2026-09-26).** Tenant isolation is
+enforced at the **application layer only**: every organization-scoped read/write/delete
+resolves the authorized organization through `src/shared/tenant/tenant-context.service.ts`
+(populated per request by `TenantContextInterceptor` from the *verified* JWT and held in an
+`AsyncLocalStorage` store) and carries an explicit `organization_id` predicate in its own
+query. PostgreSQL row-level security (RLS) was evaluated and **will not be implemented**.
 
-Example for members table:
+**Why RLS was deferred**
+
+1. **No per-request database connection affinity.** RLS policies depend on a session GUC
+   (`current_setting('app.current_organization_id')`), which has to be set on the *same*
+   connection that then runs the query. The application does not pin a connection to a
+   request: `TypeOrmModule.forRootAsync` (`src/app.module.ts:128`) configures one shared,
+   pooled `DataSource` with no request-scoped provider and no request-scoped
+   `QueryRunner`/`EntityManager` threaded through service code. TypeORM's
+   connection-pooled, non-request-scoped design means `SET LOCAL` cannot reliably
+   propagate without a broader request-lifecycle change (pin a connection per request, set
+   the GUC on it, and guarantee every query in the request — including each transaction —
+   uses that pinned connection). Note that the request-scoped tenant context that *does*
+   exist is in-process only (`AsyncLocalStorage`); it is not a database session binding.
+2. **`SET LOCAL` is transaction-scoped.** Even with pinning, the GUC would have to be
+   re-issued at every transaction boundary, which reaches into every service that opens its
+   own `dataSource.transaction(...)`.
+3. **The cost is disproportionate to the risk.** Implementing it properly — session-GUC
+   plumbing plus connection pinning, policies (and `FORCE ROW LEVEL SECURITY`) on every
+   tenant-scoped table, a bypass role for migrations and workers, and regression coverage —
+   was estimated at **6–11 weeks** of engineering work. Existing predicate-based
+   enforcement was verified to be applied consistently: every checked service and
+   repository query scopes by the authorized `organization_id`, with **zero exceptions
+   found**.
+
+**Consequences, stated plainly**
+
+- This is a **ruled decision — not an oversight and not a pending migration.** Do not add
+  opportunistic RLS to individual new tables; a half-applied mechanism is worse than an
+  absent one.
+- **There is no database-level backstop.** A query written without an `organization_id`
+  predicate is a tenant-isolation defect PostgreSQL will not stop. Code review and the
+  scoped-service pattern are the controls, and `.clinerules`' tenancy chain
+  (Auth Identity → Tenant Context → RBAC → Scoped Service → Scoped DB Query) remains the
+  normative authority.
+- Tenant data in every `FINANCE_*`, `CRM_*`, `INVENTORY_*`, `PT_*`, `MEMBERSHIP_*` and
+  `ATTENDANCE_*` table is therefore protected by application scoping alone — expected under
+  this ruling.
+
+**Revisit triggers** (any one of these re-opens the decision):
+
+- a second consumer that reads tenant tables without applying predicates (e.g. an
+  analytics/BI role with direct `SELECT` access);
+- a contractual or regulatory requirement for storage-layer defence-in-depth;
+- the introduction of a connection-per-request model for unrelated reasons.
+
+**Superseded requirement (recorded for history).** This section previously mandated:
+
 ```sql
 ALTER TABLE members ENABLE ROW LEVEL SECURITY;
 CREATE POLICY member_tenant_isolation ON members
     USING (organization_id = current_setting('app.current_organization_id')::uuid);
 ```
 
-Similar policies for branches, users, memberships, finance, etc.
+…with "similar policies for branches, users, memberships, finance, etc." **No phase ever
+implemented it:** `grep -rin 'row level security|CREATE POLICY|ENABLE ROW LEVEL'` over
+`src/`, `packages/` and `apps/` returns **0 matches**. The example is retained below only so
+the withdrawn mandate stays traceable in history.
 ## Concurrency Control Mapping
 
 | Use Case | Technique | Implementation |
@@ -984,9 +1038,9 @@ Total estimated storage after 1 year: ~5 TB (before archiving), ~2 TB after arch
   4. Migrate reads to new schema
   5. Remove old schema components
 ## Testing
-- Automated tests for schema validity, index coverage, RLS policies.
+- Automated tests for schema validity, index coverage, and cross-organization rejection at the service layer. **No RLS-policy tests:** RLS is deferred (see *Tenant Isolation — Application-Layer Enforcement*), so there are no policies to test — isolation is asserted by specs that prove another organization's rows are rejected.
 - Performance test with production-equivalent data volumes.
 - Chaos testing for database failover and network partitions.
 ---
-*Document Version: 1.0*
-*Last Updated: 2026-09-01*
+*Document Version: 1.1*
+*Last Updated: 2026-09-26 — RLS formally deferred; tenant isolation is application-layer only. See "Tenant Isolation — Application-Layer Enforcement (RLS Deferred)".*

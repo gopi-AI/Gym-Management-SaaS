@@ -263,6 +263,6 @@ stateDiagram-v2
 |------|------------|--------|------------|
 | Context boundary violations | Medium | High | Enforce via code ownership, API contracts, automated architecture tests |
 | Event schema drift | Low | Medium | Schema registry, versioning, consumer compatibility checks |
-| Tenancy leakage | Low | High | Automated security scanning, database row-level security, access log auditing |
+| Tenancy leakage | Low | High | Automated security scanning, application-layer `organization_id` scoping in every query (RLS deferred — see `docs/database-plan.md`), access log auditing |
 | Circular dependencies between contexts | Medium | Medium | Dependency inversion, shared kernel only for immutable contracts, strict layering |
 | Inconsistent ubiquituous language | Low | Low | Domain-driven design workshops, ubiquitous language glossary, code reviews |

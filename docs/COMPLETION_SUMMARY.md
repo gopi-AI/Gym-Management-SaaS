@@ -6,7 +6,7 @@ All required planning documents have been successfully created in the `/docs` di
 
 1. **docs/architecture.md** - System architecture, execution zones, ADRs, failure modes, scaling model, HA/DR, CI/CD
 2. **docs/domain-map.md** - Bounded contexts, context map, module ownership, Member 360 architecture, sitemap, state machines
-3. **docs/database-plan.md** - ERD, conventions, RLS policies, concurrency control, indexing, partitioning, backup strategy
+3. **docs/database-plan.md** - ERD, conventions, tenant isolation (RLS deferred — application-layer scoping), concurrency control, indexing, partitioning, backup strategy
 4. **docs/api-plan.md** - REST versioning, authn/z, conventions, endpoint catalog, webhooks, security, documentation
 5. **docs/event-contracts.md** - Broker topology, envelope schema, versioned events, outbox/inbox patterns, versioning
 6. **docs/security-plan.md** - Authentication, authorization, data protection, network security, app security, monitoring
