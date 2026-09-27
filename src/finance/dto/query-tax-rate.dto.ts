@@ -5,11 +5,13 @@ import { Transform, Type } from 'class-transformer';
  * Tax-rate search query (`GET /v1/tax-rates`): page/limit plus an `is_active`
  * filter. `is_active` is what an admin screen needs in order to see retired rates.
  *
- * `is_active` is parsed with `@Transform` rather than the `@Type(() => Boolean)`
- * that `QueryMembershipPlanDto` uses, because `Boolean('false')` is `true`: with
- * `@Type`, `?is_active=false` would silently filter for ACTIVE rates — the exact
- * opposite of what was asked for — and would pass validation while doing it. The
- * explicit comparison against `true` / `'true'` is the form
+ * `is_active` is parsed with `@Transform` rather than `@Type(() => Boolean)`,
+ * which is wrong for a boolean query parameter because `Boolean('false')` is
+ * `true`: with `@Type`, `?is_active=false` would silently filter for ACTIVE rates
+ * — the exact opposite of what was asked for — and would pass validation while
+ * doing it. `QueryMembershipPlanDto` carried exactly that defect (DEF-01,
+ * `docs/phase3-completion-checklist-report.md` §4.5) until it was converted to
+ * this same form. The explicit comparison against `true` / `'true'` is the form
  * `QueryInvoiceDto.outstanding_only` already uses. `ValidationPipe` runs with
  * `transform: true` (`src/main.ts`), so this transform is what the endpoint
  * actually applies.
