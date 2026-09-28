@@ -10,11 +10,14 @@ import { MembershipsService, NON_TERMINAL_STATUSES } from './memberships.service
 import { Membership } from '../entities/membership.entity';
 import { MembershipHistory } from '../entities/membership-history.entity';
 import { MembershipPlan } from '../entities/membership-plan.entity';
+import { MembershipDiscount } from '../entities/membership-discount.entity';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
 import { InvoicesService } from '../../finance/services/invoices.service';
 import { Invoice } from '../../finance/entities/invoice.entity';
 import { InvoiceItem } from '../../finance/entities/invoice-item.entity';
+import { InvoiceDiscount } from '../../finance/entities/invoice-discount.entity';
+import { TaxLine } from '../../finance/entities/tax-line.entity';
 import { Payment } from '../../finance/entities/payment.entity';
 import { PaymentsService } from '../../finance/services/payments.service';
 import * as fs from 'fs';
@@ -36,6 +39,7 @@ describe('MembershipsService', () => {
   let mockTenantContext: Record<string, jest.Mock>;
   let mockOutboxService: Record<string, jest.Mock>;
   let mockInvoicesService: Record<string, jest.Mock>;
+  let mockDiscountRepo: Record<string, jest.Mock>;
   let mockPaymentRepo: Record<string, jest.Mock>;
   let mockInvoiceRepo: Record<string, jest.Mock>;
   let mockInvoiceRenewalQuery: Record<string, jest.Mock>;
@@ -91,6 +95,12 @@ describe('MembershipsService', () => {
       update: jest.fn(),
     };
 
+    mockDiscountRepo = {
+      findOne: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockImplementation((dto) => dto),
+      save: jest.fn().mockResolvedValue({}),
+    };
+
     mockHistoryRepo = {
       findAndCount: jest.fn(),
       findOne: jest.fn(),
@@ -106,6 +116,7 @@ describe('MembershipsService', () => {
             if (repo === Membership) return mockMembershipRepo;
             if (repo === MembershipHistory) return mockHistoryRepo;
             if (repo === MembershipPlan) return mockPlanRepo;
+            if (repo === MembershipDiscount) return mockDiscountRepo;
             if (repo === Invoice) return mockInvoiceRepo;
             if (repo === InvoiceItem) return {};
             if (repo === Payment) return mockPaymentRepo;
@@ -161,6 +172,7 @@ describe('MembershipsService', () => {
         { provide: getRepositoryToken(Membership), useValue: mockMembershipRepo },
         { provide: getRepositoryToken(MembershipPlan), useValue: mockPlanRepo },
         { provide: getRepositoryToken(MembershipHistory), useValue: mockHistoryRepo },
+        { provide: getRepositoryToken(MembershipDiscount), useValue: mockDiscountRepo },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         { provide: TenantContextService, useValue: mockTenantContext },
         { provide: OutboxService, useValue: mockOutboxService },
@@ -250,6 +262,62 @@ describe('MembershipsService', () => {
         { end_date: '2025-03-03', renewal_date: '2025-03-03' },
       );
       expect(result.payment).toMatchObject({ id: 'renewal-payment', status: 'succeeded', retry_count: 1 });
+    });
+
+    // Regression for the P3-04b defect this file's `create()`-side discount test
+    // could NOT catch: renewal is the only path where an active discount can be
+    // in force when an invoice is raised, and `renewOne` simply never looked one
+    // up, so a discount row existed while every renewal invoice was full price.
+    // The assertion below is a full-object `toHaveBeenCalledWith` rather than
+    // `objectContaining` precisely so that a MISSING `discount` key fails — the
+    // pre-fix call is otherwise byte-identical.
+    it('passes an active membership discount into the renewal invoice (P3-04b regression)', async () => {
+      prepareRenewal('succeeded');
+      // Plan name is only used to build the line description; make it explicit so
+      // the expected payload below can be asserted exactly.
+      mockPlanRepo.findOne.mockResolvedValue({
+        id: dueMembership.plan_id, duration_days: 30, name: 'Monthly',
+      });
+      mockDiscountRepo.findOne.mockResolvedValue({
+        id: 'discount-renewal',
+        membership_id: dueMembership.id,
+        organization_id: orgId,
+        discount_type: 'percentage',
+        amount: '20.00',
+        starts_at: new Date('2025-01-01T00:00:00.000Z'),
+        ends_at: null,
+      } as MembershipDiscount);
+
+      await service.renew(dueMembership.id);
+
+      // Two layers asserted separately: the lookup stays keyed to THIS membership
+      // and THIS organization (tenant boundary), and the value it found reaches
+      // the invoice hook.
+      const lookup = mockDiscountRepo.findOne.mock.calls[0][0] as { where: Record<string, unknown> };
+      expect(lookup.where.membership_id).toBe(dueMembership.id);
+      expect(lookup.where.organization_id).toBe(orgId);
+
+      expect(mockInvoicesService.createForMembershipSale).toHaveBeenCalledWith({
+        organizationId: orgId,
+        memberId: dueMembership.member_id,
+        membershipId: dueMembership.id,
+        branchId: dueMembership.branch_id,
+        description: 'Membership renewal: Monthly',
+        amount: dueMembership.price_at_signup,
+        discount: { id: 'discount-renewal', discount_type: 'percentage', amount: '20.00' },
+        dueDate: expect.any(Date),
+        manager: expect.any(Object),
+      });
+    });
+
+    it('still renews at full price when the membership has no discount', async () => {
+      prepareRenewal('succeeded');
+      // mockDiscountRepo.findOne defaults to null (no row).
+      await service.renew(dueMembership.id);
+
+      expect(mockDiscountRepo.findOne).toHaveBeenCalled();
+      const input = mockInvoicesService.createForMembershipSale.mock.calls[0][0];
+      expect(input).toHaveProperty('discount', undefined);
     });
 
     it('does not extend or expire a membership when the renewal charge fails', async () => {
@@ -364,6 +432,163 @@ describe('MembershipsService', () => {
     });
   });
 
+  describe('discounts', () => {
+    it('rejects a membership from another organization before creating a discount', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.addDiscount('membership-from-org-b', {
+          discount_type: 'fixed',
+          amount: 10,
+        }),
+      ).rejects.toThrow(NotFoundException);
+
+      expect(mockMembershipRepo.findOne).toHaveBeenCalledWith({
+        where: {
+          id: 'membership-from-org-b',
+          organization_id: orgId,
+        },
+      });
+      expect(mockDataSource.transaction).not.toHaveBeenCalled();
+      expect(mockDiscountRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('locks the membership before checking for an active discount', async () => {
+      const membership = { id: 'membership-1', organization_id: orgId } as Membership;
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce(membership);
+
+      await service.addDiscount('membership-1', {
+        discount_type: 'fixed',
+        amount: 10,
+      });
+
+      expect(mockMembershipRepo.findOne).toHaveBeenNthCalledWith(2, {
+        where: { id: 'membership-1', organization_id: orgId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(mockMembershipRepo.findOne.mock.invocationCallOrder[1])
+        .toBeLessThan(mockDiscountRepo.findOne.mock.invocationCallOrder[0]);
+    });
+
+    it('puts the validity window in the duplicate-guard query instead of testing activity after the read', async () => {
+      // The pre-fix guard read one arbitrary row and evaluated activity in
+      // TypeScript, so a membership holding an expired row NEXT TO an active one
+      // slipped through — reproduced against real Postgres in
+      // `membership-discount-ambiguity.integration.spec.ts`, which a mock cannot
+      // do because it returns whatever row it is handed regardless of the
+      // predicate. What a mock CAN pin is the half the guard's caller sees: the
+      // predicate reaching the repository, i.e. the decision being taken by the
+      // database rather than by the service.
+      const membership = { id: 'membership-1', organization_id: orgId } as Membership;
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce(membership);
+      mockDiscountRepo.findOne.mockResolvedValueOnce({
+        id: 'discount-1',
+        membership_id: 'membership-1',
+        organization_id: orgId,
+        discount_type: 'fixed',
+        amount: '10.00',
+        starts_at: new Date('2026-01-01T00:00:00.000Z'),
+        ends_at: null,
+      } as MembershipDiscount);
+
+      await expect(
+        service.addDiscount('membership-1', { discount_type: 'fixed', amount: 10 }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(mockDiscountRepo.save).not.toHaveBeenCalled();
+      const guard = mockDiscountRepo.findOne.mock.calls[0][0] as { where: Record<string, unknown> };
+      expect(guard.where.membership_id).toBe('membership-1');
+      expect(guard.where.organization_id).toBe(orgId);
+      // `starts_at <= now` and `(ends_at IS NULL OR ends_at > now)`. Both are
+      // TypeORM FindOperators, so the service cannot evaluate them itself; a
+      // revert to the id/org-only predicate drops both keys.
+      expect(guard.where.starts_at).toEqual(expect.objectContaining({ _type: 'lessThanOrEqual' }));
+      expect(guard.where.ends_at).toEqual(expect.objectContaining({ _type: 'or' }));
+    });
+
+    it("maps an insert-time unique violation to the guard's 409 instead of leaking a 500", async () => {
+      // A row that starts in the FUTURE (`starts_at > now`, `ends_at IS NULL`) is
+      // outside the window predicate above, so the belt check cannot see it and a
+      // second open-ended row reaches the INSERT. The partial unique index decides
+      // there — same shape as the payout-period race in
+      // `commission-payouts.service.ts` — so the caller must see the same 409 the
+      // guard throws, not an unhandled QueryFailedError. Both shapes the driver can
+      // surface are covered: TypeORM wraps it as `driverError.code`, a bare
+      // pg error carries `code`.
+      const membership = { id: 'membership-1', organization_id: orgId } as Membership;
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce(membership);
+      mockDiscountRepo.findOne.mockResolvedValue(null);
+      mockDiscountRepo.save
+        .mockRejectedValueOnce({ driverError: { code: '23505' } })
+        .mockRejectedValueOnce({ code: '23505' });
+
+      for (const _ of [1, 2]) {
+        const rejection = (await service
+          .addDiscount('membership-1', { discount_type: 'fixed', amount: 5 })
+          .catch((error) => error)) as ConflictException;
+        expect(rejection).toBeInstanceOf(ConflictException);
+        expect(rejection.getStatus()).toBe(409);
+        expect(rejection.message).toBe('Membership already has an active discount');
+      }
+    });
+
+    it('does not swallow an insert error that is not a unique violation', async () => {
+      // Only 23505 is translated. An FK (23503) or CHECK (23514) failure is a
+      // different defect and must keep its own identity rather than masquerade as
+      // "already has an active discount".
+      const membership = { id: 'membership-1', organization_id: orgId } as Membership;
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce(membership);
+      mockDiscountRepo.findOne.mockResolvedValueOnce(null);
+      const dbError = { driverError: { code: '23503' } };
+      mockDiscountRepo.save.mockRejectedValueOnce(dbError);
+
+      await expect(
+        service.addDiscount('membership-1', { discount_type: 'fixed', amount: 5 }),
+      ).rejects.toBe(dbError);
+    });
+
+    it('rejects a percentage discount above 100 before it can reach the database', async () => {
+      // The table's CHK_membership_discounts_amount allows at most 100 for a
+      // percentage, and this API has no QueryFailedError filter, so without this
+      // guard a 150% discount would pass DTO validation and surface as a raw 500.
+      const membership = { id: 'membership-1', organization_id: orgId } as Membership;
+      mockMembershipRepo.findOne.mockResolvedValue(membership);
+
+      await expect(
+        service.addDiscount('membership-1', { discount_type: 'percentage', amount: 150 }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(mockDataSource.transaction).not.toHaveBeenCalled();
+      expect(mockDiscountRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('accepts the 100% boundary, which the table constraint allows exactly', async () => {
+      const membership = { id: 'membership-1', organization_id: orgId } as Membership;
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce(membership);
+
+      await service.addDiscount('membership-1', { discount_type: 'percentage', amount: 100 });
+
+      expect(mockDiscountRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        membership_id: 'membership-1',
+        organization_id: orgId,
+        discount_type: 'percentage',
+        amount: '100.00',
+      }));
+    });
+  });
+
   describe('create', () => {
     const createDto = { member_id: 'member-1', plan_id: 'plan-1' };
 
@@ -454,6 +679,69 @@ describe('MembershipsService', () => {
         // a rolled-back sale cannot leave an orphan invoice behind.
         manager: expect.objectContaining({ getRepository: expect.any(Function) }),
       });
+    });
+
+    it('runs the real membership sale path and persists discounted invoice totals and snapshot', async () => {
+      const discount = {
+        id: 'discount-1', membership_id: 'membership-new', organization_id: orgId,
+        discount_type: 'fixed', amount: '20.00',
+        starts_at: new Date('2026-01-01T00:00:00.000Z'), ends_at: null,
+      } as MembershipDiscount;
+      mockDiscountRepo.findOne.mockResolvedValue(discount);
+
+      const invoiceRepo = {
+        create: jest.fn((value) => value),
+        save: jest.fn(async (value) => ({ ...value, id: 'invoice-1' })),
+      };
+      const itemRepo = {
+        create: jest.fn((value) => value),
+        save: jest.fn(async (values) => values.map((value: object) => ({ ...value, id: 'item-1' }))),
+      };
+      const invoiceDiscountRepo = {
+        create: jest.fn((value) => value),
+        save: jest.fn(async (value) => value),
+      };
+      const taxLineRepo = { create: jest.fn((value) => value), save: jest.fn(async (values) => values) };
+      const saleManager = {
+        getRepository: jest.fn((entity: unknown) => {
+          if (entity === Invoice) return invoiceRepo;
+          if (entity === InvoiceItem) return itemRepo;
+          if (entity === InvoiceDiscount) return invoiceDiscountRepo;
+          if (entity === TaxLine) return taxLineRepo;
+          return {};
+        }),
+        createQueryBuilder: jest.fn(() => ({
+          select: jest.fn().mockReturnThis(),
+          from: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          getRawOne: jest.fn().mockResolvedValue({ tax_exempt: false }),
+        })),
+      } as any;
+      const taxRatesService = { resolveActiveRates: jest.fn().mockResolvedValue(new Map()) } as any;
+      const invoiceNumberService = { nextInvoiceNumber: jest.fn().mockResolvedValue('INV-000001') } as any;
+      const realInvoicesService = Object.create(InvoicesService.prototype) as InvoicesService;
+      Object.assign(realInvoicesService, {
+        invoiceNumberService,
+        taxRatesService,
+        outboxService: { saveEventEnvelope: jest.fn().mockResolvedValue(undefined) },
+      });
+      mockInvoicesService.createForMembershipSale.mockImplementation((input) =>
+        InvoicesService.prototype.createForMembershipSale.call(realInvoicesService, {
+          ...input,
+          manager: saleManager,
+        }),
+      );
+
+      const result = await service.create(createDto);
+
+      expect(mockInvoicesService.createForMembershipSale).toHaveBeenCalled();
+      expect(result.id).toBe('membership-new');
+      expect(invoiceRepo.create).toHaveBeenCalledWith(expect.objectContaining({
+        subtotal: '79.99', tax_amount: '0.00', total_amount: '79.99',
+      }));
+      expect(invoiceDiscountRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        membership_discount_id: 'discount-1', applied_amount: '20.00',
+      }));
     });
 
     it('creates no invoice for a free plan (nothing to charge)', async () => {

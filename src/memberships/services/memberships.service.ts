@@ -6,10 +6,12 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, LessThanOrEqual, MoreThan, IsNull, Or } from 'typeorm';
 import { Membership } from '../entities/membership.entity';
 import { MembershipHistory } from '../entities/membership-history.entity';
 import { MembershipPlan } from '../entities/membership-plan.entity';
+import { MembershipDiscount } from '../entities/membership-discount.entity';
+import { CreateMembershipDiscountDto } from '../dto/create-membership-discount.dto';
 import { CreateMembershipDto } from '../dto/create-membership.dto';
 import { UpdateMembershipDto } from '../dto/update-membership.dto';
 import { QueryMembershipDto } from '../dto/query-membership.dto';
@@ -22,6 +24,9 @@ import { Payment } from '../../finance/entities/payment.entity';
 import { Invoice } from '../../finance/entities/invoice.entity';
 import { InvoiceItem } from '../../finance/entities/invoice-item.entity';
 import { PAYMENT_STATUS } from '../../finance/finance.constants';
+
+/** PostgreSQL SQLSTATE for a unique-constraint violation. */
+const UNIQUE_VIOLATION_CODE = '23505';
 
 const MEMBERSHIP_STATUS = {
   ACTIVE: 'active',
@@ -191,6 +196,8 @@ export class MembershipsService {
     private readonly planRepository: Repository<MembershipPlan>,
     @InjectRepository(MembershipHistory)
     private readonly historyRepository: Repository<MembershipHistory>,
+    @InjectRepository(MembershipDiscount)
+    private readonly discountRepository: Repository<MembershipDiscount>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly tenantContextService: TenantContextService,
@@ -435,6 +442,29 @@ export class MembershipsService {
         });
       }
       if (!invoice) {
+        // D5 fix — the renewal invoice must reflect an active discount.
+        //
+        // This is the only place a discount can reach an invoice at all: the
+        // lookup in `create()` runs for a membership that was inserted moments
+        // earlier, which by construction cannot have a discount row yet (see the
+        // note on that lookup). Without the read below a
+        // MEMBERSHIP_MEMBERSHIP_DISCOUNTS row is inert — it exists, the
+        // `POST /v1/memberships/:id/discount` call returned 201, and the member
+        // is charged full price on every cycle. Read on the caller's manager so
+        // the discount is seen on the same connection/transaction as the invoice
+        // write, and scoped by organization_id as well as membership_id.
+        //
+        // Predicate is identical to `create()`'s: in force now
+        // (`starts_at <= now`) and not yet ended (`ends_at IS NULL OR > now`).
+        const renewalAt = new Date();
+        const discount = await manager.getRepository(MembershipDiscount).findOne({
+          where: {
+            membership_id: membership.id,
+            organization_id: membership.organization_id,
+            starts_at: LessThanOrEqual(renewalAt),
+            ends_at: Or(IsNull(), MoreThan(renewalAt)),
+          } as any,
+        });
         const result = await this.invoicesService.createForMembershipSale({
           organizationId: membership.organization_id,
           memberId: membership.member_id,
@@ -442,6 +472,11 @@ export class MembershipsService {
           branchId: membership.branch_id,
           description: `Membership renewal${plan ? `: ${plan.name}` : ''}`,
           amount: membership.price_at_signup,
+          discount: discount ? {
+            id: discount.id,
+            discount_type: discount.discount_type,
+            amount: discount.amount,
+          } : undefined,
           dueDate: new Date(),
           manager,
         });
@@ -659,6 +694,32 @@ export class MembershipsService {
       // transaction, so a rolled-back membership write can never leave an orphan
       // invoice, and a failed invoice can never leave a membership without one.
       if (Number(plan.price) > 0) {
+        const saleAt = new Date();
+        // DEAD IN PRODUCTION — kept deliberately, pending a separate decision.
+        //
+        // This lookup cannot match, and that is structural, not a bug in the
+        // predicate: `addDiscount()` only writes a discount for a membership that
+        // ALREADY exists (it 404s on an unknown id), while `saved` was inserted
+        // three statements above, inside this same transaction. A
+        // MEMBERSHIP_MEMBERSHIP_DISCOUNTS row for `saved.id` therefore cannot
+        // exist yet, so `discount` is always null here and the ternary below
+        // always passes `discount: undefined`.
+        //
+        // An active discount does reach invoices — on the renewal path, which is
+        // where a discount can be in force at the moment an invoice is raised
+        // (`renewOne`). Keeping this block is intentional: whether a discount
+        // should also apply at sale time is an open design question (answering it
+        // means loosening `addDiscount`'s precondition), and deleting this
+        // read would prejudge that. Do not read its presence as evidence that
+        // sale-time discounts work.
+        const discount = await this.discountRepository.findOne({
+          where: {
+            membership_id: saved.id,
+            organization_id: organizationId,
+            starts_at: LessThanOrEqual(saleAt),
+            ends_at: Or(IsNull(), MoreThan(saleAt)),
+          } as any,
+        });
         await this.invoicesService.createForMembershipSale({
           organizationId,
           memberId: dto.member_id,
@@ -666,6 +727,11 @@ export class MembershipsService {
           branchId: dto.branch_id || undefined,
           description: `Membership: ${plan.name}`,
           amount: plan.price,
+          discount: discount ? {
+            id: discount.id,
+            discount_type: discount.discount_type,
+            amount: discount.amount,
+          } : undefined,
           manager,
         });
       }
@@ -703,6 +769,87 @@ export class MembershipsService {
     if (dto.end_date !== undefined) updates.end_date = dto.end_date;
     await this.membershipRepository.update({ id, organization_id: organizationId } as any, updates);
     return this.findOne(id);
+  }
+
+  async addDiscount(id: string, dto: CreateMembershipDiscountDto): Promise<MembershipDiscount> {
+    const organizationId = await this.resolveAuthorizedOrg();
+    const membership = await this.membershipRepository.findOne({ where: { id, organization_id: organizationId } as any });
+    if (!membership) throw new NotFoundException('Membership not found');
+    const startsAt = dto.starts_at ? new Date(dto.starts_at) : new Date();
+    const endsAt = dto.ends_at ? new Date(dto.ends_at) : null;
+    if (endsAt && endsAt <= startsAt) throw new BadRequestException('ends_at must be after starts_at');
+    // Mirrors the table's CHK_membership_discounts_amount check (`amount <= 100`
+    // for a percentage). Without this guard a 150% discount passes DTO validation
+    // (the DTO caps every type at 1_000_000_000_000) and violates the constraint,
+    // and there is no QueryFailedError filter anywhere in the API to turn that
+    // database error into a 4xx — so it would surface as a raw 500.
+    if (dto.discount_type === 'percentage' && dto.amount > 100) {
+      throw new BadRequestException('A percentage discount cannot exceed 100');
+    }
+    return this.dataSource.transaction(async (manager) => {
+      const membershipRepository = manager.getRepository(Membership);
+      const lockedMembership = await membershipRepository.findOne({
+        where: { id, organization_id: organizationId } as any,
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!lockedMembership) throw new NotFoundException('Membership not found');
+
+      const repository = manager.getRepository(MembershipDiscount);
+      // The window belongs IN the query. The previous guard read one arbitrary
+      // row (`findOne` with no `order`, then an activity test in TypeScript) and
+      // assumed a membership can only own one row. That assumption is not
+      // enforced by the schema: `UQ_membership_discounts_one_active` is a
+      // PARTIAL unique index (`WHERE ends_at IS NULL`), so a row that carries an
+      // `ends_at` is invisible to it and two rows per membership are legal —
+      // which is exactly what a create/expire/create cycle leaves behind. With
+      // both rows present Postgres returned the EXPIRED one (no Sort node in the
+      // plan, so heap order decided), the condition below evaluated false, and a
+      // second active discount was accepted. See
+      // `membership-discount-ambiguity.integration.spec.ts`, which pins the raw
+      // plan behaviour and the rejection.
+      //
+      // Predicate identical to `renewOne`'s and `create()`'s: in force now
+      // (`starts_at <= now`) and not yet ended (`ends_at IS NULL OR > now`).
+      const inForceAt = new Date();
+      const existing = await repository.findOne({
+        where: {
+          membership_id: id,
+          organization_id: organizationId,
+          starts_at: LessThanOrEqual(inForceAt),
+          ends_at: Or(IsNull(), MoreThan(inForceAt)),
+        } as any,
+      });
+      if (existing) {
+        throw new ConflictException('Membership already has an active discount');
+      }
+      try {
+        return await repository.save(repository.create({
+          membership_id: id,
+          organization_id: organizationId,
+          discount_type: dto.discount_type,
+          amount: dto.amount.toFixed(2),
+          starts_at: startsAt,
+          ends_at: endsAt,
+        }));
+      } catch (error) {
+        // The window check above is a belt, not the whole guard: a row that
+        // starts in the FUTURE (`starts_at > now`, `ends_at IS NULL`) is not in
+        // force now, so that predicate skips it and a second open-ended row can
+        // still reach this INSERT. The real guard is the partial unique index
+        // UQ_membership_discounts_one_active on `(membership_id) WHERE ends_at
+        // IS NULL`, and the decision is taken here — the same shape as the
+        // payout-period race in commission-payouts.service.ts. Mapping the
+        // SQLSTATE to the guard's own message keeps the loser a controlled 409
+        // instead of an unhandled QueryFailedError (500). The transaction is
+        // already aborted at this point, so nothing may be queried inside it.
+        // On THIS insert a 23505 can only be that index: the PK is
+        // database-generated, FK failures are 23503 and CHECK failures 23514.
+        if (MembershipsService.isUniqueViolation(error)) {
+          throw new ConflictException('Membership already has an active discount');
+        }
+        throw error;
+      }
+    });
   }
 
   private async transitionState(id: string, targetStatus: MembershipStatus, dto: MembershipLifecycleDto): Promise<Membership> {
@@ -802,6 +949,11 @@ export class MembershipsService {
       case 'expire': return { eventType: 'MembershipExpired', payload: { membershipId: membership.id, memberId: membership.member_id, expiredAt: new Date().toISOString(), endDate: membership.end_date } };
       default: return null;
     }
+  }
+
+  private static isUniqueViolation(error: unknown): boolean {
+    const candidate = error as { code?: string; driverError?: { code?: string } };
+    return (candidate?.driverError?.code ?? candidate?.code) === UNIQUE_VIOLATION_CODE;
   }
 }
 

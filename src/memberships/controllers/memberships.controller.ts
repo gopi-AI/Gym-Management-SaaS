@@ -16,6 +16,8 @@ import { UpdateMembershipDto } from '../dto/update-membership.dto';
 import { QueryMembershipDto } from '../dto/query-membership.dto';
 import { MembershipLifecycleDto } from '../dto/membership-lifecycle.dto';
 import { Membership } from '../entities/membership.entity';
+import { MembershipDiscount } from '../entities/membership-discount.entity';
+import { CreateMembershipDiscountDto } from '../dto/create-membership-discount.dto';
 import { RequirePermissions } from '../../shared/auth/permissions.guard';
 
 @Controller('v1/memberships')
@@ -62,6 +64,16 @@ export class MembershipsController {
     @Body() dto: UpdateMembershipDto,
   ): Promise<Membership> {
     return this.membershipsService.update(id, dto);
+  }
+
+  @Post(':id/discount')
+  @HttpCode(HttpStatus.CREATED)
+  @RequirePermissions({ resource: 'membership', action: 'update' })
+  async addDiscount(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: CreateMembershipDiscountDto,
+  ): Promise<MembershipDiscount> {
+    return this.membershipsService.addDiscount(id, dto);
   }
 
   @Post(':id/pause')

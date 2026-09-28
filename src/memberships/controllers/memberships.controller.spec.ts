@@ -1,10 +1,19 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Reflector } from '@nestjs/core';
 import { MembershipsController } from './memberships.controller';
 import { MembershipsService } from '../services/memberships.service';
+import { PERMISSIONS_KEY, RequiredPermission } from '../../shared/auth/permissions.guard';
 
 describe('MembershipsController', () => {
   let controller: MembershipsController;
   let mockService: Record<string, jest.Mock>;
+  const reflector = new Reflector();
+
+  const permissionsFor = (handler: string): RequiredPermission[] | undefined =>
+    reflector.get<RequiredPermission[]>(
+      PERMISSIONS_KEY,
+      controller[handler as keyof MembershipsController] as Function,
+    );
 
   beforeEach(async () => {
     mockService = {
@@ -13,6 +22,7 @@ describe('MembershipsController', () => {
       findByMember: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      addDiscount: jest.fn(),
       pause: jest.fn(),
       resume: jest.fn(),
       freeze: jest.fn(),
@@ -84,6 +94,21 @@ describe('GET /v1/memberships/member/:memberId', () => {
       const result = await controller.update('m1', dto);
       expect(result).toEqual(expected);
       expect(mockService.update).toHaveBeenCalledWith('m1', dto);
+    });
+  });
+
+  describe('POST /v1/memberships/:id/discount', () => {
+    it('should call addDiscount with id and dto', async () => {
+      const dto = { discount_type: 'fixed', amount: 20 };
+      const expected = { id: 'discount-1' };
+      mockService.addDiscount.mockResolvedValue(expected);
+      const result = await controller.addDiscount('m1', dto as never);
+      expect(result).toEqual(expected);
+      expect(mockService.addDiscount).toHaveBeenCalledWith('m1', dto);
+    });
+
+    it('requires membership:update — attaching a discount is a membership write', () => {
+      expect(permissionsFor('addDiscount')).toEqual([{ resource: 'membership', action: 'update' }]);
     });
   });
 
