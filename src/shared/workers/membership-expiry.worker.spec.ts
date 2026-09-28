@@ -16,7 +16,7 @@ import { WORKER_BATCH_SIZES, WORKER_INTERVALS } from './worker-config';
  */
 describe('MembershipExpiryWorker', () => {
   let worker: MembershipExpiryWorker;
-  let membershipsService: { expireDueMemberships: jest.Mock };
+  let membershipsService: { expireDueMemberships: jest.Mock; renewDueMemberships: jest.Mock };
   let schedulerRegistry: {
     addInterval: jest.Mock;
     deleteInterval: jest.Mock;
@@ -40,13 +40,17 @@ describe('MembershipExpiryWorker', () => {
 
   const batch = (count: number) => ({
     scanned: count,
+    renewed: count,
     expired: count,
     membershipIds: Array.from({ length: count }, (_, index) => `membership-${index + 1}`),
   });
 
   beforeEach(() => {
     timers = [];
-    membershipsService = { expireDueMemberships: jest.fn().mockResolvedValue(batch(0)) };
+    membershipsService = {
+      renewDueMemberships: jest.fn().mockResolvedValue(batch(0)),
+      expireDueMemberships: jest.fn().mockResolvedValue(batch(0)),
+    };
     schedulerRegistry = {
       addInterval: jest.fn((_name: string, timer: NodeJS.Timeout) => {
         timers.push(timer);
@@ -83,8 +87,13 @@ describe('MembershipExpiryWorker', () => {
     expect(logSpy).toHaveBeenCalledWith('MEMBERSHIP_EXPIRY worker enabled: every 3000ms');
 
     membershipsService.expireDueMemberships.mockResolvedValueOnce(batch(1));
+    membershipsService.renewDueMemberships.mockResolvedValueOnce({ ...batch(0), renewed: 0 });
     await worker.tick();
 
+    expect(membershipsService.renewDueMemberships).toHaveBeenCalledWith({
+      limit: WORKER_BATCH_SIZES.MEMBERSHIP_EXPIRY,
+    });
+    expect(membershipsService.renewDueMemberships).toHaveBeenCalledTimes(1);
     expect(membershipsService.expireDueMemberships).toHaveBeenCalledTimes(1);
     expect(membershipsService.expireDueMemberships).toHaveBeenCalledWith({
       limit: WORKER_BATCH_SIZES.MEMBERSHIP_EXPIRY,
@@ -122,6 +131,7 @@ describe('MembershipExpiryWorker', () => {
     await worker.tick();
 
     expect(membershipsService.expireDueMemberships).not.toHaveBeenCalled();
+    expect(membershipsService.renewDueMemberships).not.toHaveBeenCalled();
     expect(logSpy).toHaveBeenCalledWith(
       'MEMBERSHIP_EXPIRY worker disabled (set WORKERS_ENABLED=true to enable)',
     );
@@ -131,7 +141,7 @@ describe('MembershipExpiryWorker', () => {
     worker = buildWorker({ WORKERS_ENABLED: 'true' });
     worker.onModuleInit();
 
-    membershipsService.expireDueMemberships.mockRejectedValueOnce(new Error('database is on fire'));
+    membershipsService.renewDueMemberships.mockRejectedValueOnce(new Error('database is on fire'));
     await expect(worker.tick()).resolves.toBeUndefined();
     // BackgroundWorker catches the failure and logs it: a bad batch must not
     // stop the next tick.
@@ -139,10 +149,12 @@ describe('MembershipExpiryWorker', () => {
       'MEMBERSHIP_EXPIRY worker tick failed: database is on fire',
     );
 
+    membershipsService.renewDueMemberships.mockResolvedValueOnce({ ...batch(0), renewed: 0 });
     membershipsService.expireDueMemberships.mockResolvedValueOnce(batch(2));
     await worker.tick();
 
-    expect(membershipsService.expireDueMemberships).toHaveBeenCalledTimes(2);
+    expect(membershipsService.renewDueMemberships).toHaveBeenCalledTimes(2);
+    expect(membershipsService.expireDueMemberships).toHaveBeenCalledTimes(1);
     expect(logSpy).toHaveBeenCalledWith('Expired 2 membership(s) out of 2 due candidate(s)');
 
     worker.onModuleDestroy();
@@ -153,7 +165,7 @@ describe('MembershipExpiryWorker', () => {
     worker.onModuleInit();
 
     let release!: (value: unknown) => void;
-    membershipsService.expireDueMemberships.mockReturnValueOnce(
+    membershipsService.renewDueMemberships.mockReturnValueOnce(
       new Promise((resolve) => {
         release = resolve;
       }),
@@ -162,7 +174,7 @@ describe('MembershipExpiryWorker', () => {
     const first = worker.tick();
     await worker.tick(); // fires while the first batch is still in flight
 
-    expect(membershipsService.expireDueMemberships).toHaveBeenCalledTimes(1);
+    expect(membershipsService.renewDueMemberships).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(
       'MEMBERSHIP_EXPIRY worker tick skipped: previous tick still running',
     );

@@ -13,6 +13,10 @@ import { MembershipPlan } from '../entities/membership-plan.entity';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
 import { InvoicesService } from '../../finance/services/invoices.service';
+import { Invoice } from '../../finance/entities/invoice.entity';
+import { InvoiceItem } from '../../finance/entities/invoice-item.entity';
+import { Payment } from '../../finance/entities/payment.entity';
+import { PaymentsService } from '../../finance/services/payments.service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { EVENT_TYPES, EVENT_VERSIONS } from '../../../packages/contracts/src/events/membership.events';
@@ -32,6 +36,10 @@ describe('MembershipsService', () => {
   let mockTenantContext: Record<string, jest.Mock>;
   let mockOutboxService: Record<string, jest.Mock>;
   let mockInvoicesService: Record<string, jest.Mock>;
+  let mockPaymentRepo: Record<string, jest.Mock>;
+  let mockInvoiceRepo: Record<string, jest.Mock>;
+  let mockInvoiceRenewalQuery: Record<string, jest.Mock>;
+  let mockPaymentsService: Record<string, jest.Mock>;
 
   const orgId = 'org-123';
   const userId = 'user-456';
@@ -58,6 +66,23 @@ describe('MembershipsService', () => {
       createQueryBuilder: jest.fn(() => membershipQueryBuilder),
     };
 
+    mockPaymentRepo = {
+      findOne: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockImplementation((value) => value),
+      save: jest.fn().mockImplementation(async (value) => ({ id: 'renewal-payment', ...value })),
+    };
+    mockInvoiceRenewalQuery = {
+      innerJoin: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      orderBy: jest.fn().mockReturnThis(),
+      getOne: jest.fn().mockResolvedValue(null),
+    };
+    mockInvoiceRepo = {
+      createQueryBuilder: jest.fn(() => mockInvoiceRenewalQuery),
+      findOne: jest.fn().mockResolvedValue(null),
+    };
+
     mockPlanRepo = {
       findAndCount: jest.fn(),
       findOne: jest.fn(),
@@ -81,6 +106,9 @@ describe('MembershipsService', () => {
             if (repo === Membership) return mockMembershipRepo;
             if (repo === MembershipHistory) return mockHistoryRepo;
             if (repo === MembershipPlan) return mockPlanRepo;
+            if (repo === Invoice) return mockInvoiceRepo;
+            if (repo === InvoiceItem) return {};
+            if (repo === Payment) return mockPaymentRepo;
             return {};
           }),
         };
@@ -92,6 +120,10 @@ describe('MembershipsService', () => {
         where: jest.fn().mockReturnThis(),
         getRawOne: jest.fn().mockResolvedValue({ '1': 1 }),
       })),
+      getRepository: jest.fn().mockImplementation((repo: any) => {
+        if (repo === Payment) return mockPaymentRepo;
+        return {};
+      }),
     };
 
     mockTenantContext = {
@@ -110,6 +142,18 @@ describe('MembershipsService', () => {
     mockInvoicesService = {
       createForMembershipSale: jest.fn().mockResolvedValue({ invoice: {}, items: [] }),
     };
+    mockPaymentsService = {
+      attemptWithSavedMethod: jest.fn().mockResolvedValue({ status: 'pending', retryCount: 1, exhausted: false }),
+    };
+    mockPaymentRepo.findOne.mockResolvedValue({
+      id: 'renewal-payment',
+      organization_id: orgId,
+      member_id: 'member-due',
+      invoice_id: 'renewal-invoice',
+      amount: '99.99',
+      status: 'pending',
+      retry_count: 1,
+    });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -121,6 +165,7 @@ describe('MembershipsService', () => {
         { provide: TenantContextService, useValue: mockTenantContext },
         { provide: OutboxService, useValue: mockOutboxService },
         { provide: InvoicesService, useValue: mockInvoicesService },
+        { provide: PaymentsService, useValue: mockPaymentsService },
       ],
     }).compile();
 
@@ -129,6 +174,144 @@ describe('MembershipsService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('renew (P3-09)', () => {
+    const dueMembership = {
+      id: 'renewal-membership',
+      organization_id: orgId,
+      member_id: 'renewal-member',
+      plan_id: 'renewal-plan',
+      branch_id: null,
+      status: 'active',
+      start_date: '2025-01-01',
+      end_date: '2025-02-01',
+      renewal_date: '2025-02-01',
+      price_at_signup: '99.99',
+      currency_at_signup: 'USD',
+      created_at: new Date('2025-01-01T00:00:00Z'),
+      updated_at: new Date('2025-01-01T00:00:00Z'),
+    } as unknown as Membership;
+
+    const prepareRenewal = (
+      paymentStatus: string,
+      // The row the post-charge lock re-reads. Defaults to the same due cycle;
+      // tests covering the "already settled by a concurrent run" case override it.
+      postChargeMembership: unknown = { ...dueMembership },
+    ) => {
+      const successfulPayment = {
+        id: 'renewal-payment', organization_id: orgId, member_id: dueMembership.member_id,
+        invoice_id: 'renewal-invoice', amount: '99.99', status: 'pending', retry_count: 0,
+      } as Payment;
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(dueMembership) // authorized tenant read
+        .mockResolvedValueOnce(dueMembership) // locked during invoice/payment creation
+        .mockResolvedValueOnce(postChargeMembership); // post-success lock when charged
+      mockPlanRepo.findOne.mockResolvedValue({ id: dueMembership.plan_id, duration_days: 30 });
+      mockInvoiceRenewalQuery.getOne.mockResolvedValue(null);
+      mockInvoicesService.createForMembershipSale.mockResolvedValue({
+        invoice: { id: 'renewal-invoice', total_amount: '99.99', status: 'sent' },
+      });
+      mockPaymentRepo.findOne
+        .mockResolvedValueOnce(null) // no existing payment for this cycle
+        .mockResolvedValueOnce(null) // same-cycle payment lookup
+        .mockResolvedValueOnce({ ...successfulPayment, status: paymentStatus, retry_count: 1 }); // reload after gateway path
+      mockPaymentsService.attemptWithSavedMethod.mockResolvedValue({
+        status: paymentStatus, retryCount: 1, exhausted: paymentStatus === 'failed',
+      });
+      return successfulPayment;
+    };
+
+    it('scopes the target membership to the authorized organization and extends only after a succeeded payment', async () => {
+      prepareRenewal('succeeded');
+      const result = await service.renew(dueMembership.id);
+
+      expect(mockMembershipRepo.findOne).toHaveBeenNthCalledWith(1, {
+        where: { id: dueMembership.id, organization_id: orgId },
+      });
+      expect(mockMembershipRepo.findOne).toHaveBeenNthCalledWith(2, {
+        where: { id: dueMembership.id, organization_id: orgId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(mockInvoicesService.createForMembershipSale).toHaveBeenCalledWith(expect.objectContaining({
+        organizationId: orgId,
+        memberId: dueMembership.member_id,
+        membershipId: dueMembership.id,
+        amount: dueMembership.price_at_signup,
+        manager: expect.any(Object),
+      }));
+      expect(mockPaymentsService.attemptWithSavedMethod).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'renewal-payment', status: 'pending' }),
+        expect.any(Date),
+        1,
+      );
+      expect(mockMembershipRepo.update).toHaveBeenCalledWith(
+        { id: dueMembership.id, organization_id: orgId },
+        { end_date: '2025-03-03', renewal_date: '2025-03-03' },
+      );
+      expect(result.payment).toMatchObject({ id: 'renewal-payment', status: 'succeeded', retry_count: 1 });
+    });
+
+    it('does not extend or expire a membership when the renewal charge fails', async () => {
+      prepareRenewal('failed');
+      const result = await service.renew(dueMembership.id);
+
+      expect(result.payment.status).toBe('failed');
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('rejects membership ids outside the authorized organization before opening a transaction', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue(null);
+      await expect(service.renew('foreign-membership')).rejects.toThrow(NotFoundException);
+      expect(mockMembershipRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'foreign-membership', organization_id: orgId },
+      });
+      expect(mockDataSource.transaction).not.toHaveBeenCalled();
+    });
+
+    it('publishes MembershipRenewed.v1 on the extending transaction, with the documented payload', async () => {
+      prepareRenewal('succeeded');
+      await service.renew(dueMembership.id);
+
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledTimes(1);
+      const [name, version, organizationId, payload, correlationId, causationId, manager] =
+        mockOutboxService.saveEventEnvelope.mock.calls[0];
+      expect(name).toBe('MembershipRenewed');
+      expect(version).toBe('v1');
+      expect(organizationId).toBe(orgId);
+      // Field-for-field against MembershipRenewedPayload
+      // (packages/contracts/src/events/membership.events.ts:17-22).
+      expect(payload).toEqual({
+        membershipId: dueMembership.id,
+        renewalDate: dueMembership.renewal_date, // the cycle that was settled
+        nextPaymentDate: '2025-03-03', // the advanced end/renewal date
+        renewalFee: '99.99', // what was actually charged
+      });
+      expect(correlationId).toBe(dueMembership.id);
+      expect(causationId).toBeUndefined();
+      // 7th argument = the EntityManager of the surrounding transaction, so the
+      // event cannot commit without the date extension (atomicity regression).
+      expect(typeof manager.getRepository).toBe('function');
+    });
+
+    it('does not extend or re-publish when the cycle was already settled by a concurrent run', async () => {
+      // The post-charge lock re-reads a membership whose renewal_date has already
+      // advanced past the cycle being settled. The guard must make the extension a
+      // no-op rather than granting a free extra period or publishing a second
+      // MembershipRenewed.v1 for one payment.
+      prepareRenewal('succeeded', {
+        ...dueMembership,
+        end_date: '2025-03-03',
+        renewal_date: '2025-03-03',
+      });
+
+      const result = await service.renew(dueMembership.id);
+
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+      expect(result.payment.status).toBe('succeeded');
+    });
   });
 
   describe('findAll', () => {
@@ -734,6 +917,52 @@ describe('MembershipsService', () => {
       expect(result).toEqual({ scanned: 1, expired: 0, membershipIds: [] });
       expect(mockMembershipRepo.update).not.toHaveBeenCalled();
       expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('does not expire a membership whose renewal charge is still open (dunning owns the debt)', async () => {
+      // Renewal only extends the membership AFTER a charge succeeds, so a member
+      // whose renewal payment is still pending has a past end_date. Expiring them
+      // would lapse the membership while the renewal is still being collected —
+      // the exact double-effect the renewal path is written to avoid. The open
+      // renewal invoice is the hand-off to P3-08's dunning, which owns the chase.
+      const withRenewal = { ...dueMembership, renewal_date: '2026-09-01' } as Membership;
+      membershipQueryBuilder.getMany.mockResolvedValue([withRenewal]);
+      mockMembershipRepo.findOne.mockResolvedValue(withRenewal);
+      mockInvoiceRenewalQuery.getOne.mockResolvedValue({ id: 'open-renewal-invoice' });
+
+      const result = await service.expireDueMemberships({ limit: 200, today: TODAY });
+
+      expect(result).toEqual({ scanned: 1, expired: 0, membershipIds: [] });
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+
+      // The lookup is scoped to the candidate's own organization and only an
+      // UNPAID renewal invoice blocks the expiry.
+      expect(mockInvoiceRenewalQuery.where).toHaveBeenCalledWith(
+        'invoice.organization_id = :organizationId',
+        { organizationId: orgId },
+      );
+      expect(mockInvoiceRenewalQuery.andWhere).toHaveBeenCalledWith(
+        'invoice.status IN (:...statuses)',
+        { statuses: ['sent', 'partially_paid'] },
+      );
+    });
+
+    it('still expires a past-due membership once its renewal debt is settled (the guard is not over-broad)', async () => {
+      // The counterfactual to the test above: a settled renewal must not silently
+      // disable expiry, or past-due members would never lapse.
+      const withRenewal = { ...dueMembership, renewal_date: '2026-09-01' } as Membership;
+      membershipQueryBuilder.getMany.mockResolvedValue([withRenewal]);
+      mockMembershipRepo.findOne.mockResolvedValue(withRenewal);
+      mockInvoiceRenewalQuery.getOne.mockResolvedValue(null);
+
+      const result = await service.expireDueMemberships({ limit: 200, today: TODAY });
+
+      expect(result).toEqual({ scanned: 1, expired: 1, membershipIds: ['mem-due'] });
+      expect(mockMembershipRepo.update).toHaveBeenCalledWith(
+        { id: 'mem-due', organization_id: orgId },
+        { status: 'expired' },
+      );
     });
 
     it('never double-publishes when a concurrent run already expired the row', async () => {

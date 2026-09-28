@@ -32,6 +32,14 @@ export class MembershipExpiryWorker extends BackgroundWorker {
   }
 
   protected async runOnce(): Promise<void> {
+    // Q13's default is renewal on expiry, sharing the expiry worker's cadence
+    // and row-locking domain service rather than introducing a competing scan.
+    const renewal = await this.membershipsService.renewDueMemberships({
+      limit: WORKER_BATCH_SIZES.MEMBERSHIP_EXPIRY,
+    });
+    if (renewal.renewed > 0) {
+      this.logger.log(`Renewed ${renewal.renewed} membership(s) out of ${renewal.scanned} due candidate(s)`);
+    }
     const result = await this.membershipsService.expireDueMemberships({
       limit: WORKER_BATCH_SIZES.MEMBERSHIP_EXPIRY,
     });

@@ -17,6 +17,11 @@ import { MembershipLifecycleDto } from '../dto/membership-lifecycle.dto';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
 import { InvoicesService } from '../../finance/services/invoices.service';
+import { PaymentsService } from '../../finance/services/payments.service';
+import { Payment } from '../../finance/entities/payment.entity';
+import { Invoice } from '../../finance/entities/invoice.entity';
+import { InvoiceItem } from '../../finance/entities/invoice-item.entity';
+import { PAYMENT_STATUS } from '../../finance/finance.constants';
 
 const MEMBERSHIP_STATUS = {
   ACTIVE: 'active',
@@ -163,6 +168,20 @@ interface MembershipExpiredPayloadShape extends Record<string, unknown> {
   endDate?: string;
 }
 
+/**
+ * Structural mirror of MembershipRenewedPayload in
+ * packages/contracts/src/events/membership.events.ts (lines 17-22), documented as
+ * `MembershipRenewed.v1` in docs/event-contracts.md (line 44). Both the interface
+ * and the doc entry pre-date Phase 3, so emitting this event creates no net-new
+ * contract.
+ */
+interface MembershipRenewedPayloadShape extends Record<string, unknown> {
+  membershipId: string;
+  renewalDate: string;
+  nextPaymentDate: string;
+  renewalFee: string;
+}
+
 @Injectable()
 export class MembershipsService {
   constructor(
@@ -177,6 +196,13 @@ export class MembershipsService {
     private readonly tenantContextService: TenantContextService,
     private readonly outboxService: OutboxService,
     private readonly invoicesService: InvoicesService,
+    // REQUIRED, deliberately not @Optional(): an optional injection would turn a
+    // future DI regression into a silent financial failure — `renewOne` would
+    // skip the gateway charge and leave the renewal payment `pending` forever
+    // with no error anywhere. FinanceModule exports this provider, and the
+    // AppModule boot specs (app.module.spec.ts, app.boot.spec.ts) fail loudly if
+    // the wiring ever breaks.
+    private readonly paymentsService: PaymentsService,
   ) {}
 
   private async resolveAuthorizedOrg(): Promise<string> {
@@ -314,6 +340,214 @@ export class MembershipsService {
     };
   }
 
+  /**
+   * Renew one membership at its renewal date. Request calls are tenant-scoped;
+   * the worker calls the internal organization-pinned path below. Invoice and
+   * pending payment creation are idempotent per membership/renewal period.
+   *
+   * A failed charge deliberately leaves the membership untouched: it stays
+   * `active` (not expired, not extended) and the `pending` payment is handed to
+   * the existing retry/dunning flow by `PaymentRetryService.retryDuePayments()`,
+   * which picks it up through `findDueRetries()` (next_retry_at IS NULL OR <=
+   * now). The membership is only extended once a charge actually succeeds.
+   */
+  async renew(id: string): Promise<{ membership: Membership; payment: Payment }> {
+    const organizationId = await this.resolveAuthorizedOrg();
+    const membership = await this.membershipRepository.findOne({
+      where: { id, organization_id: organizationId },
+    });
+    if (!membership) throw new NotFoundException('Membership not found');
+    return this.renewOne(membership, new Date().toISOString().slice(0, 10));
+  }
+
+  /** WORKER-ONLY scan. Each candidate is revalidated under a row lock. */
+  async renewDueMemberships(options: { limit?: number; today?: string } = {}): Promise<{
+    scanned: number;
+    renewed: number;
+    membershipIds: string[];
+  }> {
+    const limit = options.limit ?? 200;
+    const today = options.today ?? new Date().toISOString().slice(0, 10);
+    const candidates = await this.membershipRepository.createQueryBuilder('membership')
+      .where('membership.status = :active', { active: MEMBERSHIP_STATUS.ACTIVE })
+      .andWhere('membership.renewal_date IS NOT NULL')
+      .andWhere('membership.renewal_date <= :today', { today })
+      .orderBy('membership.renewal_date', 'ASC')
+      .limit(limit)
+      .getMany();
+    const membershipIds: string[] = [];
+    for (const candidate of candidates) {
+      try {
+        const result = await this.renewOne(candidate, today);
+        if (result.payment.status === PAYMENT_STATUS.SUCCEEDED) membershipIds.push(candidate.id);
+      } catch {
+        // Isolate a bad renewal so one member cannot prevent the remainder of
+        // the cross-organization batch from being considered.
+      }
+    }
+    return { scanned: candidates.length, renewed: membershipIds.length, membershipIds };
+  }
+
+  private async renewOne(
+    candidate: Membership,
+    today: string,
+  ): Promise<{ membership: Membership; payment: Payment }> {
+    const created = await this.dataSource.transaction(async (manager) => {
+      const memberships = manager.getRepository(Membership);
+      const membership = await memberships.findOne({
+        where: { id: candidate.id, organization_id: candidate.organization_id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!membership || membership.status !== MEMBERSHIP_STATUS.ACTIVE ||
+          !membership.end_date || !membership.renewal_date || membership.renewal_date > today) {
+        throw new ConflictException('Membership is not due for renewal');
+      }
+      if (!membership.price_at_signup || Number(membership.price_at_signup) <= 0 || !membership.currency_at_signup) {
+        throw new BadRequestException('Membership does not have a renewable price snapshot');
+      }
+      const invoices = manager.getRepository(Invoice);
+      const plan = membership.plan_id
+        ? await manager.getRepository(MembershipPlan).findOne({
+            where: { id: membership.plan_id, organization_id: membership.organization_id },
+          })
+        : null;
+      const durationDays = plan?.duration_days;
+      if (!durationDays || durationDays < 1) throw new BadRequestException('Membership plan duration is unavailable');
+      const idempotencyKey = `membership-renewal:${membership.id}:${membership.renewal_date}`;
+      const existingPayment = await manager.getRepository(Payment).findOne({
+        where: { organization_id: membership.organization_id, idempotency_key: idempotencyKey },
+      });
+      const dueInvoice = await invoices.createQueryBuilder('invoice')
+        .innerJoin(InvoiceItem, 'item', 'item.invoice_id = invoice.id AND item.organization_id = invoice.organization_id')
+        .where('invoice.organization_id = :organizationId', { organizationId: membership.organization_id })
+        .andWhere('invoice.membership_id = :membershipId', { membershipId: membership.id })
+        .andWhere('item.description LIKE :renewalDescription', { renewalDescription: 'Membership renewal%' })
+        .andWhere('invoice.invoice_date >= :cycleStart', {
+          cycleStart: new Date(`${membership.renewal_date}T00:00:00.000Z`),
+        })
+        .andWhere('invoice.status IN (:...statuses)', { statuses: ['sent', 'partially_paid', 'paid'] })
+        .orderBy('invoice.invoice_date', 'DESC')
+        .getOne();
+      let invoice = dueInvoice;
+      if (!invoice && existingPayment) {
+        invoice = await invoices.findOne({
+          where: { id: existingPayment.invoice_id, organization_id: membership.organization_id },
+        });
+      }
+      if (!invoice) {
+        const result = await this.invoicesService.createForMembershipSale({
+          organizationId: membership.organization_id,
+          memberId: membership.member_id,
+          membershipId: membership.id,
+          branchId: membership.branch_id,
+          description: `Membership renewal${plan ? `: ${plan.name}` : ''}`,
+          amount: membership.price_at_signup,
+          dueDate: new Date(),
+          manager,
+        });
+        invoice = result.invoice;
+      }
+      const payments = manager.getRepository(Payment);
+      let payment = existingPayment ?? await payments.findOne({
+        where: { organization_id: membership.organization_id, invoice_id: invoice.id, idempotency_key: idempotencyKey },
+      });
+      if (!payment) {
+        payment = await payments.save(payments.create({
+          organization_id: membership.organization_id,
+          branch_id: membership.branch_id ?? null,
+          member_id: membership.member_id,
+          invoice_id: invoice.id,
+          payment_method: 'card',
+          amount: invoice.total_amount,
+          payment_date: new Date(),
+          status: PAYMENT_STATUS.PENDING,
+          idempotency_key: idempotencyKey,
+          retry_count: 0,
+          next_retry_at: null,
+        }));
+      }
+      return { membership, payment, durationDays, cycleDate: membership.renewal_date };
+    });
+
+    // The gateway attempt happens OUTSIDE the transaction above: a network call
+    // must never hold a row lock. A payment that is still pending after this has
+    // been handed to the retry/dunning flow (see the `renew()` docblock).
+    if (created.payment.status === PAYMENT_STATUS.PENDING &&
+        (!created.payment.next_retry_at || created.payment.next_retry_at <= new Date())) {
+      await this.paymentsService.attemptWithSavedMethod(created.payment, new Date(), 1);
+    }
+    const payment = await this.dataSource.getRepository(Payment).findOne({
+      where: { id: created.payment.id, organization_id: created.membership.organization_id },
+    });
+    if (!payment) throw new NotFoundException('Renewal payment not found');
+    if (payment.status === PAYMENT_STATUS.SUCCEEDED) {
+      const updatedMembership = await this.dataSource.transaction(async (manager) => {
+        const memberships = manager.getRepository(Membership);
+        const membership = await memberships.findOne({
+          where: { id: created.membership.id, organization_id: created.membership.organization_id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!membership) throw new NotFoundException('Membership not found');
+        if (membership.renewal_date === created.membership.renewal_date) {
+          const nextEndDate = addDaysToDate(membership.end_date!, created.durationDays);
+          await memberships.update(
+            { id: membership.id, organization_id: membership.organization_id },
+            { end_date: nextEndDate, renewal_date: nextEndDate },
+          );
+          const history = manager.getRepository(MembershipHistory);
+          await history.save(history.create({
+            membership_id: membership.id,
+            organization_id: membership.organization_id,
+            member_id: membership.member_id,
+            from_status: membership.status,
+            to_status: membership.status,
+            transition: 'renew',
+            reason: 'Membership renewed after successful payment',
+            metadata: { invoice_id: payment.invoice_id, payment_id: payment.id, end_date: nextEndDate },
+          }));
+          // Renewal is a membership state change, so it publishes an event like
+          // every other transition — written on THIS transaction so the event and
+          // the date extension commit or roll back together.
+          //
+          // `MembershipRenewed.v1` rather than the plan §5 suggestion of reusing
+          // `MembershipExpired.v1`: §5 (line 448) assumed both names were net-new
+          // contracts, but `MembershipRenewedPayload` is declared at
+          // packages/contracts/src/events/membership.events.ts:17 and documented at
+          // docs/event-contracts.md:44, both pre-dating Phase 3 — so no new event is
+          // created either way. `MembershipExpired` additionally describes the
+          // terminal expiry state ("transitioned to the terminal `expired` state",
+          // membership.events.ts:46-47), which is the exact state this branch
+          // avoided by extending the membership; emitting it would be false.
+          //
+          // Emitted inside the idempotency guard above, so a second scan of the
+          // same cycle cannot publish it twice.
+          await this.outboxService.saveEventEnvelope(
+            'MembershipRenewed',          // EVENT_TYPES.MEMBERSHIP_RENEWED (membership.events.ts:111)
+            MEMBERSHIP_EVENT_VERSION,     // EVENT_VERSIONS.V1
+            membership.organization_id,   // from the row itself: org-pinned, never client-supplied
+            {
+              membershipId: membership.id,
+              // `cycleDate` is the phase-1 lock's renewal_date, already narrowed to
+              // a non-nullable string by the due-check guard above; re-reading it
+              // here would widen it back to `string | undefined`.
+              renewalDate: created.cycleDate,
+              nextPaymentDate: nextEndDate,
+              renewalFee: payment.amount,
+            } as MembershipRenewedPayloadShape,
+            membership.id,                // correlationId = membership id (existing convention)
+            undefined,                    // causationId: not used for this event
+            manager,                      // transaction-scoped: atomic with the date extension
+          );
+          membership.end_date = nextEndDate;
+          membership.renewal_date = nextEndDate;
+        }
+        return membership;
+      });
+      return { membership: updatedMembership, payment };
+    }
+    return { membership: created.membership, payment };
+  }
+
   /** Expire a single membership atomically, emitting MembershipExpired.v1. */
   private async expireOne(
     id: string,
@@ -337,6 +571,22 @@ export class MembershipsService {
         return false;
       }
       if (!membership.end_date || membership.end_date >= today) return false;
+
+      // A due renewal invoice is the dunning hand-off. Do not expire a member
+      // while its renewal debt is still open; P3-08 owns the subsequent chase.
+      if (membership.renewal_date) {
+        const openRenewal = await manager.getRepository(Invoice).createQueryBuilder('invoice')
+          .innerJoin(InvoiceItem, 'item', 'item.invoice_id = invoice.id AND item.organization_id = invoice.organization_id')
+          .where('invoice.organization_id = :organizationId', { organizationId })
+          .andWhere('invoice.membership_id = :membershipId', { membershipId: membership.id })
+          .andWhere('item.description LIKE :renewalDescription', { renewalDescription: 'Membership renewal%' })
+          .andWhere('invoice.invoice_date >= :cycleStart', {
+            cycleStart: new Date(`${membership.renewal_date}T00:00:00.000Z`),
+          })
+          .andWhere('invoice.status IN (:...statuses)', { statuses: ['sent', 'partially_paid'] })
+          .getOne();
+        if (openRenewal) return false;
+      }
 
       await membershipRepo.update({ id, organization_id: organizationId } as any, {
         status: MEMBERSHIP_STATUS.EXPIRED,
