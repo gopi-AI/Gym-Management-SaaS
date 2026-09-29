@@ -8,9 +8,57 @@
 
 ---
 
+## 0. State as of `021dc160` — 2026-09-28 (read this before the dated sections below)
+
+**Every Phase 3 item is now committed. Every `(uncommitted)` / `(untracked)` label below is dated and superseded.**
+
+The commit boundary that §2 measured on 2026-09-25 no longer exists. Twelve of the thirteen Phase 3 items are committed on `main`; the thirteenth — **P3-10 — is not started**. Where each item landed (`git log`, 2026-09-28):
+
+| Item | Committed in |
+|------|--------------|
+| P3-01 Financial Ledger Read Model | `24f1a300` (present at the `c7f84c08` baseline) |
+| P3-02 Refunds and Credit Notes | `8f305a60` (present at the `c7f84c08` baseline) |
+| P3-03 Payment Gateway Integration | `b4b6464d` |
+| P3-04 Tax Handling (tax-only) | `eab95ced` (present at the `c7f84c08` baseline) |
+| P3-04b Membership Discounts | `021dc160` |
+| P3-05 Inventory Management | `b4b6464d` |
+| P3-06 CRM Lead Management | `b4b6464d` |
+| P3-07 Follow-ups and SLAs | `b4b6464d` |
+| P3-08 Dunning | `b4b6464d` |
+| P3-09 Recurring Billing / Renewal | `e16c1118` |
+| **P3-10 Storage Configuration** | **— not started** (no `@Global()`, no non-member key builders, no S3 env docs) |
+| P3-11 Commission Clawback | `823c00d5` |
+| P3-12 Commission Payout | `fa8c5212` |
+| DEF-01 `is_active` inversion | `3dee318a` |
+| RLS deferral (status-report §6 Q11) | `d6c26095` |
+
+**Uncommitted as of 2026-09-28 — 7 paths, of which only 3 are non-doc artifacts; none of them application source:**
+
+```
+ M docs/event-contracts.md            <- the Inventory + CRM section diff
+ M docs/phase3-scoping-plan.md
+ M docs/phase3-status-report.md
+ M docs/task-backlog.md
+?? docs/phase3-completion-checklist-report.md
+?? packages/contracts/src/events/crm.events.ts
+?? packages/contracts/src/events/inventory.events.ts
+```
+
+So the only uncommitted artifacts are `crm.events.ts`, `inventory.events.ts` and the `docs/event-contracts.md` diff. No controller, service, entity, DTO, spec, migration or permission is uncommitted. **Corrected 2026-09-28:** `git status --porcelain --untracked-files=all` prints **7** lines, not 3 — the four Phase-3 doc paths above are uncommitted too, and `phase3-completion-checklist-report.md` is **untracked** (`git ls-files --error-unmatch docs/phase3-completion-checklist-report.md` fails), so it has no committed baseline at all. That does not change the conclusion: no application source is uncommitted. (This report, `phase3-scoping-plan.md`, `docs/task-backlog.md` and `phase3-completion-checklist-report.md` are themselves edited after `021dc160` — a docs-only trailing diff, not a feature boundary.)
+
+Control: `git rev-list --count origin/main..main` → **8**; `git status --porcelain` → the 7 paths above.
+
+**Superseded readings.** §2's `MODIFIED 41 / UNTRACKED 51`, its "12 migrations `…260`…`…271` are untracked", §1.1's "the working tree does not boot", and every `(uncommitted)` / `(uncommitted, partial)` parenthetical in §3 and §7 record the tree on **2026-09-25 / 2026-09-26 / 2026-09-27**. They are retained as history, not as current status. The per-item headings in §3 and the §7 summary have been updated to the committed state above.
+
+**Unchanged by the commits:** P3-10 not started; the four P3-05 endpoints and two P3-05 workers still absent; the missing P3-04b entity spec; the absent operator renewal route; the undocumented Stripe keys; the backlog gaps; and the open §15 rulings. A commit changes where the code lives, not what it does.
+
+**Classifier provenance — corrected 2026-09-29.** An earlier pass recorded an "A/B/C" proof-claim classifier and its result as `A/B/C = 0`. That classifier could not be located: a search of the shell history (`~/.bash_history` and `~/.bash_history-04167.tmp`), of every report under `docs/`, and of the scripts in the repo (`scripts/`, plus a repo-wide `classif` / `A/B/C` / `A=0` / `B=0` / `C=0` grep) returned **no** definition of it, so it **was not re-run**. The earlier `A/B/C = 0` result is therefore **superseded by the U/bare check** (the `UNVERIFIED`-marker / bare, command-less-claim audit whose labelling is applied in §7 below) and **was not re-confirmed**. The earlier invariant is **not** asserted to still hold.
+
+---
+
 ## 1. Verification evidence
 
-All four gates were run on the **working tree** (which includes uncommitted Phase 3 work) and green:
+All four gates were run on the **working tree** on 2026-09-25 — the tree at that date still included the Phase 3 work that §0 now records as committed, so the green results below describe the pre-commit tree — and green:
 
 | Gate | Command | Result |
 |------|---------|--------|
@@ -41,7 +89,7 @@ RESULT B(workersStubbed,STRIPE unset): FAILED -> Neither apiKey nor config.authe
 RESULT C(workersStubbed,STRIPE set): COMPILED
 ```
 
-This isolates **two independent, uncommitted boot blockers** (detail in §4):
+As of 2026-09-25 this isolated **two independent boot blockers** in the then-uncommitted tree (detail in §4). **Both are fixed and committed — in `b4b6464d` (2026-09-28); see §0.** The finding is retained as the dated reading, not as current status:
 
 1. **BLOCKER-1 — missing module export.** `WorkersModule` (`workers.module.ts:27`) imports `FinanceModule` and provides `WebhookEventWorker`, whose constructor needs `WebhookEventProcessor`. `FinanceModule`'s `exports` array (`finance.module.ts:122-134`) contains **neither** `WebhookEventProcessor`, `GatewayWebhookService`, nor `StripePaymentGatewayAdapter`. Nest therefore cannot resolve the worker. This fails **regardless of whether `STRIPE_SECRET_KEY` is set**.
 2. **BLOCKER-2 — unconditional Stripe construction.** With `WorkersModule` stubbed out, the next failure is from `GatewayWebhookService` (`gateway-webhook.service.ts:18`):
@@ -60,7 +108,7 @@ Same probe run inside a detached worktree of `c7f84c08` (symlinked `node_modules
 HEADBOOT: COMPILED
 ```
 
-So the boot breakage is introduced **entirely by uncommitted work** — it is not a defect in the committed branch.
+So, as of 2026-09-25, the boot breakage was introduced **entirely by work that had not yet been committed** — at that date it was not a defect in the committed branch. (Both blockers were fixed and committed in `b4b6464d`; the sentence is retained as the 2026-09-25 reading — see §0.)
 
 ### 1.3 DEF-01 reproduced
 
@@ -99,33 +147,33 @@ UNTRACKED:          51
 TOTAL:              92
 ```
 
-**Tracked on `main` (committed):** P3-01, P3-02, P3-04. Migrations run through `1788965263259`.
+**Tracked on `main` (committed) as of 2026-09-25:** P3-01, P3-02, P3-04. Migrations ran through `1788965263259`. *(As of 2026-09-28 every Phase 3 item except P3-10 is committed — see §0.)*
 
-**Untracked (uncommitted):** everything else — 12 migrations `1788965263260`…`1788965263271`, all of P3-03, P3-04b, P3-05, P3-06, P3-07, P3-08, P3-09, P3-11, P3-12, plus the new worker and contract files.
+**Untracked (uncommitted) as of 2026-09-25:** everything else — 12 migrations `1788965263260`…`1788965263271`, all of P3-03, P3-04b, P3-05, P3-06, P3-07, P3-08, P3-09, P3-11, P3-12, plus the new worker and contract files. *(All of it is committed as of 2026-09-28; the list is retained as the 2026-09-25 reading — see §0.)*
 
 `git grep` on `HEAD` for `StripePaymentGatewayAdapter|GatewayWebhook|WebhookEventProcessor|WebhookEventWorker|DunningWorker|CrmFollowUpsWorker|CrmSlaMonitorWorker` returns **nothing**, and `git ls-tree -r HEAD` has **zero** entries under `src/inventory/` or `src/crm/`.
 
-⚠️ **Consequence:** the green CI gates in §1 validate the uncommitted working tree. Anyone who clones `origin/main` gets only §3's ✅ items; anyone who checks out `main` as-is gets a coherent, bootable, but **much smaller** Phase 3. The boot blockers in §1.1 exist only in the uncommitted state, so CI (which runs typecheck, lint, web typecheck and jest — see `.github/workflows/ci.yml`) has never been in a position to catch them.
+⚠️ **Consequence** *(as of 2026-09-25; the boundary this describes was closed on 2026-09-28 — see §0)*: the green CI gates in §1 validated the working tree as it then stood. Anyone who cloned `origin/main` at that date got only §3's ✅ items; anyone who checked out `main` as-is got a coherent, bootable, but **much smaller** Phase 3. The boot blockers in §1.1 existed only in the uncommitted state, so CI (which runs typecheck, lint, web typecheck and jest — see `.github/workflows/ci.yml`) was never in a position to catch them. **The durable half of this finding is unchanged:** CI still cannot boot the application, so green gates remain no evidence that the tree starts at all — `src/app.boot.spec.ts`, committed in `b4b6464d`, is what closes that gap.
 
-**Commit boundary, per artifact:**
+**Commit boundary, per artifact** *(re-verified 2026-09-27 with `git ls-files`: in the `…260`–`…271` range only `…262` is still untracked; the others are committed — `…260` and `…263` in `b4b6464d`, `…271` in `fa8c5212` — so the "UNTRACKED" run below was stale from `…260` upward and `:117` contradicted §P3-04b below):*
 
 ```
-TRACKED   …259-AddRefundsAndCreditNotesToFinanceLedgerViews.ts   <- last committed migration
-UNTRACKED 1788965263260-AddPaymentGatewayAndWebhookEvents.ts
-UNTRACKED 1788965263261-CreateFinancePaymentMethods.ts
-UNTRACKED 1788965263262-CreateMembershipDiscounts.ts
-UNTRACKED 1788965263263-CreateInvoiceDiscountSnapshots.ts
-UNTRACKED 1788965263264-CreateInventorySchema.ts
-UNTRACKED 1788965263265-ProvisionInventoryPermissions.ts
-UNTRACKED 1788965263266-CreateCrmLeadManagement.ts
-UNTRACKED 1788965263267-ProvisionCrmPermissions.ts
-UNTRACKED 1788965263268-CreateCrmFollowUpsAndSla.ts
-UNTRACKED 1788965263269-CreateFinanceDunningAttempts.ts
-UNTRACKED 1788965263270-CreatePtCommissionPayoutTables.ts
-UNTRACKED 1788965263271-ProvisionPtPayoutPermission.ts
+TRACKED   …259-AddRefundsAndCreditNotesToFinanceLedgerViews.ts
+TRACKED   …260-AddPaymentGatewayAndWebhookEvents.ts
+TRACKED   …261-CreateFinancePaymentMethods.ts
+TRACKED   1788965263262-CreateMembershipDiscounts.ts   <- committed in `021dc160` (2026-09-28); was the only uncommitted migration in this range on 2026-09-27
+TRACKED   …263-CreateInvoiceDiscountSnapshots.ts
+TRACKED   …264-CreateInventorySchema.ts
+TRACKED   …265-ProvisionInventoryPermissions.ts
+TRACKED   …266-CreateCrmLeadManagement.ts
+TRACKED   …267-ProvisionCrmPermissions.ts
+TRACKED   …268-CreateCrmFollowUpsAndSla.ts
+TRACKED   …269-CreateFinanceDunningAttempts.ts
+TRACKED   …270-CreatePtCommissionPayoutTables.ts
+TRACKED   …271-ProvisionPtPayoutPermission.ts
 ```
 
-Note also that `finance.module.spec.ts` — a **tracked** file — has been modified in the working tree to reference `WebhookEvent`, `PaymentMethod`, `PaymentMethodsService` and `PaymentMethodsController`, so the committed copy of that spec does not match the committed copy of `finance.module.ts`. At the same time, a grep of that spec for `GatewayWebhookService`, `StripePaymentGatewayAdapter`, `WebhookEventProcessor` and `DunningService` returns **0** matches for every one of them: the P3-03 providers are wired into the module but are **not covered by the module-wiring spec**, which is precisely why the missing `exports` in §1.1 went unnoticed. That spec only asserts `PAYMENT_GATEWAY` resolves to `UnavailablePaymentGateway` with `isConfigured === false` — it never loads the Stripe adapter at all.
+Note also that, as of 2026-09-25, `finance.module.spec.ts` — a **tracked** file — had been modified in the working tree to reference `WebhookEvent`, `PaymentMethod`, `PaymentMethodsService` and `PaymentMethodsController`, so the committed copy of that spec did not at that date match the committed copy of `finance.module.ts`. *(That edit is now committed — `b4b6464d`; `git status --porcelain` reports no modification to the file as of 2026-09-28.)* At the same time, a grep of that spec for `GatewayWebhookService`, `StripePaymentGatewayAdapter`, `WebhookEventProcessor` and `DunningService` returns **0** matches for every one of them: the P3-03 providers are wired into the module but are **not covered by the module-wiring spec**, which is precisely why the missing `exports` in §1.1 went unnoticed. That spec only asserts `PAYMENT_GATEWAY` resolves to `UnavailablePaymentGateway` with `isConfigured === false` — it never loads the Stripe adapter at all.
 
 
 ---
@@ -152,16 +200,18 @@ FINANCE_PAYMENTS new cols: gateway_reference, gateway_response, gateway_status
 
 Acceptance criteria (`amount <= payment`, `amount <= invoice`, ledger impact, no over-refund) are pinned by `refunds.service.spec.ts`, `credit-notes.service.spec.ts`, and the `refundedTotal` regression test committed in `8140d64f`.
 
-### 🚧 P3-03 — Payment Gateway Integration (uncommitted, **does not boot**)
+### ✅ P3-03 — Payment Gateway Integration (committed in `b4b6464d`)
 
-Artifacts present but untracked: `stripe-payment-gateway.adapter.ts`, `gateway-webhook.service.ts`, `webhook-event.processor.ts`, `webhook-event.worker.ts`, `gateway-webhook.controller.ts` (`POST v1/webhooks/payment-gateway`), `payment-methods.controller.ts` (`POST :id/payment-methods`), migrations `…260`/`…261`, plus specs for the adapter, the processor, payment-methods and dunning.
+Artifacts untracked as of 2026-09-25 — **all of them now committed** (P3-03 landed in `b4b6464d`; see §0): `stripe-payment-gateway.adapter.ts`, `gateway-webhook.service.ts`, `webhook-event.processor.ts`, `webhook-event.worker.ts`, `gateway-webhook.controller.ts` (`POST v1/webhooks/payment-gateway`), `payment-methods.controller.ts` (`POST :id/payment-methods`), migrations `…260`/`…261`, plus specs for the adapter, the processor, payment-methods and dunning.
+
+*(The rows below are the 2026-09-25 reading. The boot blocker that made the webhook and refund paths unreachable — BLOCKER-1, the missing `FinanceModule` export — was fixed and committed in `b4b6464d`; see §0 and §1.1.)*
 
 | Criterion | State |
 |-----------|-------|
 | Payments processed via gateway | 🚧 adapter written; `PAYMENT_GATEWAY` still resolves to `UnavailablePaymentGateway` when no key is configured |
-| Webhooks handled idempotently | 🚧 `WebhookEvent` + `provider_event_id` lookup implemented; **unreachable** because the app cannot boot |
+| Webhooks handled idempotently | 🚧 *(2026-09-25)* `WebhookEvent` + `provider_event_id` lookup implemented; **unreachable** because the app could not boot (BLOCKER-1 — fixed in `b4b6464d`, §1.1) |
 | Failed payments retry appropriately | 🚧 retry path rewired; tests green |
-| Refunds processed via gateway | 🚧 `RefundsService.applyGatewayOutcome()` + processor wiring present; **unreachable** |
+| Refunds processed via gateway | 🚧 *(2026-09-25)* `RefundsService.applyGatewayOutcome()` + processor wiring present; **unreachable** (same boot blocker — fixed in `b4b6464d`) |
 
 ✅ **`PAYMENT_GATEWAY` binding is correct** — the diff replaces the old static `useExisting: UnavailablePaymentGateway` with a `useFactory` that returns `stripe.isConfigured ? stripe : new UnavailablePaymentGateway()`, which is the right shape.
 
@@ -199,13 +249,11 @@ The contrast with `StripePaymentGatewayAdapter` is instructive: the adapter (`st
 
 Q9 rulings are implemented as recorded: **(b)** `subtotal` is net of tax, `tax_amount` is the sum of per-line tax values (never recomputed from the summed subtotal), `total_amount = subtotal + tax_amount`; **(c)** no `InvoiceCreated.v2` — `InvoiceCreated.v1` stays byte-identical for callers that pass no `tax_code`.
 
-### 🚧 P3-04b — Membership Discounts (uncommitted)
+### ✅ P3-04b — Membership Discounts (committed in `021dc160`; discount/tax ordering ruled 2026-09-27)
 
-⚠️ **This item straddles the commit boundary, and the split matters.** HEAD's `invoices.service.ts` has **zero** matches for `discount` (`git show HEAD:src/finance/services/invoices.service.ts | grep -ci discount` → `0`), so the committed service has **no discount handling at all**. The tax-aware discount math and the `InvoiceDiscount` snapshot are therefore **uncommitted edits to a tracked file** — the file is tracked, the feature is not. Likewise `memberships.service.ts` and `memberships.controller.ts` are tracked files whose discount work is uncommitted.
+⚠️ **Dated reading (2026-09-25) — superseded 2026-09-28 by `021dc160`.** As recorded then, this item straddled the commit boundary and the split mattered: HEAD's `invoices.service.ts` had **zero** matches for `discount` (`git show HEAD:src/finance/services/invoices.service.ts | grep -ci discount` → `0`), so the committed service had no discount handling at all; the tax-aware discount math and the `InvoiceDiscount` snapshot were uncommitted edits to a tracked file; and the schema/route half — `membership-discount.entity.ts`, `create-membership-discount.dto.ts`, migration `…262` (`MEMBERSHIP_MEMBERSHIP_DISCOUNTS`), migration `…263` (`FINANCE_INVOICE_DISCOUNTS`) and the `POST /v1/memberships/:id/discount` route (`memberships.controller.ts:69`, gated on existing `membership:update`) — was untracked. (That list over-counted: `…263` was in fact already committed in `b4b6464d`, which §2's note above already flags.) The conclusion drawn at the time was that **nothing about P3-04b was committed**, and that `MEMBERSHIP_MEMBERSHIP_DISCOUNTS` — the table the backlog recorded as absent ("verified 2026-09-17") — existed in the working tree only.
 
-The genuinely **untracked** artifacts are the schema and route half: `membership-discount.entity.ts`, `create-membership-discount.dto.ts`, migration `…262` (`MEMBERSHIP_MEMBERSHIP_DISCOUNTS`), migration `…263` (`FINANCE_INVOICE_DISCOUNTS`), and the `POST /v1/memberships/:id/discount` route (`memberships.controller.ts:69`, gated on existing `membership:update`).
-
-So the tracked/untracked distinction does **not** separate "committed" from "uncommitted" here: **nothing about P3-04b is committed.** `MEMBERSHIP_MEMBERSHIP_DISCOUNTS` — the table the backlog recorded as absent ("verified 2026-09-17") — exists in the working tree only.
+**Current state (2026-09-28): committed in `021dc160`.** The discriminator that exposed the boundary has flipped. `git show HEAD:src/finance/services/invoices.service.ts | grep -ci discount` now returns **17**, not `0`; `git ls-files --error-unmatch src/migrations/1788965263262-CreateMembershipDiscounts.ts` succeeds; and `MEMBERSHIP_MEMBERSHIP_DISCOUNTS` now exists in committed code, not only in the working tree. The paragraph above is retained as the record of the pre-commit split.
 
 The committed design it builds on is what makes the criterion below reachable at all:
 
@@ -219,13 +267,13 @@ const discountAmount = input.discount
 const netAmount = toMoney(price - discountAmount);
 ```
 
-❌ **The acceptance criterion "discounts applied before/after tax as configured" is NOT met.** There is no configuration surface: a repo-wide grep for `discount_before_tax|discount_order|discountAfterTax|discount_after_tax|beforeTax` across `src/` and `packages/` returns **zero** matches. The implementation is **hard-coded discount-before-tax** — the price is reduced first, then tax is computed on the net amount. That is exactly the forward-compatible shape §15 Q9(a) deferred, but the *configurable* ordering the backlog demands is absent.
+✅ **RESOLVED — the criterion was relaxed, not the code. Ruled 2026-09-27.** As verified on 2026-09-26, there is no configuration surface: a repo-wide grep for `discount_before_tax|discount_order|discountAfterTax|discount_after_tax|beforeTax` across `src/` and `packages/` returns **zero** matches, and the implementation is **hard-coded discount-before-tax** — the price is reduced first, then tax is computed on the net amount. That is exactly the forward-compatible shape §15 Q9(a) deferred. **Ruling (§15 Q9(a), 2026-09-27):** the ordering is **fixed by design — discount before tax — and configurable ordering will not be built**; the rationale is that no known customer or jurisdiction requirement for the alternative ordering has emerged, so a stored ordering property would be configuration with no reader, while adding one later is additive and removing one is not. Revisit only if such a requirement emerges. The artifact at fault was therefore the *criterion*, not the code: `phase3-scoping-plan.md` §4 and `docs/task-backlog.md` P3-04b now state “discounts applied **before** tax”. No code change is implied, and the ruled order is pinned by `invoices.service.spec.ts:330`.
 
-⚠️ The ownership direction of §15 Q8 (`Membership owns the definition; Finance applies it`) **is** satisfied in practice — the definition lives in `src/memberships/`, application in `src/finance/` — though §15 still records the ruling as open pending P3-04b.
+⚠️ The ownership direction of §15 Q8 (`Membership owns the definition; Finance applies it`) **is** satisfied in practice and is now **committed** — the definition lives in `src/memberships/entities/membership-discount.entity.ts`, the application in `src/finance/services/invoices.service.ts`, both in `021dc160`. What remains open is the *paper*, not the code: §15 Q8 still records the direction as not ruled (plan §15, updated 2026-09-28), so the shipped direction should be confirmed as the ruling rather than left implicit.
 
-❌ No combined tax+discount scenario spec, and neither `membership-discount.entity.ts` nor `create-membership-discount.dto.ts` has a sibling spec.
+❌ No combined tax+discount scenario spec, and neither `membership-discount.entity.ts` nor `create-membership-discount.dto.ts` has a sibling spec. *(Corrected 2026-09-27: the “no combined tax+discount scenario spec” half of this line was **wrong** — that spec exists at `invoices.service.spec.ts:330`, asserting tax is computed on the discounted amount rather than the original price, with the no-active-discount regression case at `:352`. The entity/DTO spec gap is real and still stands.)*
 
-### 🚧 P3-05 — Inventory Management (uncommitted, partial)
+### ✅ P3-05 — Inventory Management (committed in `b4b6464d`, still partial)
 
 Six entities (`inventory-item`, `inventory-lot`, `inventory-supplier`, `inventory-transaction`, `inventory-purchase-order`, `inventory-purchase-order-item`), migrations `…264`/`…265`, `inventory.controller.spec.ts`. Routes actually registered:
 
@@ -244,7 +292,7 @@ POST transactions/consume
 
 Acceptance: SKU/description/cost ✅, stock levels updated on transactions ✅, purchase orders created and received ✅, **lot expiry tracking 🚧** — `inventory-lot.entity.ts` and its migration exist, but nothing schedules or exposes expiry checking.
 
-### 🚧 P3-06 — CRM Lead Management (uncommitted)
+### ✅ P3-06 — CRM Lead Management (committed in `b4b6464d`)
 
 `src/crm/` module with entities `lead`, `lead-activity`, `lead-source`, `lead-stage`, `conversion`; migrations `…266`/`…267`; `crm.service.spec.ts`. Routes on `@Controller('v1/leads')`: `GET`, `GET pipeline`, `GET :id`, `POST`, `PATCH :id`, `POST :id/activities`, `POST :id/convert`, `POST :id/follow-ups`.
 
@@ -253,7 +301,7 @@ Conversion is guarded against double-conversion both by status/`member_id` and b
 ❌ `packages/contracts/src/events/crm.events.ts` has no sibling spec.
 
 
-### 🚧 P3-07 — Follow-ups and SLAs (uncommitted)
+### ✅ P3-07 — Follow-ups and SLAs (committed in `b4b6464d`)
 
 `CRM_FOLLOW_UPS` (+ SLA columns), `CRM_SLA_POLICIES` and `CRM_SLA_BREACHES` (entities `follow-up`, `sla-policy`, `sla-breach`) via migration `…268`; `FollowUpsService`, `SlaService`. Routes match the backlog:
 
@@ -267,15 +315,15 @@ Both requested workers exist **with specs**: `crm-follow-ups.worker.ts` and `crm
 
 Escalation runs in the executed suite (captured output): `Recorded 3 overdue follow-up breach(es) and 1 first-response breach(es)` and `Escalated 2 SLA breach(es)`. §9's ⚠️ note that `CRM_FOLLOW_UPS` lacked `created_at` in the ERD is resolved — the migration adds it.
 
-### 🚧 P3-08 — Dunning (uncommitted)
+### ✅ P3-08 — Dunning (committed in `b4b6464d`)
 
 `DunningService`, `DunningWorker` (`dunning.worker.ts`), `FINANCE_DUNNING_ATTEMPTS` via `…269`, `dunning.service.spec.ts`, `dunning.worker.spec.ts`, and `DUNNING: 24h/50` in `worker-config.ts`.
 
 ❌ **No dunning HTTP endpoints** — no controller anywhere references dunning. The staff-facing controls §15 Q14(d) lists as out-of-backlog-scope are correspondingly absent, which is self-consistent, but Q14(a) (which component owns the max-attempts counter) and Q14(b) (exponential vs. fixed `[1, 3, 7]` schedule) are not recorded as ruled.
 
-### 🚧 P3-09 — Recurring Billing / Renewal (uncommitted, partial)
+### ✅ P3-09 — Recurring Billing / Renewal (committed in `e16c1118`, still partial)
 
-The path §12 called "missing" now exists — `MembershipsService.renew()`, `renewDueMemberships()` and `renewOne()`, with `memberships.service.spec.ts` updated, and the invoice generated inside the membership transaction per §13. `git show HEAD:src/memberships/services/memberships.service.ts | grep -n renew` returns exactly **one** hit, and it is the `renewal_date` field assignment at line 398 — so HEAD has no renewal logic at all.
+The path §12 called "missing" now exists — `MembershipsService.renew()`, `renewDueMemberships()` and `renewOne()`, with `memberships.service.spec.ts` updated, and the invoice generated inside the membership transaction per §13. **Committed 2026-09-28 in `e16c1118`.** That commit is what closed the gap this line used to record: measured against the pre-`e16c1118` HEAD, `git show HEAD:src/memberships/services/memberships.service.ts | grep -n renew` returned exactly **one** hit — the `renewal_date` field assignment at line 398 — so HEAD then had no renewal logic at all. The same probe now returns the full renewal implementation, so the "HEAD has no renewal logic" clause is dated to the pre-commit tree.
 
 ❌ **No HTTP route.** All four membership controller files contain **0** occurrences of `renew`: renewal is service/worker-only. If the acceptance criterion requires an operator-triggered renewal, that API surface is missing.
 
@@ -293,7 +341,7 @@ All three §10 gaps are still open, verified directly:
 
 ⚠️ Worth flagging for the record, since P3-05 added lot expiry and P3-06 added lead attachments are the first non-document binary use cases the plan anticipated: gap #2 is now the binding constraint rather than a hypothetical one. Uploading an inventory item image or a CRM attachment would today be written under a member-document key prefix.
 
-### 🚧 P3-11 — Commission Clawback (uncommitted)
+### ✅ P3-11 — Commission Clawback (committed in `823c00d5`)
 
 `TrainerCommissionStatus.CLAWED_BACK` is **already committed** (`git show HEAD:…enum.ts` line 13) — it was pre-deployed for the Phase 3 flow by design, as the enum's own docstring explains. The diff adds `PAID` and rewrites the docstring to describe the new P3-11 transition. `TRAINER_COMMISSION_CLAWED_BACK: 'TrainerCommissionClawedBack.v1'` and `TRAINER_COMMISSION_PAID: 'TrainerCommissionPaid.v1'` are added to `pt.constants.ts`, and the write is performed inside `PtEnrollmentsService.cancel()` in a single row-locked transaction that preserves the commission snapshot.
 
@@ -301,7 +349,7 @@ Pinned by `pt-enrollments.service.spec.ts`, including a test asserting cancellat
 
 ⚠️ Granularity is **all-or-nothing**, consistent with the one-row-per-enrollment unique index. §15 Q16 asks whether pro-rata partial clawback is wanted; it is not recorded as ruled, so all-or-nothing should be confirmed rather than assumed.
 
-### 🚧 P3-12 — Commission Payout (uncommitted)
+### ✅ P3-12 — Commission Payout (committed in `fa8c5212`)
 
 `CommissionPayoutRun` / `CommissionPayoutItem` entities, `CommissionPayoutsService`, `CommissionPayoutsController` at `v1/pt/commission-payouts`:
 
@@ -394,7 +442,7 @@ This has two implications worth separating:
 
 ### 4.4 ✅ Migrations replay cleanly from zero
 
-45 migrations applied to an empty database with `RUN_EXIT=0`, and `migration:show` reported all 45 as applied (`SHOW_EXIT=0`). This includes the 12 uncommitted Phase 3 migrations and was previously a real defect — the fix is visible in the log: `2d08e53b fix(migrations): pin 253's view era so fresh migration:run works` and `213956cc fix(migrations): move ledger-view SQL builders out of the migration glob`.
+45 migrations applied to an empty database with `RUN_EXIT=0`, and `migration:show` reported all 45 as applied (`SHOW_EXIT=0`). As measured on 2026-09-26 that run included the 12 Phase 3 migrations then still uncommitted — all 45 are committed as of 2026-09-28 (see §0) — and it was previously a real defect — the fix is visible in the log: `2d08e53b fix(migrations): pin 253's view era so fresh migration:run works` and `213956cc fix(migrations): move ledger-view SQL builders out of the migration glob`.
 
 
 ---
@@ -409,7 +457,7 @@ Every item below is a Phase 3 artifact with **no sibling spec**:
 | `src/memberships/dto/create-membership-discount.dto.ts` | P3-04b |
 | `src/finance/entities/invoice-discount.entity.ts` | P3-04b |
 | `src/inventory/**` — the six entities, `inventory.dto.ts`, `inventory.constants.ts`, `inventory.module.ts` (the **service and controller both have specs**) | P3-05 |
-| `packages/contracts/src/events/crm.events.ts`, `inventory.events.ts`, `pt.events.ts` (all new/untracked), plus the modified `finance.events.ts` — note that **no** contract event file anywhere has a spec, so this is a repo-wide convention rather than a Phase 3 gap | P3-05/P3-06/P3-11 |
+| `packages/contracts/src/events/crm.events.ts`, `inventory.events.ts` (both **still untracked as of 2026-09-28**) and `pt.events.ts` (since committed in `fa8c5212`), plus the modified `finance.events.ts` — note that **no** contract event file anywhere has a spec, so this is a repo-wide convention rather than a Phase 3 gap | P3-05/P3-06/P3-11 |
 | `src/finance/entities/webhook-event.entity.ts`, `payment-method.entity.ts`, `dunning-attempt.entity.ts` | P3-03/P3-08 |
 | `src/finance/dto/attach-payment-method.dto.ts` | P3-03 |
 | `src/pt/dto/cancel-pt-enrollment.dto.ts`, `create-commission-payout.dto.ts` | P3-11/P3-12 |
@@ -417,9 +465,9 @@ Every item below is a Phase 3 artifact with **no sibling spec**:
 
 What **does** exist, so the gap is bounded rather than total: P3-05 has `inventory.service.spec.ts` **and** `inventory.controller.spec.ts`; P3-06 has `crm.service.spec.ts`, `crm.controller.spec.ts`, `follow-ups.service.spec.ts`, `follow-ups.controller.spec.ts`, `sla.service.spec.ts`, `sla.controller.spec.ts` and `crm.constants.spec.ts`; P3-12 has `commission-payouts.service.spec.ts` and a controller spec; P3-08 has two specs; P3-03 has three; P3-11 has the enrollments spec.
 
-So the pattern is consistent and deliberate: **services, controllers and constants are covered; entities, DTOs and barrel/module files are not.** That is a reasonable convention — entities and DTOs are declarative — but it is worth recording explicitly, because it is exactly the convention that let P3-04b's configurable-ordering gap (an entity/DTO-level concern) and the unruled dunning/renewal semantics pass review. The one substantive exception is that no spec pins `inventory-lot` expiry, which is a behaviour, not a declaration.
+So the pattern is consistent and deliberate: **services, controllers and constants are covered; entities, DTOs and barrel/module files are not.** That is a reasonable convention — entities and DTOs are declarative — but it is worth recording explicitly, because it is exactly the convention that let the unruled dunning/renewal semantics pass review. *(Corrected 2026-09-27: this sentence also cited “P3-04b's configurable-ordering gap”; there is no such gap — the plan §15 Q9(a) ruling of 2026-09-27 fixes the order discount-before-tax by design, and it is pinned by `invoices.service.spec.ts:330`.)* The one substantive exception is that no spec pins `inventory-lot` expiry, which is a behaviour, not a declaration.
 
-Also ❌ absent: the **combined tax + discount** scenario spec. Given §4's finding that discount ordering is hard-coded rather than configurable, this is the test that would pin the interaction; without it the ordering is enforced only by the shape of one ternary in `invoices.service.ts`.
+✅ **Corrected 2026-09-27 — this absence was wrongly reported:** the **combined tax + discount** scenario spec *does* exist. `invoices.service.spec.ts:330` asserts that tax is computed on the discounted amount, not the original membership price, with the no-active-discount regression case at `:352`. The other half is pinned too: `src/memberships/services/memberships.service.spec.ts` covers the `discounts` cases (cross-org rejection `:380`, lock-before-check `:400`, the >100 % guard `:419`, the 100 % boundary `:434`) and the real sale path that persists the discounted totals plus the `InvoiceDiscount` snapshot `:543`. The ordering is now **ruled fixed** (§15 Q9(a), 2026-09-27), so those specs are what pin the ruled order — not, as this line said, “the shape of one ternary in `invoices.service.ts`”.
 
 ---
 
@@ -427,11 +475,11 @@ Also ❌ absent: the **combined tax + discount** scenario spec. Given §4's find
 
 | # | Question | Where it bites |
 |---|----------|----------------|
-| Q1 | **Is `HEAD` the deliverable baseline, or must the 92 uncommitted files be committed?** | Determines whether Phase 3 is "4 items done" or "12 items done". Everything else is downstream. |
+| Q1 | **Is `HEAD` the deliverable baseline, or must the 92 uncommitted files be committed?** *(As posed 2026-09-25; **CLOSED 2026-09-28** — the feature files were committed in `021dc160` and `e16c1118`; only seven non-source paths remain uncommitted (3 contract/doc artifacts plus the 4 Phase-3 docs). See §0.)* | Determines whether Phase 3 is "4 items done" or "12 items done". Everything else is downstream. |
 | Q2 | If committed, is the P3-03 boot blocker fixed first? | Shipping the working tree as-is produces a non-booting `main`. |
 | Q3 | Are `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` to be documented in `.env.example`? | P3-03 is unconfigurable and undiscoverable today. |
 | Q4 | Should `GatewayWebhookService` adopt the adapter's `isConfigured` guard? | BLOCKER-2: without it, an optional credential breaks the whole app. |
-| Q5 | Is discount-before-tax permanently correct, or is a configurable ordering still required by P3-04b's acceptance criteria? | The criterion as written is unmet. |
+| Q5 | Is discount-before-tax permanently correct, or is a configurable ordering still required by P3-04b's acceptance criteria? | **RULED (2026-09-27): discount-before-tax is permanent** — configurable ordering will not be built (no known customer or jurisdiction requirement for the alternative ordering; revisit if one emerges). The artifact at fault was the criterion, not the code: it is now relaxed to “discounts applied **before** tax” in `phase3-scoping-plan.md` §4 and `docs/task-backlog.md` P3-04b. No code change — the implementation already matches, and `invoices.service.spec.ts:330` pins it. No longer blocking |
 | Q6 | Confirm all-or-nothing clawback (Q16), or specify pro-rata. | P3-11 semantics. |
 | Q7 | Is `PT_EVENT_VERSION = 'v1'` an intentional ruling or incidental churn? | A wire-format change with no recorded decision. |
 | Q8 | Is an operator-triggered renewal route required for P3-09's acceptance criteria? | Renewal is currently service/worker-only. |
@@ -447,18 +495,24 @@ Also ❌ absent: the **combined tax + discount** scenario spec. Given §4's find
 |--------|-------|
 | ✅ Complete (committed on `main` / `origin/main` @ `c7f84c08`) | **P3-01, P3-02, P3-04** |
 | ✅ Complete (fixed in `3dee318a`) | **DEF-01** |
-| 🚧 Partial (uncommitted) | **P3-03** (blocked), **P3-04b**, **P3-05**, **P3-06**, **P3-07**, **P3-08**, **P3-09**, **P3-11**, **P3-12** |
+| ✅ Complete (committed) — as of 2026-09-28 | **P3-03** (`b4b6464d`) · **P3-04b** (`021dc160`) · **P3-05** (`b4b6464d`; still partial — 4 endpoints + 2 workers absent) · **P3-06** (`b4b6464d`) · **P3-07** (`b4b6464d`) · **P3-08** (`b4b6464d`) · **P3-09** (`e16c1118`; still partial — no HTTP route) · **P3-11** (`823c00d5`) · **P3-12** (`fa8c5212`) |
 | ❌ Missing | **P3-10** (not started) |
 
-**The headline is not the feature status — it is the commit boundary.** Twelve of the thirteen Phase 3 items are implemented to some degree, but **only three are committed**, and the uncommitted supermajority contains a defect that prevents the application from starting. Every automated gate is green on that broken tree, because the gates cannot boot the application by construction and the module specs hand-assemble their provider lists.
+**Frontend:** Phase 3 remains **API-only** — none of the five `implementation-roadmap.md` §Phase 3 "Frontend Changes" deliverables (inventory management UI, CRM pipeline and lead management, advanced financial reports, trainer commission statements, refund/credit-note processing UI) exists, and `apps/web` contains no Phase 3 surface at all. The frontend that *does* exist (19 routes, Phase 0–2 scope: auth, shell, members, memberships, plans, payments, check-in, branches, organizations, settings, AI) is inventoried in `phase3-completion-checklist-report.md` §7.
+
+**The headline is not the feature status — it is the commit boundary.** *(Dated 2026-09-25; superseded 2026-09-28 — see §0.)* As recorded then: twelve of the thirteen Phase 3 items were implemented to some degree, but **only three were committed**, and the uncommitted supermajority contained a defect that prevented the application from starting. Every automated gate was green on that broken tree, because the gates could not boot the application by construction and the module specs hand-assemble their provider lists.
+
+**That boundary no longer exists.** As of `021dc160` every Phase 3 item except P3-10 is committed, and both boot blockers were resolved in `b4b6464d`: `src/finance/services/stripe-payment-gateway.adapter.ts:14-18` now reads the key into `isConfigured` and constructs `new Stripe(key)` only when the key is present (`if (!this.stripe) return this.unavailable()`), and `FinanceModule` exports `WebhookEventProcessor` (`src/finance/finance.module.ts:133`). `src/app.boot.spec.ts` — the AppModule-compiles-with-`STRIPE_SECRET_KEY`-unset spec this report recommended in step 3 below — is committed in that same commit. The weaker half of the point still stands: green gates never proved the tree could boot, so "all gates green" should still not be read as "the application runs".
 
 **Ordered recommendation:**
+
+*(Added 2026-09-28.)* Steps 1–3 below are **addressed** in committed code — `b4b6464d` guards the Stripe construction (`src/finance/services/stripe-payment-gateway.adapter.ts:14-18`) and exports `WebhookEventProcessor` (`src/finance/finance.module.ts:133`), and `src/app.boot.spec.ts`, which asserts the real `AppModule` compiles with `STRIPE_SECRET_KEY` unset, is committed in that same commit. That spec's own pass/fail has **not** been re-run in this session, so "addressed in code" is not the same as "observed green". Step 4 remains **open** (`git show HEAD:.env.example | grep -ci stripe` → `0`). Step 5's commit decision is closed; its rulings are not. Steps 1–4 are left below exactly as written, for the record.
 
 1. **Fix BLOCKER-2 first** (guard `new Stripe(...)` behind the configured check) — it converts a fatal failure into a graceful degradation. It is a small, contained change.
 2. **Fix BLOCKER-1** (export `WebhookEventProcessor`, `GatewayWebhookService`, `StripePaymentGatewayAdapter` from `FinanceModule`, or restructure the worker's dependency).
 3. **Add `app.module.spec.ts`** asserting `AppModule` compiles with `STRIPE_SECRET_KEY` unset, so neither regression can recur.
 4. **Document the two Stripe keys** in `.env.example`.
-5. **Then** resolve the commit decision (Q1) and commit, followed by the P3-04b / P3-11 / dunning / renewal rulings.
+5. ~~**Then** resolve the commit decision (Q1) and commit~~ — **done 2026-09-28: the membership half landed as `021dc160` and the renewal half as `e16c1118`.** What remains of this step is the **rulings, not the commit** — **P3-11** clawback granularity (§15 Q16), the **dunning** rulings (Q14(a) which component owns the max-attempts counter, Q14(b) exponential vs. fixed `[1, 3, 7]` schedule) and the **renewal** surface (operator route vs. worker-only). The P3-04b discount-ordering ruling already landed **2026-09-27** (plan §15 Q9(a): fixed discount-before-tax, not configurable).
 6. ~~**Separately**, settle the RLS divergence in §4.3 by ruling on Q11~~ — **done (2026-09-26): RLS formally deferred; `database-plan.md` and the backlog/roadmap/domain-map now record application-layer scoping as the accepted mechanism (§4.3).**
 
 **Verification honesty note:** the four gates and the fresh-DB migration replay are reported from captured command output and are trustworthy. The **boot-blocker findings are reproduced**, but the probe harness was a temporary `ts-node` script that has since been deleted, and the worktree used for the HEAD baseline check was removed — so re-verification requires re-running §1.1's three-variant probe. Nothing in this report is based on a prior session's summary; every claim was re-derived against the repository during this run.

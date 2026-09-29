@@ -1331,8 +1331,10 @@ This document contains the implementation tasks broken down by phase, with depen
   - src/memberships/ (discount definition — Membership owns it)
   - src/finance/ (discount application on the invoice)
 - **Database changes**:
-  - membership_discounts table (NOT built in P1-03 — there is no `MembershipDiscount`
-    entity or discount service in the codebase; verified 2026-09-17)
+  - membership_discounts table (NOT built in P1-03 — there was no `MembershipDiscount`
+    entity or discount service in the codebase; verified 2026-09-17. **Built in P3-04b as
+    `021dc160`** on 2026-09-28: `src/memberships/entities/membership-discount.entity.ts`,
+    `MembershipsService.addDiscount`, migration `1788965263262-CreateMembershipDiscounts.ts`)
 - **API changes**:
   - POST /v1/memberships/{id}/discount
   - Enhance invoice creation with discount application
@@ -1340,10 +1342,15 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Worker changes**: None
 - **Tests**:
   - Discount application rules
-  - Combined tax and discount scenarios (including the configurable
-    discount-before-tax vs discount-after-tax order)
+  - Combined tax and discount scenarios — the *fixed* discount-before-tax order
+    (pinned at `src/finance/services/invoices.service.spec.ts:330`; the
+    "configurable discount-before-tax vs discount-after-tax order" this bullet
+    originally asked for was dropped by the plan §15 Q9(a) ruling, 2026-09-27)
 - **Acceptance criteria**:
-  - Discounts applied before/after tax as configured
+  - Discounts applied **before** tax — fixed order (**relaxed 2026-09-27** per plan
+    §15 Q9(a): ordering is hard-coded discount-before-tax *by design, not
+    configurable*; no known customer or jurisdiction requirement for the
+    alternative ordering, revisit if one emerges)
   - Discount definitions owned by Membership, applied by Finance
 - **Risks**: Discount calculation errors, unintended revenue leakage
 
