@@ -135,7 +135,17 @@ If D12 rules **out of scope**, the task is one line: record the descope in `impl
 - [ ] **T8.2** The two DB integration specs report **SKIPPED** unless `RUN_DB_INTEGRATION=1` (that is why `npx jest` shows 2 skipped suites). If they are part of the gate, CI needs a migrated scratch database — today they prove nothing in a default run.
 - [ ] **T8.3** **Build the production Docker stage** — `GIT_REVISION=$(git rev-parse HEAD) docker compose build api`. This is the *only* step that would have caught the `@aws-sdk/client-s3` devDependency defect (`d6aab998`); the test suite could not. Strongly recommend adding it to CI.
 - [ ] **T8.4** Re-run migration replay from zero (45/45 apply) and drop the temp DB.
-- [ ] **T8.5** After push, verify independently with a fresh `git ls-remote origin refs/heads/main` compared against local `HEAD` — not the push exit code.
+- [x] **T8.5** (done 2026-09-30) Pushed and verified independently with a fresh `git ls-remote origin refs/heads/main` compared against local `HEAD` — not the push exit code. Raw output:
+
+    ```
+    $ git push origin main
+    To https://github.com/gopi-AI/Gym-Management-SaaS.git
+       a5a32f77..415ecc1e  main -> main
+    $ git ls-remote origin main
+    415ecc1e988c5d1d082fcfe151923d401942cfc6	refs/heads/main
+    $ git rev-parse HEAD
+    415ecc1e988c5d1d082fcfe151923d401942cfc6
+    ```
 
 ---
 
