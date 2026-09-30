@@ -33,21 +33,18 @@ The commit boundary this report was written around no longer exists. Twelve of t
 | DEF-01 `is_active` inversion | `3dee318a` |
 | RLS deferral (`phase3-status-report.md` §6 Q11) | `d6c26095` |
 
-**Uncommitted as of 2026-09-28 — 7 paths, of which only 3 are non-doc artifacts; none of them application source:**
+**Committed at the `a5a32f77` baseline — the tree is clean and nothing is uncommitted.** Every path this section previously listed has since landed. Measured 2026-09-30:
 
 ```
- M docs/event-contracts.md            <- the Inventory + CRM section diff
- M docs/phase3-scoping-plan.md
- M docs/phase3-status-report.md
- M docs/task-backlog.md
-?? docs/phase3-completion-checklist-report.md
-?? packages/contracts/src/events/crm.events.ts
-?? packages/contracts/src/events/inventory.events.ts
+$ git rev-parse HEAD
+a5a32f77f0a05d1080d6a73cc2a46b66ac4c4885
+$ git status --porcelain --untracked-files=all
+(empty)
+$ git rev-list origin/main..main --count
+0
 ```
 
-So the only uncommitted artifacts are `crm.events.ts`, `inventory.events.ts` and the `docs/event-contracts.md` diff. No controller, service, entity, DTO, spec, migration or permission is uncommitted. **Corrected 2026-09-28:** `git status --porcelain --untracked-files=all` prints **7** lines, not 3 — the four Phase-3 doc paths above are uncommitted too, and this report itself is **untracked** (`git ls-files --error-unmatch docs/phase3-completion-checklist-report.md` fails), so it has no committed baseline at all. That does not change the conclusion: no application source is uncommitted. (This report, `phase3-scoping-plan.md`, `docs/task-backlog.md` and `phase3-status-report.md` are themselves edited after `021dc160` — a docs-only trailing diff, not a feature boundary.)
-
-Control: `git rev-list --count origin/main..main` → **8**; `git status --porcelain` → the 7 paths above.
+`docs/event-contracts.md`, `packages/contracts/src/events/crm.events.ts` and `packages/contracts/src/events/inventory.events.ts` were committed in **`08978034`** (`docs/event-contracts.md` `56/0`, `crm.events.ts` `30/0`, `inventory.events.ts` `53/0`). This report, previously **untracked** so that it had no committed baseline at all, was committed in **`bd19fca7`** (status `A`). The 2026-09-28 reading of "7 paths / `rev-list` → 8" is superseded and retained only as history. *(Reconciled 2026-09-30: the two commits that perform this documentation reconciliation are local and unpushed at the time of writing; every count quoted in this block is the `a5a32f77` baseline.)*
 
 **Superseded readings.** §2's `git status --porcelain | wc -l → 15`, its "Unpushed commits (6)" and its verbatim uncommitted-path list; §1's "the uncommitted P3-04b migration"; and every `🟡` / `(uncommitted)` / `(untracked)` label in §3, §4 and §5 record the tree on **2026-09-26 / 2026-09-27**. They are retained as history, not as current status. The item statuses in §3/§4 and the §7 checklist have been updated to the committed state above.
 
@@ -105,7 +102,7 @@ git status -sb            -> ## main...origin/main [ahead 6]
 git status --porcelain | wc -l -> 15
 ```
 
-**Unpushed commits (6)** — independently confirmed against the live remote in this session. *(2026-09-26 reading; **8** as of 2026-09-28 after `e16c1118` and `021dc160`.)*
+**Unpushed commits (6)** — independently confirmed against the live remote in this session. *(2026-09-26 reading; **8** as of 2026-09-28 after `e16c1118` and `021dc160`; **0** as of the `a5a32f77` baseline — all of them are on `origin/main` and `git rev-list origin/main..main --count` → `0`.)*
 
 ```
 git ls-remote origin refs/heads/main
@@ -261,7 +258,7 @@ Split out of P3-04 because the membership side was never built in Phase 1.
 | Schema migration | ✅ `…264-CreateInventorySchema.ts` |
 | Permissions migration | ✅ `…265-ProvisionInventoryPermissions.ts` |
 | Service + controller | ✅ `inventory.service.ts`, `inventory.controller.ts` (both with specs) |
-| Events | ✅ `INVENTORY_EVENT_TYPES` = `InventoryItemCreated`, `InventoryStockUpdated`, `InventoryItemSold`, `PurchaseOrderReceived`; `INVENTORY_EVENT_VERSION = 'v1'`; mirrored in `packages/contracts/src/events/inventory.events.ts` (untracked) |
+| Events | ✅ `INVENTORY_EVENT_TYPES` = `InventoryItemCreated`, `InventoryStockUpdated`, `InventoryItemSold`, `PurchaseOrderReceived`; `INVENTORY_EVENT_VERSION = 'v1'`; mirrored in `packages/contracts/src/events/inventory.events.ts` (tracked — committed in `08978034`) |
 | Outbox discipline | ✅ events saved through `OutboxService.saveEventEnvelope(..., manager)` inside the transaction |
 | FIFO costing (weighs in on §15 **Q19**) | ✅ `consumeFifo()` + lot rows locked `FOR UPDATE`, ordered `received_at ASC, id ASC`; `inventory-lot.entity.ts` carries `unit_cost`, `quantity`, `expiry_date` → **option (a) FIFO was chosen in code** |
 | Per-branch stock (weighs in on §15 **Q21**) | ✅ `inventory-item.entity.ts:4,8` → unique `(organization_id, branch_id, sku)` + `branch_id` column → **per-branch stock was chosen in code** |
@@ -290,7 +287,7 @@ Split out of P3-04 because the membership side was never built in Phase 1.
 | Permissions migration | ✅ `…267-ProvisionCrmPermissions.ts`, consumed from `crm.constants.ts:24-26` |
 | Service + controller | ✅ `crm.service.ts` (+ spec), `crm.controller.ts` (+ spec) |
 | Routes | ✅ `GET /v1/leads`, `GET /v1/leads/pipeline`, `GET /v1/leads/:id`, `POST /v1/leads`, `PATCH /v1/leads/:id`, `POST /v1/leads/:id/activities`, `POST /v1/leads/:id/convert`, `POST /v1/leads/:id/follow-ups` |
-| Events | ✅ `LeadCreated`, `LeadContacted`, `LeadQualified`, `MemberConverted`, `LeadLost`; `CRM_EVENT_VERSION = 'v1'`; mirrored in untracked `packages/contracts/src/events/crm.events.ts` |
+| Events | ✅ `LeadCreated`, `LeadContacted`, `LeadQualified`, `MemberConverted`, `LeadLost`; `CRM_EVENT_VERSION = 'v1'`; mirrored in `packages/contracts/src/events/crm.events.ts` (tracked — committed in `08978034`) |
 | §15 Q22 (member auto-creation on conversion) | ⚠️ `POST :id/convert` ships, but §15 Q22 (a) create-member-immediately / (b) prospect / (c) member-without-plan is still unruled, and plan line 962 warns the missing-trial-plan path must be a validation error, not a 500 — whether that is satisfied is **UNVERIFIED** |
 | Backlog entry integrity | ❌ `docs/task-backlog.md` P3-06 (line 460) is truncated: it stops at "Files/modules affected" and has **no** acceptance criteria, tests, or risks — a backlog defect, not a code defect |
 
@@ -317,7 +314,7 @@ Split out of P3-04 because the membership side was never built in Phase 1.
 | Entity + schema migration | ✅ `dunning-attempt.entity.ts`; `…269-CreateFinanceDunningAttempts.ts` |
 | Service | ✅ `dunning.service.ts` (+ `dunning.service.spec.ts`) |
 | Worker | ✅ `dunning.worker.ts`, registered and exported in `workers.module.ts` |
-| Events | ✅ `INVOICE_OVERDUE: 'InvoiceOverdue'`, `DUNNING_ESCALATED: 'DunningEscalated'` (`finance.constants.ts:121-122`); documented in the untracked `docs/event-contracts.md` diff |
+| Events | ✅ `INVOICE_OVERDUE: 'InvoiceOverdue'`, `DUNNING_ESCALATED: 'DunningEscalated'` (`finance.constants.ts:121-122`); documented in the `docs/event-contracts.md` diff (committed in `08978034`) |
 | Interaction with payment retries | ⚠️ `payment-retry.service.ts` (+ spec) exists separately; the retry-vs-escalate boundary depends on the unruled dunning semantics |
 | Backlog entry | ❌ **no `P3-08` item exists in `docs/task-backlog.md` at all** (see §5) |
 
@@ -363,7 +360,7 @@ Split out of P3-04 because the membership side was never built in Phase 1.
 | `CLAWED_BACK` commission status | ✅ present in the PT constants/service |
 | Events | ✅ `TrainerCommissionClawedBack.v1`, `TrainerCommissionPaid.v1`; `PT_EVENT_VERSION = 'v1'` (commit `e2d062c2` corrected an earlier version drift) |
 | Outbox/transaction discipline | ✅ clawback and its outbox row are written in one transaction |
-| Pushed to origin | ❌ `823c00d5` and the two PT follow-ups are **unpushed** (§2) |
+| Pushed to origin | ✅ `823c00d5` and the two PT follow-ups are on `origin/main` — **0 unpushed** at the `a5a32f77` baseline (§2) |
 
 ### 4.4 P3-12 — Payout Batching — ✅ committed in `fa8c5212`
 
@@ -374,7 +371,7 @@ Split out of P3-04 because the membership side was never built in Phase 1.
 | Service + controller | ✅ `commission-payouts.service.ts` (+ spec), `commission-payouts.controller.ts` (+ spec): `POST /v1/pt/commission-payouts`, `POST /v1/pt/commission-payouts/:id/process`, `GET /v1/pt/commission-payouts/:id` |
 | `paid` transition | ✅ commit `fa8c5212` |
 | Concurrent payout-run race | ✅ commit `332361d6` maps the unique violation to **HTTP 409** |
-| Pushed to origin | ❌ unpushed (§2) |
+| Pushed to origin | ✅ on `origin/main` — **0 unpushed** at the `a5a32f77` baseline (§2) |
 
 ### 4.5 DEF-01 — `is_active` boolean query coercion (memberships) — ✅ fixed in this session, commit `3dee318a` (was ❌ open)
 
@@ -418,18 +415,18 @@ Pre-fix state (verified 2026-09-26 — the file no longer looks like this; see t
 | §12.3 item | State | Evidence |
 |------------|-------|----------|
 | Permission migrations (`inventory:*`, `crm:*`, `finance:refund`, `finance:credit-note`, `finance:admin`, `pt:payout`) | ✅ | `…254`, `…257`, `…265`, `…267`, `…271` (+ the three `__specs__` permission specs) |
-| Doc 1 — `docs/event-contracts.md` | 🟡 | Uncommitted diff of **+56/−1** adding `### Inventory Events` and `### CRM Events`. `InvoiceOverdue`, `DunningEscalated`, `InventoryItemCreated`, `PurchaseOrderReceived`, `LeadCreated`, `SlaBreached`, `TrainerCommissionClawedBack`, `TrainerCommissionPaid` are each documented once. **`MembershipDiscountApplied` is absent** — and no such event exists in code (P3-04b emits none) |
+| Doc 1 — `docs/event-contracts.md` | ✅ | Committed in **`08978034`** as a **+56/−0** diff adding `### Inventory Events` and `### CRM Events`. `InvoiceOverdue`, `DunningEscalated`, `InventoryItemCreated`, `PurchaseOrderReceived`, `LeadCreated`, `SlaBreached`, `TrainerCommissionClawedBack`, `TrainerCommissionPaid` are each documented once. **`MembershipDiscountApplied` is absent** — and no such event exists in code (P3-04b emits none) |
 | Doc 2 — `docs/database-plan.md` | ❌ | Present: `FINANCE_TAX_RATES`, `FINANCE_TAX_LINES`, `FINANCE_REFUNDS`, `FINANCE_CREDIT_NOTES`, `INVENTORY_INVENTORY_ITEMS`, `INVENTORY_INVENTORY_LOTS`, `INVENTORY_PURCHASE_ORDERS`, `CRM_LEADS`, `CRM_FOLLOW_UPS`, `MEMBERSHIP_MEMBERSHIP_DISCOUNTS`. **Missing (0 mentions):** `FINANCE_WEBHOOK_EVENTS`, `FINANCE_PAYMENT_METHODS`, `FINANCE_DUNNING_ATTEMPTS`, `FINANCE_INVOICE_DISCOUNTS`, `CRM_SLA_POLICIES`, `CRM_SLA_BREACHES`, `PT_COMMISSION_PAYOUTS` |
-| Doc 3 — `packages/contracts/src/events/` | 🟡 | `inventory.events.ts` and `crm.events.ts` exist but are **untracked**; they typecheck (`CONTRACTS_TSC_EXIT=0`). **Corrected 2026-09-29:** the CI gates *do* cover this path — `npm run typecheck` runs `tsc --noEmit -p tsconfig.spec.json`, whose `include` is `["src/**/*", "packages/contracts/src/**/*"]`, and the eslint override matches `packages/**/*.ts`. Only jest does not: no spec file exists under `packages/`, so `npx jest`'s 106 suites are all under `src/` |
+| Doc 3 — `packages/contracts/src/events/` | ✅ | `inventory.events.ts` and `crm.events.ts` exist **and are tracked** (committed in **`08978034`**); they typecheck (`CONTRACTS_TSC_EXIT=0`). **Corrected 2026-09-29:** the CI gates *do* cover this path — `npm run typecheck` runs `tsc --noEmit -p tsconfig.spec.json`, whose `include` is `["src/**/*", "packages/contracts/src/**/*"]`, and the eslint override matches `packages/**/*.ts`. Only jest does not: no spec file exists under `packages/`, so `npx jest`'s 106 suites are all under `src/` |
 | Doc 4 — `docs/task-backlog.md` | 🟡 | ✅ the four false "completed in P1" annotations are gone (`grep 'completed in P1'` → 0 hits); ❌ recurring billing **and** dunning still have **no** backlog item (`grep -c '^### P3-'` → 8: P3-01, 02, 05, 06, 07, 03, 04, 04b); ❌ P3-03/P3-04 still appear *after* P3-07; ❌ P3-02 (line 412) and P3-06 (line 460) bodies are **truncated** — P3-02 stops at "API changes: POST /v1/payments/{id}/refunds (enhanced)", P3-06 stops at "Files/modules affected", so neither carries acceptance criteria |
 
 ### 5.3 Event mirroring (three places) 🔍
 
 | Module | Backend constants | `docs/event-contracts.md` | `packages/contracts` |
 |--------|-------------------|---------------------------|----------------------|
-| Inventory | ✅ `inventory.constants.ts` (4 events) | 🟡 uncommitted | 🟡 untracked `inventory.events.ts` |
-| CRM | ✅ `crm.constants.ts` (9 events) | 🟡 uncommitted | 🟡 untracked `crm.events.ts` |
-| Finance | ✅ `finance.constants.ts:121-122` (+ Phase-1 events) | 🟡 uncommitted additions to `docs/event-contracts.md` | ✅ committed |
+| Inventory | ✅ `inventory.constants.ts` (4 events) | ✅ committed in `08978034` | ✅ `inventory.events.ts` — tracked (committed in `08978034`) |
+| CRM | ✅ `crm.constants.ts` (9 events) | ✅ committed in `08978034` | ✅ `crm.events.ts` — tracked (committed in `08978034`) |
+| Finance | ✅ `finance.constants.ts:121-122` (+ Phase-1 events) | ✅ committed in `08978034` | ✅ committed |
 | PT | ✅ `pt.constants.ts` (`*.v1` names) | ✅ | ✅ `pt.events.ts` |
 
 ### 5.4 Background workers 🔍
@@ -477,7 +474,7 @@ Registered in `workers.module.ts` (7): `OutboxWorker`, `MembershipExpiryWorker`,
 
 | # | Question (as written in §6) | Status now |
 |---|-----------------------------|------------|
-| Q1 | Is `HEAD` the deliverable baseline, or must the uncommitted files be committed? | **CLOSED 2026-09-28** — the feature files were committed (`b4b6464d`, `823c00d5`, `fa8c5212`, `e16c1118`, `021dc160`); only **7** paths remain uncommitted (3 contract/doc artifacts plus the 4 Phase-3 doc paths) and none is application source (`docs/event-contracts.md`, `crm.events.ts`, `inventory.events.ts`). `HEAD` is the deliverable baseline. *(Dated: this row read "Still open — 15 uncommitted paths remain (§2)" until the `e16c1118`/`021dc160` commits.)* |
+| Q1 | Is `HEAD` the deliverable baseline, or must the uncommitted files be committed? | **CLOSED 2026-09-28** — the feature files were committed (`b4b6464d`, `823c00d5`, `fa8c5212`, `e16c1118`, `021dc160`); the last **7** paths (3 contract/doc artifacts plus the 4 Phase-3 doc paths, none of them application source) also landed — the artifacts in `08978034`, this report and the Phase-3 docs in `bd19fca7` — so **0** paths are uncommitted at the `a5a32f77` baseline. `HEAD` is the deliverable baseline. *(Dated: this row read "Still open — 15 uncommitted paths remain (§2)" until the `e16c1118`/`021dc160` commits.)* |
 | Q2 | If committed, is the P3-03 boot blocker fixed first? | **Moot** — `finance.module.ts` exports the three providers and `src/app.boot.spec.ts` compiles the real `AppModule` with Stripe unset (§3.3) |
 | Q3 | Document `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` in `.env.example`? | **Open** — still zero Stripe entries (§3.3) |
 | Q4 | Should `GatewayWebhookService` adopt the `isConfigured` guard? | **Moot** — `gateway-webhook.service.ts:22` already does `if (key) this.stripe = new Stripe(key)` (§3.3) |
@@ -548,7 +545,7 @@ Two further decisions are needed but are **not** in that §6 list:
 - [x] Build wiring: `next.config.js` (`output: 'standalone'`), `apps/web/.env.example` (`NEXT_PUBLIC_API_URL`), its own `tsconfig.json`, and a CI step at `ci.yml:47-48` (`cd apps/web && npm run typecheck`)
 
 **Frontend (`apps/web`) — outstanding**
-- [ ] **Phase 3 UI: none of the five `implementation-roadmap.md` §Phase 3 "Frontend Changes" deliverables exists** — inventory management UI, CRM pipeline and lead management, advanced financial reports, trainer commission statements, refund/credit-note processing UI. `grep -rniE 'inventory|crm|dunning|commission|clawback|payout|refund|credit-note|discount' apps/web/src` → **3 hits, all incidental** (`discounted_signups` in `components/ai/PlanPerformanceTable.tsx:91-92` and `lib/types.ts:347`). Concretely: **0** Phase 3 API client modules, **0** Phase 3 hooks, **0** Phase 3 routes. This is the shortfall §5.6 records. **Filed 2026-09-29** as backlog **P3-13 … P3-17** (`docs/task-backlog.md`), each marked *roadmap-scoped, not yet triaged* — the API-only vs roadmap-scope decision is the owner's
+- [ ] **Phase 3 UI: none of the five `implementation-roadmap.md` §Phase 3 "Frontend Changes" deliverables exists** — inventory management UI, CRM pipeline and lead management, advanced financial reports, trainer commission statements, refund/credit-note processing UI. `grep -rniE 'inventory|crm|dunning|commission|clawback|payout|refund|credit-note|discount' apps/web/src` → **3 hits, all incidental** (`discounted_signups` in `components/ai/PlanPerformanceTable.tsx:91-92` and `lib/types.ts:347`). Concretely: **0** Phase 3 API client modules, **0** Phase 3 hooks, **0** Phase 3 routes. This is the shortfall §5.6 records. **Filed 2026-09-29** as backlog **P3-13 … P3-17** (`docs/task-backlog.md`) — **correction 2026-09-30: that filing never happened.** `grep -n '^### P3-1' docs/task-backlog.md` → no match, so no `P3-13`…`P3-17` entry exists; the only occurrences of those IDs anywhere in `docs/` were this claim and its duplicate in §7. These five deliverables remain **unbacklogged**, each marked *roadmap-scoped, not yet triaged* — the API-only vs roadmap-scope decision is the owner's
 - [ ] **Member 360 UI (backlog P2-09)** — absent: there is no `/members/[id]` route at all (`apps/web/src/app/members/` contains only `page.tsx`), so the tab layout, lazy-loading wrappers, per-tab components and charts do not exist. Note the backlog targets `apps/web/pages/members/[id]/360.tsx` — a **Pages-Router** path — while `apps/web` is App Router, so that path must be rewritten before the task is actionable
 - [ ] **Frontend lint (ESLINT-002)** — still skipped in CI (§7 Gates). `npm run lint` under `apps/web` cannot be read as green, and the `eslint` / `eslint-config-next` version conflict that caused the skip is unresolved
 - [ ] **No frontend test suite at all** — `apps/web/package.json` declares **no `test` script**; the root `jest.config.js` (`testEnvironment: 'node'`, `testMatch: ['**/*.spec.ts']`, `collectCoverageFrom: ['src/**/*.ts', …]`) collects nothing under `apps/web`, and `find apps/web -name '*.spec.ts*' -o -name '*.test.ts*'` → **0**. The only artifact is `apps/web/__tests__/browser-verify.mjs` (a manual `fetch`-based script dated 2026-09-11) even though `@playwright/test ^1.63.0` is a declared devDependency — **zero** Playwright specs exist
@@ -561,13 +558,13 @@ Two further decisions are needed but are **not** in that §6 list:
 - [ ] Add the 7 missing Phase 3 tables to `docs/database-plan.md`
 - [ ] Track `packages/contracts/src/events/{crm,inventory}.events.ts`
 - [ ] Backlog: add the P3-08…P3-12 entries, write the P3-09 renewal item, restore the truncated P3-02/P3-06 bodies, renumber P3-03/P3-04 into order
-- [ ] Backlog: open entries for the five `implementation-roadmap.md` §Phase 3 "Frontend Changes" deliverables (inventory UI, CRM pipeline, advanced financial reports, trainer commission statements, refund/credit-note UI) — **filed 2026-09-29 as P3-13 … P3-17** in `docs/task-backlog.md`, each marked *roadmap-scoped, not yet triaged* so the API-only vs roadmap-scope decision stays with the owner (they were **unbacklogged** before this, which is why Phase 3 read as API-complete); and rewrite P2-09's stale Pages-Router path `apps/web/pages/members/[id]/360.tsx` to its App-Router equivalent (`apps/web/src/app/members/[id]/` + tabs) before it is picked up — **done 2026-09-29**
+- [ ] Backlog: open entries for the five `implementation-roadmap.md` §Phase 3 "Frontend Changes" deliverables (inventory UI, CRM pipeline, advanced financial reports, trainer commission statements, refund/credit-note UI) — **not filed — correction 2026-09-30: no `P3-13`…`P3-17` entry was created** (`grep -n '^### P3-1' docs/task-backlog.md` → no match), so these five remain unbacklogged and the API-only vs roadmap-scope decision stays with the owner (they were **unbacklogged** before this, which is why Phase 3 read as API-complete); and rewrite P2-09's stale Pages-Router path `apps/web/pages/members/[id]/360.tsx` to its App-Router equivalent (`apps/web/src/app/members/[id]/` + tabs) before it is picked up — **done 2026-09-29**
 - [ ] Amend or rule on the plan's remaining open §15 questions — **Q8** (discount ownership direction; the `Decision` at line 1063 explicitly leaves it open) and **Q11** (*gateway provider selection* — **plan** §15 numbering, as this line's own gloss indicates: `phase3-status-report.md` §6 Q11 is RLS, ruled 2026-09-26) — and settle the worker questions **Q13** (renewal trigger point) and **Q14** (dunning policy), both listed in §9.3. Plan §15 **Q5** (refund/credit-note lifecycle) is *not* outstanding: its `Decision` (line 1039) is recorded and §9.2 records it implemented as ruled — the similarly-numbered open question is `phase3-status-report.md` §6 Q5 (discount/tax ordering = plan §15 **Q9(a)**), already tracked in §3.5
 - [x] RLS (status-report Q11): **ruled 2026-09-26 — formally deferred**; `database-plan.md`, backlog `P0-03`, roadmap, domain-map and completion-summary reconciled
 
 **Repository**
-- [x] Commit the uncommitted paths — **7** as of 2026-09-28 (**4** modified tracked + **3** untracked; reported as "3 (1 modified + 2 untracked)" until corrected the same day; it had omitted the four Phase-3 doc paths that this reconciliation itself edits, of which `phase3-completion-checklist-report.md` is untracked). Down from **15** on 2026-09-27 because the memberships/discount/renewal work landed in `e16c1118` and `021dc160`. The 3 contract/doc artifacts among the 7 are **not** application source: `docs/event-contracts.md`, `crm.events.ts`, `inventory.events.ts`. Gates were green on the pre-commit working tree (§1.1). *Dated history: this line read "12" when written on 2026-09-26, then "24" after the memberships work, then "15" on 2026-09-27 after the 9 paths landed in `3dee318a` (3 — DEF-01) and `d6c26095` (6 — RLS ruling).*
-- [ ] Push the **8** unpushed commits on `main` (`origin/main` is behind — see §2; it was 6 when written on 2026-09-26, and `e16c1118` + `021dc160` since made it 8)
+- [x] Commit the uncommitted paths — **done 2026-09-30: 0 remain.** The last **7** (2026-09-28 reading: **4** modified tracked + **3** untracked — the untracked three included this report, which then had no committed baseline at all) landed in `08978034` (the 3 contract/doc artifacts `docs/event-contracts.md`, `crm.events.ts`, `inventory.events.ts`) and `bd19fca7` (this report plus the other Phase-3 docs). Down from **15** on 2026-09-27 because the memberships/discount/renewal work landed in `e16c1118` and `021dc160`. Gates were green on the pre-commit working tree (§1.1). *Dated history: this line read "12" when written on 2026-09-26, then "24" after the memberships work, then "15" on 2026-09-27 after the 9 paths landed in `3dee318a` (3 — DEF-01) and `d6c26095` (6 — RLS ruling).*
+- [x] Push the unpushed commits on `main` — **done: at the `a5a32f77` baseline `origin/main` == local `main` and `git rev-list origin/main..main --count` → `0`** (the 2026-09-28 reading of **8** is superseded; see §2)
 - [ ] Decide the `phase-6` integration path (82 commits apart; `phase-4` needs none — it is already in `main`)
 - [ ] After committing: re-run `npm run typecheck && npm run lint && npx jest`, then re-confirm with `git ls-remote origin refs/heads/main` against local `HEAD`
 
@@ -652,7 +649,7 @@ Direct answer: **no — not strictly.** Conformance is high where it matters mos
 | §1 + O3 (`api-plan.md:76`, `task-backlog.md:1627`) | `GET /v1/financial-ledger` | absent, and no ledger table could serve it — §1's own API table omits it (O3). *(Re-pointed 2026-09-27 from `:1622`: this session's P3-04b criterion edit in `task-backlog.md` added 5 lines above it.)* |
 | §6 (line 513) / Q17 | `packages/contracts/src/events/pt.events.ts` | ✅ present **and tracked** (`git ls-files`) — the plan's "recommended" item is done, **but it was done ahead of any ruling**: Q17 has no `Decision` line, so this row is a completeness ✅ and a §9.3 ruling-discipline ✗ |
 | §12.3 item 2 | `docs/database-plan.md` additions | `FINANCE_TAX_RATES` ✅, `MEMBERSHIP_DISCOUNTS` ✅; `INVENTORY_PURCHASE_ORDER_ITEMS`, `CRM_SLA_POLICIES`, `CRM_SLA_BREACHES` and the Q15-selected payout pair → **0 hits each** |
-| §12.3 item 3 | `crm.events.ts`, `inventory.events.ts` | ✅ both exist — ❌ both **untracked** (`git status --porcelain` → `??`) |
+| §12.3 item 3 | `crm.events.ts`, `inventory.events.ts` | ✅ both exist **and are tracked** (`git ls-files` resolves both; committed in `08978034`) |
 | §12.3 item 4 | backlog repairs | 4 false "completed in P1" annotations ✅; P3-08…P3-12 entries ✗; P3-03/P3-04 renumbering ✗ |
 
 ### 9.5 Build order vs §12.1/§12.2

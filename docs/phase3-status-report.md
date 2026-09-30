@@ -32,21 +32,18 @@ The commit boundary that §2 measured on 2026-09-25 no longer exists. Twelve of 
 | DEF-01 `is_active` inversion | `3dee318a` |
 | RLS deferral (status-report §6 Q11) | `d6c26095` |
 
-**Uncommitted as of 2026-09-28 — 7 paths, of which only 3 are non-doc artifacts; none of them application source:**
+**Committed at the `a5a32f77` baseline — the tree is clean and nothing is uncommitted.** Every path this section previously listed has since landed. Measured 2026-09-30:
 
 ```
- M docs/event-contracts.md            <- the Inventory + CRM section diff
- M docs/phase3-scoping-plan.md
- M docs/phase3-status-report.md
- M docs/task-backlog.md
-?? docs/phase3-completion-checklist-report.md
-?? packages/contracts/src/events/crm.events.ts
-?? packages/contracts/src/events/inventory.events.ts
+$ git rev-parse HEAD
+a5a32f77f0a05d1080d6a73cc2a46b66ac4c4885
+$ git status --porcelain --untracked-files=all
+(empty)
+$ git rev-list origin/main..main --count
+0
 ```
 
-So the only uncommitted artifacts are `crm.events.ts`, `inventory.events.ts` and the `docs/event-contracts.md` diff. No controller, service, entity, DTO, spec, migration or permission is uncommitted. **Corrected 2026-09-28:** `git status --porcelain --untracked-files=all` prints **7** lines, not 3 — the four Phase-3 doc paths above are uncommitted too, and `phase3-completion-checklist-report.md` is **untracked** (`git ls-files --error-unmatch docs/phase3-completion-checklist-report.md` fails), so it has no committed baseline at all. That does not change the conclusion: no application source is uncommitted. (This report, `phase3-scoping-plan.md`, `docs/task-backlog.md` and `phase3-completion-checklist-report.md` are themselves edited after `021dc160` — a docs-only trailing diff, not a feature boundary.)
-
-Control: `git rev-list --count origin/main..main` → **8**; `git status --porcelain` → the 7 paths above.
+`docs/event-contracts.md`, `packages/contracts/src/events/crm.events.ts` and `packages/contracts/src/events/inventory.events.ts` were committed in **`08978034`** (`docs/event-contracts.md` `56/0`, `crm.events.ts` `30/0`, `inventory.events.ts` `53/0`); `phase3-completion-checklist-report.md`, previously **untracked** so that it had no committed baseline at all, was committed in **`bd19fca7`** (status `A`). The 2026-09-28 reading of "7 paths / `rev-list` → 8" is superseded and retained only as history. *(Reconciled 2026-09-30: the two commits that perform this documentation reconciliation are local and unpushed at the time of writing; every count quoted in this block is the `a5a32f77` baseline.)*
 
 **Superseded readings.** §2's `MODIFIED 41 / UNTRACKED 51`, its "12 migrations `…260`…`…271` are untracked", §1.1's "the working tree does not boot", and every `(uncommitted)` / `(uncommitted, partial)` parenthetical in §3 and §7 record the tree on **2026-09-25 / 2026-09-26 / 2026-09-27**. They are retained as history, not as current status. The per-item headings in §3 and the §7 summary have been updated to the committed state above.
 
@@ -481,7 +478,7 @@ So the pattern is consistent and deliberate: **services, controllers and constan
 | Q4 | Should `GatewayWebhookService` adopt the adapter's `isConfigured` guard? | BLOCKER-2: without it, an optional credential breaks the whole app. |
 | Q5 | Is discount-before-tax permanently correct, or is a configurable ordering still required by P3-04b's acceptance criteria? | **RULED (2026-09-27): discount-before-tax is permanent** — configurable ordering will not be built (no known customer or jurisdiction requirement for the alternative ordering; revisit if one emerges). The artifact at fault was the criterion, not the code: it is now relaxed to “discounts applied **before** tax” in `phase3-scoping-plan.md` §4 and `docs/task-backlog.md` P3-04b. No code change — the implementation already matches, and `invoices.service.spec.ts:330` pins it. No longer blocking |
 | Q6 | Confirm all-or-nothing clawback (Q16), or specify pro-rata. | P3-11 semantics. |
-| Q7 | Is `PT_EVENT_VERSION = 'v1'` an intentional ruling or incidental churn? | A wire-format change with no recorded decision. |
+| Q7 | Is `PT_EVENT_VERSION = 'v1'` an intentional ruling or incidental churn? | **Intentional — documented in commit `e2d062c2` (2026-09-26)**, whose message states the rationale: `PT_EVENT_VERSION` "was the last event version constant still declaring `'1'`. Finance, CRM, inventory, memberships, attendance and loyalty all declare `'v1'` (FINANCE_EVENT_VERSION, CRM_EVENT_VERSION, INVENTORY_EVENT_VERSION, MEMBERSHIP_EVENT_VERSION, ATTENDANCE_EVENT_VERSION, LOYALTY_EVENT_VERSION), so PT was the outlier rather than a deliberate exception." Not incidental churn. The commit also records that it is inert at runtime — the dispatcher reads the version from the stored envelope, so rows already written under `'1'` keep dispatching under `'1'`, and no PT event handler is registered. Recorded from the commit message, **not** from an owner ruling: plan §15 carries no `Decision` line for it |
 | Q8 | Is an operator-triggered renewal route required for P3-09's acceptance criteria? | Renewal is currently service/worker-only. |
 | Q9 | What is the ruling on Q14(a)/(b) for dunning (attempt counter owner; fixed vs. exponential schedule)? | Implementation is unruled. |
 | Q10 | Does P3-10's S3 gap now need priority, given P3-05/P3-06 introduced the first non-document attachments? | §10 called it opportunistic; its premise has changed. |
