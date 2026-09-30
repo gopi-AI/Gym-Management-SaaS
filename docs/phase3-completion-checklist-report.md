@@ -118,7 +118,7 @@ fa8c5212 feat(pt): add PT commission payout runs with the paid transition
 823c00d5 feat(pt): add PT enrollment cancellation with atomic commission clawback
 ```
 
-So `origin/main` is **6 commits behind local `main`** — the PT clawback/payout work does not exist on the remote.
+So `origin/main` is **6 commits behind local `main`** — the PT clawback/payout work does not exist on the remote. — **correction 2026-09-30 — superseded:** `git merge-base --is-ancestor 823c00d5 origin/main` → **true** (and `d6c26095` → true), so the PT clawback/payout work **is** on the remote; `git rev-list main..origin/main --count` → `0`; and the count is no longer 6 — `git rev-list origin/main..main --count` → `1` measured at `3926f593` (that 1 being this batch's own unpushed commit); see §0.
 Migrations: 19 Phase-3 migrations (`…253`–`…271`) create **25 new tables** (`grep -h 'CREATE TABLE' … | sort -u`).
 
 **Uncommitted working tree as of 2026-09-26 (15 entries — 8 modified tracked + 7 untracked; verbatim `git status --porcelain`):** *(down to 3 non-source paths by 2026-09-28 — see §0)*
