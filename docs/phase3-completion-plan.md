@@ -32,7 +32,7 @@ Two corrections to the record that shape the list, verified this turn:
 | **D11** | Recording-only tallies, each needing a `Decision` line | Q1 ledger views (plain `V_*` shipped), Q2 period locking (**no hits** — not built), Q3 reporting permission (**no hits** — reuse today), Q12 webhook model (`webhook-event.worker.ts` shipped ⇒ persisted+worker), Q15 payout schema (`CommissionPayoutRun`/`Item` shipped), Q17 `pt.events.ts` (**exists**), Q20 stock derived (**no `stock` column** on `inventory-item.entity.ts` ⇒ derived) | paper only |
 | **D12** | **The five `implementation-roadmap.md` §Phase 3 frontend deliverables — in or out?** inventory UI, CRM pipeline/lead management, advanced financial reports, trainer commission statements, refund/credit-note UI | **none exists**; `grep -rniE 'inventory\|crm\|dunning\|commission-payout' apps/web/src \| wc -l` → **0**; no backlog entry exists for any of them; every backlog `Frontend changes:` line reads "None (API only in this phase)" | Workstream 6 — **largest single chunk** |
 | **D13** | P3-05 workers + `CRM_NURTURING` — build or formally descope? | `src/shared/workers/` has background-worker, crm-follow-ups, crm-sla-monitor, dunning, membership-expiry, outbox, payment-retry, webhook-event — **no inventory worker of any kind** | Workstream 2, 3 |
-| **D14** | **Open input to the D14 security review** — Inventory read scoping: "GET by id and list are org-wide; branch scoping applies on writes and on explicit branch filters only." Confirm this is intended, or require branch scoping on reads too. | `getItem` (`inventory.service.ts:84`) and `getPurchaseOrder` (`:147`) filter by `organization_id` only; `listItems` (`:37`) / `stock` (`:72`) take an optional client `branch_id`, cross-checked via `requireBranchAccess`; the writes `updateItem` (`:100`) and `consumeStock` cross-check the row's own branch. Verified against the committed Batch 8b code. | Workstream 2 (read surface) |
+| **OI-1** | **Open input to the D14 security review** — Inventory read scoping: "GET by id and list are org-wide; branch scoping applies on writes and on explicit branch filters only." Confirm this is intended, or require branch scoping on reads too. | `getItem` (`inventory.service.ts:84`) and `getPurchaseOrder` (`:147`) filter by `organization_id` only; `listItems` (`:37`) / `stock` (`:72`) take an optional client `branch_id`, cross-checked via `requireBranchAccess`; the writes `updateItem` (`:100`) and `consumeStock` cross-check the row's own branch. Verified against the committed Batch 8b code. | Workstream 2 (read surface) |
 
 ---
 
@@ -185,7 +185,7 @@ If D12 rules **out of scope**, the task is one line: record the descope in `impl
 
 ## Suggested execution order
 
-1. **D1–D14 rulings** (owner). T7.1–T7.8 can run in parallel — pure doc work, no rulings.
+1. **D1–D13 rulings** (owner). T7.1–T7.8 can run in parallel — pure doc work, no rulings.
 2. **T5.1–T5.3** (`.env.example`, database-plan, backlog) — cheap, unblocks discoverability.
 3. **Workstream 1** (P3-10) once D1 says in-scope.
 4. **Workstream 2** endpoints, then workers if D13 says build.
