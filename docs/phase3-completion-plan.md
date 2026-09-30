@@ -37,24 +37,25 @@ Two corrections to the record that shape the list, verified this turn:
 
 ## Workstream 1 — P3-10 Storage configuration *(agent-executable once D1 is ruled in scope)*
 
-Every one of plan §10's "Files to change" rows is still at zero:
+Every one of plan §10's "Files to change" rows stood as follows at the `a5a32f77` baseline this section was written from,
+then after the 2026-10-01 config commits:
 ```
-@Global() on S3Module:                    ABSENT
-buildCrmAttachmentKey/InventoryImageKey:  ABSENT
-S3/AWS/bucket vars in .env.example:       0
-SharedModule:                             ABSENT
+@Global() on S3Module:                    ABSENT -> DONE (b71decf3)
+buildCrmAttachmentKey/InventoryImageKey:  ABSENT -> STILL ABSENT (key builders deferred)
+S3/AWS/bucket vars in .env.example:       0      -> 3 (387f706c)
+SharedModule:                             ABSENT -> NOT introduced; @Global() chosen (b71decf3)
 ```
 
-- [ ] **T1.1** `src/shared/storage/s3.module.ts` — add `@Global()`, or introduce a `SharedModule` re-exporting `S3Module` (plan §10 rec 2; plan notes `@Global()` is the smaller change). Pick one, don't do both.
+- [x] **T1.1** `src/shared/storage/s3.module.ts` — add `@Global()`, or introduce a `SharedModule` re-exporting `S3Module` (plan §10 rec 2; plan notes `@Global()` is the smaller change). Pick one, don't do both. — **DONE 2026-10-01 in `b71decf3`**: `@Global()` chosen (the smaller change); `SharedModule` deliberately not introduced. `src/app.module.spec.ts` + `src/app.boot.spec.ts` (21 tests) compile and boot the real `AppModule` with it.
 - [ ] **T1.2** `src/shared/storage/s3.service.ts` — add `buildCrmAttachmentKey()` (`orgs/{orgId}/crm/leads/{leadId}/{uuid}/{fileName}`) and `buildInventoryImageKey()`. **Do not change `buildKey()`'s 4-argument signature** — `documents.service.spec.ts` asserts it is called with exactly four arguments.
-- [ ] **T1.3** `.env.example` — add `S3_LOCAL_ROOT`, `S3_DOCUMENTS_BUCKET`, `AWS_REGION`. Note the file already groups sections with `# ── … ──` banners; add a matching one. The service defaults are `./uploads`, `gym-documents`, `us-east-1` (`s3.service.ts:33,46,48`).
+- [x] **T1.3** `.env.example` — add `S3_LOCAL_ROOT`, `S3_DOCUMENTS_BUCKET`, `AWS_REGION`. Note the file already groups sections with `# ── … ──` banners; add a matching one. The service defaults are `./uploads`, `gym-documents`, `us-east-1` (`s3.service.ts:33,46,48`). — **DONE 2026-10-01 in `387f706c`**: added under a matching `── Object storage: member documents (S3) ──` banner, with the same three defaults and a note that the read is `process.env`, not `ConfigService`.
 - [ ] **T1.4** Decide the `process.env` vs `ConfigService` inconsistency (plan §10's "fourth, minor inconsistency") — record the choice; do not change it silently.
 - [ ] **T1.5** Wire `S3Module` into `crm.module.ts` / `inventory.module.ts` only if T1.1 chose `SharedModule`.
 - [ ] **T1.6** Any new consumer must keep the **S3-upload-first, DB-insert-second** order with best-effort `delete()` on DB failure (plan §10 rec 4, documented at `s3.service.ts:8-14`).
 - [ ] **T1.7** Specs for both new key builders + the new consumers, mirroring `documents.service.spec.ts`.
-- [ ] **T1.8** Consider `uploads/` in `.gitignore` — it is currently absent from `.gitignore`, so a local-dev upload surfaces as untracked noise.
+- [x] **T1.8** Consider `uploads/` in `.gitignore` — it is currently absent from `.gitignore`, so a local-dev upload surfaces as untracked noise. — **DONE 2026-10-01 in `a38bead9`**: `uploads/` added; `git check-ignore -v uploads/x` → `.gitignore:25:uploads/`.
 
-**Acceptance:** `grep -q '@Global' src/shared/storage/s3.module.ts` (or `SharedModule` exists); both builders exist and are unit-tested; `.env.example` has the three vars; `npm run typecheck && npm run lint && npx jest --silent` green.
+**Acceptance:** `grep -q '@Global' src/shared/storage/s3.module.ts` (or `SharedModule` exists); both builders exist and are unit-tested; `.env.example` has the three vars; `npm run typecheck && npm run lint && npx jest --silent` green. — **Partially met 2026-10-01.** The config half holds: `grep -q '@Global' src/shared/storage/s3.module.ts` passes (`b71decf3`), `.env.example` has the three vars (`387f706c`), `uploads/` is ignored (`a38bead9`), and `npm run typecheck`, `npx eslint` and the module specs are green. The other half does **not**: "both builders exist and are unit-tested" is false — the CRM/inventory key builders are deferred (T1.2/T1.7 still open).
 
 ---
 
@@ -85,8 +86,8 @@ Backlog asks for 8 item endpoints; 4 are missing. Registered today: `GET/POST su
 
 ## Workstream 4 — P3-04b residuals *(tie-break pending D2)*
 
-- [ ] **T4.1** `src/memberships/entities/membership-discount.entity.spec.ts` — no `src/memberships/entities/*.spec.ts` exists (`create-membership-discount.dto.spec.ts` does).
-- [ ] **T4.2** Fix the tie-break (D2). Either add an explicit `order` to all three reads, **or** add a real overlap constraint (`EXCLUDE USING gist (membership_id WITH =, tstzrange(starts_at, COALESCE(ends_at,'infinity')) WITH &&)`) — note the latter needs `btree_gist`, needs `ends_at IS NULL` normalized, and needs a repair step only if overlapping rows exist (the sweep found **0 rows in every reachable DB**, so there is currently nothing to repair).
+- [x] **T4.1** `src/memberships/entities/membership-discount.entity.spec.ts` — no `src/memberships/entities/*.spec.ts` exists (`create-membership-discount.dto.spec.ts` does). — **DONE 2026-10-01 in `fa4acee5`**: `membership-discount.entity.spec.ts` — 11 assertions read from TypeORM decorator metadata via `getMetadataArgsStorage()` (no DB): the table name, the exact column set and types, and the two non-unique indices. The migration-only PARTIAL unique index and CHECK constraints have no decorator metadata and are excluded.
+- [x] **T4.2** Fix the tie-break (D2). Either add an explicit `order` to all three reads, **or** add a real overlap constraint (`EXCLUDE USING gist (membership_id WITH =, tstzrange(starts_at, COALESCE(ends_at,'infinity')) WITH &&)`) — note the latter needs `btree_gist`, needs `ends_at IS NULL` normalized, and needs a repair step only if overlapping rows exist (the sweep found **0 rows in every reachable DB**, so there is currently nothing to repair). — **DONE 2026-10-01 in `4d4aac0a`**: the explicit-`order` path was taken (`MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER` = `starts_at DESC, created_at DESC, id ASC`, shared by all three reads — `renewOne`, `create`, `addDiscount`); the `EXCLUDE USING gist` path was not. The **direction** of the final `id` tie-break (`ASC`) is an assumption recorded in the commit body and on the constant — the ruling says "then id" without a direction — so the owner decision T4.3 covers is still open.
 - [ ] **T4.3** If a tie-break is chosen, also decide what happens when the key itself ties (identical `starts_at` / `created_at` / `amount` are all reachable).
 - [ ] **T4.4** Decide whether `MembershipDiscountApplied` should exist — the Doc 1 row (`:421`) records it as absent and notes no such event exists in code.
 

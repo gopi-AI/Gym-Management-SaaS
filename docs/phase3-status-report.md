@@ -12,7 +12,7 @@
 
 **Every Phase 3 item is now committed. Every `(uncommitted)` / `(untracked)` label below is dated and superseded.**
 
-The commit boundary that §2 measured on 2026-09-25 no longer exists. Twelve of the thirteen Phase 3 items are committed on `main`; the thirteenth — **P3-10 — is not started**. Where each item landed (`git log`, 2026-09-28):
+The commit boundary that §2 measured on 2026-09-25 no longer exists. Twelve of the thirteen Phase 3 items are committed on `main`; the thirteenth — **P3-10 — is not started** *(superseded 2026-10-01: config shipped, key builders deferred — see the table row below)*. Where each item landed (`git log`, 2026-09-28):
 
 | Item | Committed in |
 |------|--------------|
@@ -26,7 +26,7 @@ The commit boundary that §2 measured on 2026-09-25 no longer exists. Twelve of 
 | P3-07 Follow-ups and SLAs | `b4b6464d` |
 | P3-08 Dunning | `b4b6464d` |
 | P3-09 Recurring Billing / Renewal | `e16c1118` |
-| **P3-10 Storage Configuration** | **— not started** (no `@Global()`, no non-member key builders, no S3 env docs) |
+| **P3-10 Storage Configuration** | **config shipped 2026-10-01; key builders deferred** *(this row as of 2026-09-28 read "not started")* — `@Global()` `b71decf3`, `S3_LOCAL_ROOT`/`S3_DOCUMENTS_BUCKET`/`AWS_REGION` `387f706c`, `uploads/` ignored `a38bead9`; `buildCrmAttachmentKey()`/`buildInventoryImageKey()` still absent |
 | P3-11 Commission Clawback | `823c00d5` |
 | P3-12 Commission Payout | `fa8c5212` |
 | DEF-01 `is_active` inversion | `3dee318a` |
@@ -47,7 +47,7 @@ $ git rev-list origin/main..main --count
 
 **Superseded readings.** §2's `MODIFIED 41 / UNTRACKED 51`, its "12 migrations `…260`…`…271` are untracked", §1.1's "the working tree does not boot", and every `(uncommitted)` / `(uncommitted, partial)` parenthetical in §3 and §7 record the tree on **2026-09-25 / 2026-09-26 / 2026-09-27**. They are retained as history, not as current status. The per-item headings in §3 and the §7 summary have been updated to the committed state above.
 
-**Unchanged by the commits:** P3-10 not started; the four P3-05 endpoints and two P3-05 workers still absent; the missing P3-04b entity spec; the absent operator renewal route; the undocumented Stripe keys; the backlog gaps; and the open §15 rulings. A commit changes where the code lives, not what it does.
+**Unchanged by the commits:** P3-10 not started *(superseded 2026-10-01: config shipped in `b71decf3`/`387f706c`/`a38bead9`; the key builders remain deferred)*; the four P3-05 endpoints and two P3-05 workers still absent; the missing P3-04b entity spec; the absent operator renewal route; the undocumented Stripe keys; the backlog gaps; and the open §15 rulings. A commit changes where the code lives, not what it does.
 
 **Classifier provenance — corrected 2026-09-29.** An earlier pass recorded an "A/B/C" proof-claim classifier and its result as `A/B/C = 0`. That classifier could not be located: a search of the shell history (`~/.bash_history` and `~/.bash_history-04167.tmp`), of every report under `docs/`, and of the scripts in the repo (`scripts/`, plus a repo-wide `classif` / `A/B/C` / `A=0` / `B=0` / `C=0` grep) returned **no** definition of it, so it **was not re-run**. The earlier `A/B/C = 0` result is therefore **superseded by the U/bare check** (the `UNVERIFIED`-marker / bare, command-less-claim audit whose labelling is applied in §7 below) and **was not re-confirmed**. The earlier invariant is **not** asserted to still hold.
 
@@ -326,9 +326,9 @@ The path §12 called "missing" now exists — `MembershipsService.renew()`, `ren
 
 ❌ **No HTTP route.** All four membership controller files contain **0** occurrences of `renew`: renewal is service/worker-only. If the acceptance criterion requires an operator-triggered renewal, that API surface is missing.
 
-### ❌ P3-10 — Storage Configuration (not started)
+### ⚠️ P3-10 — Storage Configuration (config shipped 2026-10-01; key builders deferred)
 
-All three §10 gaps are still open, verified directly:
+All three §10 gaps are still open, verified directly *(superseded 2026-10-01 for gaps #1 and #3 — `@Global()` `b71decf3`, `S3_LOCAL_ROOT`/`S3_DOCUMENTS_BUCKET`/`AWS_REGION` `387f706c`, `uploads/` ignored `a38bead9`; gap #2, the non-document key builders, remains and is deferred by owner scope)*:
 
 | # | Gap | Evidence |
 |---|-----|----------|
@@ -495,7 +495,7 @@ So the pattern is consistent and deliberate: **services, controllers and constan
 | ✅ Complete (committed on `main` / `origin/main` @ `c7f84c08`) | **P3-01, P3-02, P3-04** |
 | ✅ Complete (fixed in `3dee318a`) | **DEF-01** |
 | ✅ Complete (committed) — as of 2026-09-28 | **P3-03** (`b4b6464d`) · **P3-04b** (`021dc160`) · **P3-05** (`b4b6464d`; still partial — 4 endpoints + 2 workers absent) · **P3-06** (`b4b6464d`) · **P3-07** (`b4b6464d`) · **P3-08** (`b4b6464d`) · **P3-09** (`e16c1118`; still partial — no HTTP route) · **P3-11** (`823c00d5`) · **P3-12** (`fa8c5212`) |
-| ❌ Missing | **P3-10** (not started) |
+| ⚠️ Partial (config shipped 2026-10-01 — `b71decf3`/`387f706c`/`a38bead9`; key builders deferred) | **P3-10** |
 
 **Frontend:** Phase 3 remains **API-only** — none of the five `implementation-roadmap.md` §Phase 3 "Frontend Changes" deliverables (inventory management UI, CRM pipeline and lead management, advanced financial reports, trainer commission statements, refund/credit-note processing UI) exists, and `apps/web` contains no Phase 3 surface at all. The frontend that *does* exist (19 routes, Phase 0–2 scope: auth, shell, members, memberships, plans, payments, check-in, branches, organizations, settings, AI) is inventoried in `phase3-completion-checklist-report.md` §7.
 

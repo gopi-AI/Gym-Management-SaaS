@@ -1439,9 +1439,14 @@ This document contains the implementation tasks broken down by phase, with depen
 ### P3-10: Object Storage Configuration
 
 - **Objective**: Close the Phase 3 storage-configuration gap — make `S3Module` reusable,
-  document the S3 variables, and keep non-member object storage deferred. **Not started.**
-  No `@Global()` (`grep -n 'Global' src/shared/storage/s3.module.ts` → none), no non-member
-  key builders (`grep -rn 'buildCrmAttachmentKey\|buildInventoryImageKey' src` → none), and no
+  document the S3 variables, and keep non-member object storage deferred. **Config shipped
+  2026-10-01; key builders deferred** — the probes below record the state at filing
+  (2026-09-30). Shipped: `@Global()` on `S3Module` (`b71decf3`), the three S3
+  variables in `.env.example` (`387f706c`), and `uploads/` in `.gitignore` (`a38bead9`). Still
+  absent: `buildCrmAttachmentKey()` / `buildInventoryImageKey()` — deferred until a consumer
+  exists, exactly as this item scopes them.
+  Filing-time probes: no `@Global()` (`grep -n 'Global' src/shared/storage/s3.module.ts` →
+  none), no non-member key builders (`grep -rn 'buildCrmAttachmentKey\|buildInventoryImageKey' src` → none), and no
   S3 variables in `.env.example` (`grep -niE 'S3_LOCAL_ROOT|S3_DOCUMENTS_BUCKET|AWS_REGION'
   .env.example` → none). Scope per the owner decision (`docs/phase3-scoping-plan.md` §15.2).
 - **Dependencies**: None — plan §10 line 829 records storage as "not a critical-path blocker".
