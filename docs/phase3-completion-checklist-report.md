@@ -202,7 +202,7 @@ Statuses are measured against **tracked content on `main`**: ✅ = the artifact 
 | Module wiring (former BLOCKER-1) | ✅ `finance.module.ts` providers at lines 108–110, `exports:` block opens at line 122 and includes `WebhookEventProcessor` (line 133) |
 | Boot regression pinned | ✅ `src/app.boot.spec.ts` compiles the real `AppModule` with `STRIPE_SECRET_KEY` unset and asserts the BLOCKER-1/BLOCKER-2 conditions |
 | Payment-retry worker | ✅ `payment-retry.worker.ts` (+ `payment-retry.service.spec.ts`) |
-| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` documented | ❌ `grep -in 'stripe' .env.example` → **no matches** |
+| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` documented | ✅ `287faeec` added both keys (`grep -in 'stripe' .env.example` → 6 lines) |
 | `INVOICE_OVERDUE` / `DUNNING_ESCALATED` events mirrored | ✅ `finance.constants.ts:121-122` |
 
 **Verdict:** ✅ functionally complete; the outstanding items are configuration discoverability (`.env.example`), not endpoint defects. The previously reported boot blockers are **fixed and pinned by a test** — that is a closed finding.
@@ -476,7 +476,7 @@ Registered in `workers.module.ts` (7): `OutboxWorker`, `MembershipExpiryWorker`,
 |---|-----------------------------|------------|
 | Q1 | Is `HEAD` the deliverable baseline, or must the uncommitted files be committed? | **CLOSED 2026-09-28** — the feature files were committed (`b4b6464d`, `823c00d5`, `fa8c5212`, `e16c1118`, `021dc160`); the last **7** paths (3 contract/doc artifacts plus the 4 Phase-3 doc paths, none of them application source) also landed — the artifacts in `08978034`, this report and the Phase-3 docs in `bd19fca7` — so **0** paths are uncommitted at the `a5a32f77` baseline. `HEAD` is the deliverable baseline. *(Dated: this row read "Still open — 15 uncommitted paths remain (§2)" until the `e16c1118`/`021dc160` commits.)* |
 | Q2 | If committed, is the P3-03 boot blocker fixed first? | **Moot** — `finance.module.ts` exports the three providers and `src/app.boot.spec.ts` compiles the real `AppModule` with Stripe unset (§3.3) |
-| Q3 | Document `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` in `.env.example`? | **Open** — still zero Stripe entries (§3.3) |
+| Q3 | Document `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` in `.env.example`? | ✅ **Done** — `287faeec` documented both keys (§3.3) |
 | Q4 | Should `GatewayWebhookService` adopt the `isConfigured` guard? | **Moot** — `gateway-webhook.service.ts:22` already does `if (key) this.stripe = new Stripe(key)` (§3.3) |
 | Q5 | Discount-before-tax permanently correct, or configurable ordering still required? | ✅ **RULED 2026-09-27** — permanent: discount-before-tax **by design**, configurable ordering will not be built (no known customer/jurisdiction requirement for the alternative; revisit if one emerges). The criterion was relaxed to match in plan §4 and `docs/task-backlog.md` P3-04b; **no code change** — the implementation already matches and `invoices.service.spec.ts:330` pins it (§3.5). No longer blocking |
 | Q6 | All-or-nothing clawback (Q16) or pro-rata? | **Open** — implementation is committed; the ruling is a paper exercise unless pro-rata is chosen |
