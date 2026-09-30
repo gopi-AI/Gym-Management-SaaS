@@ -187,3 +187,55 @@ ordering (an owner concern) or an unruled area, and no ruling was made:
   `P5-05`→`P6-01` (`:753`→`:769`, `P5-03` later at `:1136`),
   `P6-05`→`P7-01` (`:836`→`:851`, `P6-03` later at `:1033`),
   `P7-05`→`P7-03` (`:914`→`:969`). Phase 3 is the only phase in numeric order (`1608cb31`).
+---
+
+## Findings from the 2026-09-30 sign-off run
+
+Dated observations from the sign-off run at HEAD `6c3add58` (raw logs under
+`/tmp/p3gates/`). **Not fixed here** — each is a CI/process change, an owner
+decision, or an unruled area; recording them is the deliverable. Each item
+carries the command that shows it:
+
+1. **ESLINT-002 — `apps/web` lint exits 1.** `cd apps/web && npm run lint` →
+   `### EXIT=1` (`/tmp/p3gates/web_lint.log`): `next lint` aborts with
+   `Invalid Options: Unknown options: useEslintrc, extensions, …` (eslint 10
+   paired with `eslint-config-next@16`; no ESLint config exists under
+   `apps/web`). Open — not a skip that can be read as green.
+2. **`apps/web` production build aborts with `SIGBUS`, 3/3 attempts,
+   unattributed.** `cd apps/web && npm run build` → `Next.js build worker
+   exited with code: null and signal: SIGBUS` (`/tmp/p3gates/web_build.log`,
+   `/tmp/p3gates/web_build_retry.log`; the third attempt —
+   `NODE_OPTIONS=--max-old-space-size=3072 npx next build` — was run without a
+   captured log file). No compile/type error accompanies it, and the host was
+   short on memory (~890 Mi free, 2.8 Gi swap in use) at the time.
+   **Unconfirmed on a clean machine; deliberately not attributed to the code.**
+3. **CI covers none of the heavy gate steps.** `grep -cniE 'next
+   build|docker|RUN_DB_INTEGRATION' .github/workflows/ci.yml` → `0`; the
+   workflow runs only `npm ci`, backend typecheck, backend lint,
+   `cd apps/web && npm run typecheck`, and `npx jest --passWithNoTests`. There
+   is **no web build, no Docker build and no DB-integration run in CI**.
+4. **No Phase 3 security-review artifact.** `ls docs/ | grep -iE
+   'security|audit|review'` → `security-plan.md` only — a policy plan, not a
+   review of this phase. What exists is the §5.1 tenant-isolation table.
+5. **No E2E gate.** No `"test:e2e"` script in any `package.json`; `git ls-files
+   | grep -c playwright.config` → `0`. The only API-level artifact is
+   `apps/web/__tests__/browser-verify.mjs`, which needs a running API and
+   seeded credentials and was not run.
+6. **P3-10, P3-11 and P3-12 have no backlog entries.** `grep -cE '^### P3-1'
+   docs/task-backlog.md` → `0` (and `grep -n 'P3-10\|P3-11\|P3-12'
+   docs/task-backlog.md` → no match). Filing them is an owner action.
+7. **P2-09 needs an owner decision — on the route, and on whether its tabs call
+   the existing per-domain endpoints.** The placeholder
+   `apps/web/src/app/members/[id]/page.tsx (to create)`
+   (`docs/task-backlog.md:1493`) does not exist (`ls apps/web/src/app/members/`
+   → `page.tsx` only), and the backend 360 surface is a **single** route —
+   `@Controller('v1/members/:memberId/360')` + `@Get('header')`
+   (`src/members/controllers/member-360.controller.ts:23,37`) — against the
+   **ten** endpoints `docs/phase2-scoping-plan.md` §7 proposed (`:379-390`). No
+   ruling is recorded on either the route or the endpoint strategy.
+8. **P2-03 and P2-08 cite paths that do not exist.** P2-03
+   (`docs/task-backlog.md:1525`) cites `src/scheduling/`; P2-08 (`:1466`) cites
+   `src/notifications/ or src/members/`. `ls -d src/scheduling src/notifications`
+   → *No such file or directory* for both, and `git ls-files | grep -cE
+   '^src/(scheduling|notifications)/'` → `0` / `0`. The points service actually
+   lives under `src/loyalty/`, and enrollments under `src/pt/`.
