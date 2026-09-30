@@ -30,6 +30,35 @@ import type {
   MembershipTransferredPayload,
 } from '../../../packages/contracts/src/events/membership.events';
 
+/**
+ * Fixture end date for the lifecycle-event tests, as a `YYYY-MM-DD` string — the
+ * format `Membership.end_date` uses, and the format the service appends
+ * `'T00:00:00Z'` to when it derives `remainingDays` / `daysRemaining`.
+ *
+ * Deliberately RELATIVE, not a literal. This fixture used to be a hard-coded
+ * `'2026-10-01'`, which made the two `toBeGreaterThan(0)` assertions on those
+ * payload fields date-bomb: they can only pass while more than one whole day
+ * remains before the fixture date, so they started failing daily from
+ * 2026-09-30 onward. A 30-day margin computed at load time keeps the derived
+ * day count at 29 or 30 on every run date in every year — there is no calendar
+ * date at which this margin shrinks, because the offset is recomputed from the
+ * clock rather than measured against a fixed point.
+ */
+const FUTURE_END_DATE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+  .toISOString()
+  .slice(0, 10);
+
+/**
+ * `dateOnly` plus `days` whole calendar days, in the same `YYYY-MM-DD` form.
+ * Mirrors `addDaysToDate` in `memberships.service.ts` so the expectation is
+ * derived exactly the way the service derives the value it is compared with.
+ */
+function plusCalendarDays(dateOnly: string, days: number): string {
+  const d = new Date(`${dateOnly}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 describe('MembershipsService', () => {
   let service: MembershipsService;
   let mockMembershipRepo: Record<string, jest.Mock>;
@@ -824,12 +853,12 @@ describe('MembershipsService', () => {
     });
 
     it('extends end_date by the whole days frozen when unfreezing', async () => {
-      // Membership frozen 5 days ago with a fixed end date; unfreezing today must push
+      // Membership frozen 5 days ago with a known end date; unfreezing today must push
       // the end date forward by those 5 whole days so frozen time is not lost.
       const frozenAt = new Date();
       frozenAt.setUTCDate(frozenAt.getUTCDate() - 5);
       const frozenMembership = {
-        ...membership, status: 'frozen', frozen_at: frozenAt, end_date: '2026-10-01',
+        ...membership, status: 'frozen', frozen_at: frozenAt, end_date: FUTURE_END_DATE,
       } as Membership;
       mockMembershipRepo.findOne
         .mockResolvedValueOnce(frozenMembership)
@@ -838,7 +867,8 @@ describe('MembershipsService', () => {
       await service.unfreeze('m1');
 
       expect(mockMembershipRepo.update).toHaveBeenCalledWith(
-        expect.anything(), expect.objectContaining({ status: 'active', end_date: '2026-10-06' }),
+        expect.anything(),
+        expect.objectContaining({ status: 'active', end_date: plusCalendarDays(FUTURE_END_DATE, 5) }),
       );
       // The events remain the same regardless of the extended term.
       expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
@@ -949,7 +979,7 @@ describe('MembershipsService', () => {
 
     const membership = {
       id: 'm1', organization_id: orgId, member_id: 'member-1', status: 'active',
-      end_date: '2026-10-01',
+      end_date: FUTURE_END_DATE,
     } as Membership;
 
     beforeEach(() => {
@@ -974,7 +1004,7 @@ describe('MembershipsService', () => {
       expect(payload.resumeDate).toMatch(ISO_8601);
       // remainingDays = whole calendar days from resumeDate to the membership end_date.
       const expectedRemaining = Math.floor(
-        (new Date('2026-10-01T00:00:00Z').getTime() - new Date(payload.resumeDate as string).getTime())
+        (new Date(`${FUTURE_END_DATE}T00:00:00Z`).getTime() - new Date(payload.resumeDate as string).getTime())
         / (24 * 60 * 60 * 1000),
       );
       expect(payload.remainingDays).toBeGreaterThan(0);
@@ -1029,10 +1059,10 @@ describe('MembershipsService', () => {
       expect(payload.freezeEndDate).toMatch(ISO_8601);
       // actualEndDate is the membership's end date in YYYY-MM-DD form, not a timestamp.
       expect(payload.actualEndDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-      expect(payload.actualEndDate).toBe('2026-10-01');
+      expect(payload.actualEndDate).toBe(FUTURE_END_DATE);
       // daysRemaining = whole calendar days from freezeEndDate to actualEndDate.
       const expectedDaysRemaining = Math.max(0, Math.floor(
-        (new Date('2026-10-01T00:00:00Z').getTime() - new Date(payload.freezeEndDate as string).getTime())
+        (new Date(`${FUTURE_END_DATE}T00:00:00Z`).getTime() - new Date(payload.freezeEndDate as string).getTime())
         / (24 * 60 * 60 * 1000),
       ));
       expect(payload.daysRemaining).toBeGreaterThan(0);
@@ -1197,7 +1227,7 @@ describe('MembershipsService', () => {
       membershipQueryBuilder.getMany.mockResolvedValue([dueMembership]);
       mockMembershipRepo.findOne.mockResolvedValue({
         ...dueMembership,
-        end_date: '2026-10-01',
+        end_date: FUTURE_END_DATE,
       } as Membership);
 
       const result = await service.expireDueMemberships({ today: TODAY });
@@ -1283,7 +1313,7 @@ describe('MembershipsService', () => {
   describe('lifecycle transition envelope conformance', () => {
     const membership = {
       id: 'm1', organization_id: orgId, member_id: 'member-1', status: 'active',
-      end_date: '2026-10-01',
+      end_date: FUTURE_END_DATE,
     } as Membership;
 
     beforeEach(() => {
