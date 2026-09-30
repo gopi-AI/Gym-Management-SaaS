@@ -152,7 +152,7 @@ TOTAL:              92
 
 ⚠️ **Consequence** *(as of 2026-09-25; the boundary this describes was closed on 2026-09-28 — see §0)*: the green CI gates in §1 validated the working tree as it then stood. Anyone who cloned `origin/main` at that date got only §3's ✅ items; anyone who checked out `main` as-is got a coherent, bootable, but **much smaller** Phase 3. The boot blockers in §1.1 existed only in the uncommitted state, so CI (which runs typecheck, lint, web typecheck and jest — see `.github/workflows/ci.yml`) was never in a position to catch them. **The durable half of this finding is unchanged:** CI still cannot boot the application, so green gates remain no evidence that the tree starts at all — `src/app.boot.spec.ts`, committed in `b4b6464d`, is what closes that gap.
 
-**Commit boundary, per artifact** *(re-verified 2026-09-27 with `git ls-files`: in the `…260`–`…271` range only `…262` is still untracked; the others are committed — `…260` and `…263` in `b4b6464d`, `…271` in `fa8c5212` — so the "UNTRACKED" run below was stale from `…260` upward and `:117` contradicted §P3-04b below):*
+**Commit boundary, per artifact** *(re-verified 2026-09-27 with `git ls-files`: in the `…260`–`…271` range only `…262` was still untracked (now committed in `021dc160`, 2026-09-28); the others are committed — `…260` and `…263` in `b4b6464d`, `…271` in `fa8c5212` — so the "UNTRACKED" run below was stale from `…260` upward and `:117` contradicted §P3-04b below):*
 
 ```
 TRACKED   …259-AddRefundsAndCreditNotesToFinanceLedgerViews.ts
@@ -454,7 +454,7 @@ Every item below is a Phase 3 artifact with **no sibling spec**:
 | `src/memberships/dto/create-membership-discount.dto.ts` | P3-04b |
 | `src/finance/entities/invoice-discount.entity.ts` | P3-04b |
 | `src/inventory/**` — the six entities, `inventory.dto.ts`, `inventory.constants.ts`, `inventory.module.ts` (the **service and controller both have specs**) | P3-05 |
-| `packages/contracts/src/events/crm.events.ts`, `inventory.events.ts` (both **still untracked as of 2026-09-28**) and `pt.events.ts` (since committed in `fa8c5212`), plus the modified `finance.events.ts` — note that **no** contract event file anywhere has a spec, so this is a repo-wide convention rather than a Phase 3 gap | P3-05/P3-06/P3-11 |
+| `packages/contracts/src/events/crm.events.ts`, `inventory.events.ts` (both now **tracked** — committed in `08978034`) and `pt.events.ts` (since committed in `fa8c5212`), plus the modified `finance.events.ts` — note that **no** contract event file anywhere has a spec, so this is a repo-wide convention rather than a Phase 3 gap | P3-05/P3-06/P3-11 |
 | `src/finance/entities/webhook-event.entity.ts`, `payment-method.entity.ts`, `dunning-attempt.entity.ts` | P3-03/P3-08 |
 | `src/finance/dto/attach-payment-method.dto.ts` | P3-03 |
 | `src/pt/dto/cancel-pt-enrollment.dto.ts`, `create-commission-payout.dto.ts` | P3-11/P3-12 |
@@ -472,7 +472,7 @@ So the pattern is consistent and deliberate: **services, controllers and constan
 
 | # | Question | Where it bites |
 |---|----------|----------------|
-| Q1 | **Is `HEAD` the deliverable baseline, or must the 92 uncommitted files be committed?** *(As posed 2026-09-25; **CLOSED 2026-09-28** — the feature files were committed in `021dc160` and `e16c1118`; only seven non-source paths remain uncommitted (3 contract/doc artifacts plus the 4 Phase-3 docs). See §0.)* | Determines whether Phase 3 is "4 items done" or "12 items done". Everything else is downstream. |
+| Q1 | **Is `HEAD` the deliverable baseline, or must the 92 uncommitted files be committed?** *(As posed 2026-09-25; **CLOSED 2026-09-28** — the feature files were committed in `021dc160` and `e16c1118`; the last seven non-source paths also landed — the 3 contract/doc artifacts in `08978034`, the 4 Phase-3 docs in `bd19fca7` — so **0 paths remain uncommitted** (`git ls-files` resolves all seven; `git status --porcelain` is empty). See §0.)* | Determines whether Phase 3 is "4 items done" or "12 items done". Everything else is downstream. |
 | Q2 | If committed, is the P3-03 boot blocker fixed first? | Shipping the working tree as-is produces a non-booting `main`. |
 | Q3 | Are `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` to be documented in `.env.example`? | P3-03 is unconfigurable and undiscoverable today. |
 | Q4 | Should `GatewayWebhookService` adopt the adapter's `isConfigured` guard? | BLOCKER-2: without it, an optional credential breaks the whole app. |
