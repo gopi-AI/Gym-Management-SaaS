@@ -134,6 +134,8 @@ This is the single most important finding in the report: **the working tree cont
 | `phase-4` worktree | `8ca91e4e` | contains `main` history |
 | `phase-6` worktree | `bbf73176` | **contains `main`** (`git merge-base --is-ancestor c7f84c08 bbf73176` → true); `origin/phase-6: ahead 9` |
 
+*2026-10-01: the `origin/main` / `c7f84c08` row above is a **historical reading**, not a current claim. `git merge-base --is-ancestor c7f84c08 HEAD` → **exit 0 (true)**, so `c7f84c08` is an ancestor of `HEAD` (history), not the current tip. No current push state is asserted here.*
+
 `bbf73176` is **not** an ancestor of `main`. `55a22b9b` is `Merge origin/main (Phase 3 finance) into phase-6 (Phase 6 reports)` and is contained by `phase-6` / `origin/phase-6` only.
 
 Working tree vs HEAD:
