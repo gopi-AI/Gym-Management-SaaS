@@ -19,7 +19,7 @@ Two corrections to the record that shape the list, verified this turn:
 
 | ID | Question | Verified current state | Unblocks |
 |---|---|---|---|
-| **D1** | Plan §15 **Q10** — does the P3-10 S3 gap now have priority? | plan §10 §12.1 row 12 still says "Opportunistic; not a blocker" | Workstream 1 |
+| **D1** | status-report §6 **Q10** — does the P3-10 S3 gap now have priority? | plan §10 §12.1 row 12 still says "Opportunistic; not a blocker" | Workstream 1 |
 | **D2** | Plan §15 **Q8** — discount ownership direction (needs a `Decision` line) **and** the tie-break rule when two discount windows are in force | Three reads have **no `ORDER BY`**: `memberships.service.ts:460-467` (`renewOne`), `:715-722` (`create`), `:814-821` (`addDiscount`). Which row wins is heap order — `membership-discount-ambiguity.integration.spec.ts` pins that behaviour but does not fix it. **Confirmed-unfixed defect.** | Workstream 4 |
 | **D3** | Plan §15 **Q11** — gateway provider selection | Stripe adapter shipped (`stripe-payment-gateway.adapter.ts`); unrecorded | paper only |
 | **D4** | Plan §15 **Q13** (renewal trigger) **+** status-report Q8 — is an operator renewal route required? | `renew` = **0** occurrences in every membership controller; renewal is service/worker-only (`membership-expiry.worker.ts:37`) | Workstream 3 |
@@ -32,6 +32,9 @@ Two corrections to the record that shape the list, verified this turn:
 | **D11** | Recording-only tallies, each needing a `Decision` line | Q1 ledger views (plain `V_*` shipped), Q2 period locking (**no hits** — not built), Q3 reporting permission (**no hits** — reuse today), Q12 webhook model (`webhook-event.worker.ts` shipped ⇒ persisted+worker), Q15 payout schema (`CommissionPayoutRun`/`Item` shipped), Q17 `pt.events.ts` (**exists**), Q20 stock derived (**no `stock` column** on `inventory-item.entity.ts` ⇒ derived) | paper only |
 | **D12** | **The five `implementation-roadmap.md` §Phase 3 frontend deliverables — in or out?** inventory UI, CRM pipeline/lead management, advanced financial reports, trainer commission statements, refund/credit-note UI | **none exists**; `grep -rniE 'inventory\|crm\|dunning\|commission-payout' apps/web/src \| wc -l` → **0**; no backlog entry exists for any of them; every backlog `Frontend changes:` line reads "None (API only in this phase)" | Workstream 6 — **largest single chunk** |
 | **D13** | P3-05 workers + `CRM_NURTURING` — build or formally descope? | `src/shared/workers/` has background-worker, crm-follow-ups, crm-sla-monitor, dunning, membership-expiry, outbox, payment-retry, webhook-event — **no inventory worker of any kind** | Workstream 2, 3 |
+| **D14** | §15.2 item 4 — security review (`docs/phase3-scoping-plan.md:1170`) | **REQUIRED**; **not yet performed** | — |
+| **D15** | §15.2 item 5 — API/integration gate (`docs/phase3-scoping-plan.md:1172`) | **required**; **does not exist yet** | — |
+| **D16** | §15.2 item 6 — ESLINT-002 / `apps/web` SIGBUS / CI coverage (`docs/phase3-scoping-plan.md:1174`) | **tracked as a separate hardening task** | — |
 | **OI-1** | **Open input to the D14 security review** — Inventory read scoping: "GET by id and list are org-wide; branch scoping applies on writes and on explicit branch filters only." Confirm this is intended, or require branch scoping on reads too. | `getItem` (`inventory.service.ts:84`) and `getPurchaseOrder` (`:147`) filter by `organization_id` only; `listItems` (`:37`) / `stock` (`:72`) take an optional client `branch_id`, cross-checked via `requireBranchAccess`; the writes `updateItem` (`:100`) and `consumeStock` cross-check the row's own branch. Verified against the committed Batch 8b code. | Workstream 2 (read surface) |
 
 ---
