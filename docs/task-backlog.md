@@ -1354,6 +1354,88 @@ This document contains the implementation tasks broken down by phase, with depen
   - Escalation notifications sent
 - **Risks**: Follow-up fatigue, SLA gaming
 
+### P3-08: Dunning
+- **Objective**: Chase invoices still unpaid after the payment-retry worker has exhausted its
+  attempts, by publishing overdue and escalation events from a worker-driven scan.
+  **Shipped in `b4b6464d`.** This backlog entry was missing until 2026-09-30; plan §5 line 378
+  records that "Recurring billing and dunning are **not separate backlog entries**" and names
+  the ID there.
+- **Dependencies**: P3-03 (charge retries), P3-04 (tax-correct invoices), P1-04
+- **Files/modules affected**:
+  - src/finance/services/dunning.service.ts (`processOverdueInvoices`, `processOne`)
+  - src/finance/entities/dunning-attempt.entity.ts
+  - src/shared/workers/dunning.worker.ts (`DunningWorker`)
+  - src/finance/finance.constants.ts:121-122 (`INVOICE_OVERDUE`, `DUNNING_ESCALATED`)
+- **Database changes**:
+  - `FINANCE_DUNNING_ATTEMPTS` — migration `1788965263269-CreateFinanceDunningAttempts.ts`;
+    one row per dispatched event, unique on (organization_id, invoice_id, attempt_number).
+    The migration's own docblock records that payment retry counters stay on `Payment`.
+- **API changes**: None new. Dunning is worker/notification-driven (plan §5 line 440); staff
+  clear a dunned invoice through the existing `POST /v1/invoices/:id/payments`
+  (`src/finance/controllers/payments.controller.ts:49`).
+- **Frontend changes**: None
+- **Worker changes**:
+  - `DunningWorker` — `workerName: 'DUNNING'`, daily (24h) with a batch of 50
+    (`src/shared/workers/worker-config.ts:23,38`), OFF by default behind `WORKERS_ENABLED`
+    plus the `WORKERS_<NAME>_ENABLED` override documented in `.env.example`.
+  - Complementary to the pre-existing `PAYMENT_RETRY` worker (15 min, batch 50): retry
+    re-attempts a *pending payment*, dunning communicates and escalates.
+- **Tests**:
+  - src/finance/services/dunning.service.spec.ts
+  - src/shared/workers/dunning.worker.spec.ts
+- **Acceptance criteria**:
+  - An overdue invoice publishes `InvoiceOverdue.v1` and records an attempt row
+    (`dunning.service.ts:93-107`), with an existing-row lookup on (organization, invoice,
+    `INVOICE_OVERDUE`) at `:79-80` preventing a duplicate dispatch
+  - Once the latest failed payment's `retry_count` reaches
+    `PAYMENT_RETRY_DEFAULTS.MAX_ATTEMPTS`, escalation publishes `DunningEscalated.v1` with
+    `attemptCount` (`dunning.service.ts:123-143`), guarded the same way at `:124-125`
+  - The worker is a no-op unless enabled and its ticks never overlap or throw
+- **Risks**: Worker infrastructure scaling (plan §5 line 464, §14.7); communication channels
+  are P5 (Notifications) work (plan §5 line 463). **Unruled:** plan §15 Q14 owns the
+  question of which component owns the max-attempts counter and whether the schedule is
+  fixed or exponential — there is no `Decision` line, so two counters disagreeing remains an
+  open design risk rather than a settled one.
+
+### P3-09: Recurring Billing / Renewal
+- **Objective**: Bill and renew memberships when `renewal_date` arrives — raise the renewal
+  invoice, charge it, and extend `end_date` / `renewal_date` only once the charge succeeds.
+  **Shipped in `e16c1118`.** This backlog entry was missing until 2026-09-30 (plan §5
+  line 378).
+- **Dependencies**: P3-04 (renewal invoices must carry tax — plan §5 line 461), P3-03 (the
+  charge), P1-04
+- **Files/modules affected**:
+  - src/memberships/services/memberships.service.ts (`renew`, `renewDueMemberships`, `renewOne`)
+  - src/shared/workers/membership-expiry.worker.ts (drives the renewal scan)
+- **Database changes**: None — no migration was required. The path reads the Phase 1
+  `renewal_date` / `price_at_signup` / `currency_at_signup` columns and writes
+  `MEMBERSHIP_HISTORY` rows; `e16c1118` touched no migration file.
+- **API changes**: None — renewal is service/worker-only. No membership controller
+  references `renew` (`grep -rn 'renew' src/memberships/controllers/` → 0). Whether an
+  operator-triggered route is required is `phase3-status-report.md` §6 Q8, still unruled.
+- **Frontend changes**: None
+- **Worker changes**:
+  - No new worker. `MembershipExpiryWorker` calls `renewDueMemberships()` and then
+    `expireDueMemberships()` in the same tick (`membership-expiry.worker.ts:34-45`),
+    reusing the existing row-locked, exactly-once scan.
+  - Plan §5 line 428 states a separate `RECURRING_BILLING` worker is needed only under
+    option (a)/(c); none was built. Which option is *ruled* is plan §15 Q13, unrecorded.
+- **Tests**:
+  - src/memberships/services/memberships.service.spec.ts:370 (publishes `MembershipRenewed.v1`
+    on the extending transaction), `:352` (a failed charge extends and publishes nothing),
+    `:395` (no re-publish when the cycle was already settled)
+  - src/memberships/services/memberships-discount-renewal.integration.spec.ts (real
+    Postgres; reports SKIPPED unless `RUN_DB_INTEGRATION=1`)
+- **Acceptance criteria**:
+  - `end_date` and `renewal_date` advance only after the charge succeeds
+  - `MembershipRenewed.v1` is written in the same transaction as the date extension and at
+    most once per cycle (idempotency key `membership-renewal:{membershipId}:{renewalDate}`)
+  - A failed charge leaves the membership unextended and publishes nothing
+  - The renewal invoice reflects an in-force discount (P3-04b)
+- **Risks**: Late payment versus expiry ordering — under the shipped option (b) a failed
+  renewal is left to the expiry path (plan §5 lines 396-402), and no operator retry surface
+  exists while `phase3-status-report.md` §6 Q8 is unruled.
+
 ### P2-07: Measurements Tab API
 - **Objective**: Implement API for body measurements tracking tab.
 - **Dependencies**: P2-01
