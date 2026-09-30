@@ -24,3 +24,5 @@ npm-debug.log*
 # Generated / one-off artifacts
 frontend-precommit-review.txt
 result
+
+memory-bank/
