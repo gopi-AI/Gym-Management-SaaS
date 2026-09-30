@@ -202,6 +202,21 @@ describeIntegration('MembershipDiscount duplicate guard (real Postgres)', () => 
       start_date: '2026-01-01', end_date: '2027-01-01', renewal_date: '2027-01-01',
       price_at_signup: '100.00', currency_at_signup: 'USD',
     });
+    // The two memberships that carry the overlapping in-force rows the tie-break
+    // test reads. Same non-candidate shape as above: the future `renewal_date`
+    // keeps them out of the renewal / expiry scans.
+    await dataSource.getRepository(Membership).save({
+      id: ids.orderedMembership, organization_id: ids.organization, member_id: ids.member,
+      branch_id: ids.branch, status: 'active',
+      start_date: '2026-01-01', end_date: '2027-01-01', renewal_date: '2027-01-01',
+      price_at_signup: '100.00', currency_at_signup: 'USD',
+    });
+    await dataSource.getRepository(Membership).save({
+      id: ids.tieIdMembership, organization_id: ids.organization, member_id: ids.member,
+      branch_id: ids.branch, status: 'active',
+      start_date: '2026-01-01', end_date: '2027-01-01', renewal_date: '2027-01-01',
+      price_at_signup: '100.00', currency_at_signup: 'USD',
+    });
 
     const discounts = dataSource.getRepository(MembershipDiscount);
     await discounts.save(discounts.create({
