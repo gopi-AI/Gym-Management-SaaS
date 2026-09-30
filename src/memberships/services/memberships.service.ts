@@ -6,7 +6,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, DataSource, LessThanOrEqual, MoreThan, IsNull, Or } from 'typeorm';
+import { Repository, DataSource, LessThanOrEqual, MoreThan, IsNull, Or, FindOptionsOrder } from 'typeorm';
 import { Membership } from '../entities/membership.entity';
 import { MembershipHistory } from '../entities/membership-history.entity';
 import { MembershipPlan } from '../entities/membership-plan.entity';
@@ -27,6 +27,22 @@ import { PAYMENT_STATUS } from '../../finance/finance.constants';
 
 /** PostgreSQL SQLSTATE for a unique-constraint violation. */
 const UNIQUE_VIOLATION_CODE = '23505';
+
+/**
+ * Deterministic tie-break for the three "in force" discount reads
+ * (`renewOne`, `create`, `addDiscount`). One shared constant so the three
+ * cannot drift apart.
+ *
+ * Ruling (owner, 2026-10-01, plan §15 Q8): when two discount windows are both
+ * in force, the latest `starts_at` wins, then the latest `created_at`, then
+ * `id`. `id ASC` is an assumption — the ruling says "then id" without a
+ * direction.
+ */
+export const MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER: FindOptionsOrder<MembershipDiscount> = {
+  starts_at: 'DESC',
+  created_at: 'DESC',
+  id: 'ASC',
+};
 
 const MEMBERSHIP_STATUS = {
   ACTIVE: 'active',
@@ -464,6 +480,7 @@ export class MembershipsService {
             starts_at: LessThanOrEqual(renewalAt),
             ends_at: Or(IsNull(), MoreThan(renewalAt)),
           } as any,
+          order: MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER,
         });
         const result = await this.invoicesService.createForMembershipSale({
           organizationId: membership.organization_id,
@@ -719,6 +736,7 @@ export class MembershipsService {
             starts_at: LessThanOrEqual(saleAt),
             ends_at: Or(IsNull(), MoreThan(saleAt)),
           } as any,
+          order: MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER,
         });
         await this.invoicesService.createForMembershipSale({
           organizationId,
@@ -818,6 +836,7 @@ export class MembershipsService {
           starts_at: LessThanOrEqual(inForceAt),
           ends_at: Or(IsNull(), MoreThan(inForceAt)),
         } as any,
+        order: MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER,
       });
       if (existing) {
         throw new ConflictException('Membership already has an active discount');

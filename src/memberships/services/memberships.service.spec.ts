@@ -6,7 +6,7 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
-import { MembershipsService, NON_TERMINAL_STATUSES } from './memberships.service';
+import { MembershipsService, NON_TERMINAL_STATUSES, MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER } from './memberships.service';
 import { Membership } from '../entities/membership.entity';
 import { MembershipHistory } from '../entities/membership-history.entity';
 import { MembershipPlan } from '../entities/membership-plan.entity';
@@ -322,9 +322,15 @@ describe('MembershipsService', () => {
       // Two layers asserted separately: the lookup stays keyed to THIS membership
       // and THIS organization (tenant boundary), and the value it found reaches
       // the invoice hook.
-      const lookup = mockDiscountRepo.findOne.mock.calls[0][0] as { where: Record<string, unknown> };
+      const lookup = mockDiscountRepo.findOne.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+        order?: unknown;
+      };
       expect(lookup.where.membership_id).toBe(dueMembership.id);
       expect(lookup.where.organization_id).toBe(orgId);
+      // The tie-break is asserted, not just the call: without an `order` this
+      // read is heap-order dependent (plan §15 Q8 D2 fix).
+      expect(lookup.order).toEqual(MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER);
 
       expect(mockInvoicesService.createForMembershipSale).toHaveBeenCalledWith({
         organizationId: orgId,
@@ -529,9 +535,14 @@ describe('MembershipsService', () => {
       ).rejects.toThrow(ConflictException);
 
       expect(mockDiscountRepo.save).not.toHaveBeenCalled();
-      const guard = mockDiscountRepo.findOne.mock.calls[0][0] as { where: Record<string, unknown> };
+      const guard = mockDiscountRepo.findOne.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+        order?: unknown;
+      };
       expect(guard.where.membership_id).toBe('membership-1');
       expect(guard.where.organization_id).toBe(orgId);
+      // Same tie-break as `renewOne` and `create` (plan §15 Q8 D2 fix).
+      expect(guard.order).toEqual(MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER);
       // `starts_at <= now` and `(ends_at IS NULL OR ends_at > now)`. Both are
       // TypeORM FindOperators, so the service cannot evaluate them itself; a
       // revert to the id/org-only predicate drops both keys.
@@ -765,6 +776,10 @@ describe('MembershipsService', () => {
 
       expect(mockInvoicesService.createForMembershipSale).toHaveBeenCalled();
       expect(result.id).toBe('membership-new');
+
+      // The create-path discount read carries the same tie-break (plan §15 Q8 D2 fix).
+      const createLookup = mockDiscountRepo.findOne.mock.calls[0][0] as { order?: unknown };
+      expect(createLookup.order).toEqual(MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER);
       expect(invoiceRepo.create).toHaveBeenCalledWith(expect.objectContaining({
         subtotal: '79.99', tax_amount: '0.00', total_amount: '79.99',
       }));

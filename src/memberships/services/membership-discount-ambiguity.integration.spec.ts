@@ -22,6 +22,12 @@
  * predicate `renewOne` and `create()` use), so the database, not the service,
  * decides which row is inspected.
  *
+ * FIXED (D2, 2026-10-01): `renewOne`, `create()` and `addDiscount` now apply an
+ * explicit `ORDER BY` — `MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER` (`starts_at DESC,
+ * created_at DESC, id ASC`). Two in-force rows remain legal (the partial index
+ * stops only two open-ended ones), so WHICH one a caller sees must be decided by
+ * that key, not by physical row order. Cases 5-6 pin the key on real Postgres.
+ *
  * WHAT THIS SPEC ASSERTS
  * 1. The raw un-ordered read the old guard issued is kept as live evidence
  *    (printed; asserted only as "a row came back" — WHICH row is plan-dependent
@@ -35,6 +41,10 @@
  *    `ends_at IS NULL`, and a collision on it — invisible to the belt check when
  *    the existing row is future-dated — is translated into the guard's own 409
  *    rather than escaping as an unhandled driver error.
+ * 5. Overlapping in-force rows are ordered by the tie-break: the latest
+ *    `starts_at` wins, then the latest `created_at`.
+ * 6. With `starts_at` AND `created_at` tied, `id ASC` decides (the assumption
+ *    recorded on the service constant).
  *
  * RUNNING IT — same pattern as `memberships-discount-renewal.integration.spec.ts`
  *   RUN_DB_INTEGRATION=1 \
@@ -70,7 +80,7 @@
 import { randomUUID } from 'crypto';
 import { ConflictException } from '@nestjs/common';
 import { DataSource, IsNull, LessThanOrEqual, MoreThan, Or } from 'typeorm';
-import { MembershipsService } from './memberships.service';
+import { MembershipsService, MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER } from './memberships.service';
 import { Membership } from '../entities/membership.entity';
 import { MembershipPlan } from '../entities/membership-plan.entity';
 import { MembershipHistory } from '../entities/membership-history.entity';
@@ -105,6 +115,10 @@ describeIntegration('MembershipDiscount duplicate guard (real Postgres)', () => 
     // second open-ended row here.
     futureOpenEndedMembership: randomUUID(),
     futureOpenEndedDiscount: randomUUID(),
+    // Two overlapping in-force rows: `starts_at` ties, `created_at` breaks it.
+    orderedMembership: randomUUID(),
+    // Two overlapping in-force rows tied on `starts_at` AND `created_at`.
+    tieIdMembership: randomUUID(),
   };
 
   // The two legal rows, in the order production would create them: the
@@ -133,6 +147,11 @@ describeIntegration('MembershipDiscount duplicate guard (real Postgres)', () => 
     starts_at: new Date('2099-01-01T00:00:00.000Z'),
     ends_at: null,
   };
+
+  // Deterministic winners for the tie-break fixture, ordered by the service's
+  // shared key: `starts_at DESC, created_at DESC, id ASC`.
+  const ORDERED_WINNER = '10000000-0000-4000-8000-000000000002';
+  const TIE_ID_WINNER = '40000000-0000-4000-8000-000000000001';
 
   beforeAll(async () => {
     dataSource = new DataSource({
@@ -199,6 +218,37 @@ describeIntegration('MembershipDiscount duplicate guard (real Postgres)', () => 
       ...futureOpenEndedRow,
       membership_id: ids.futureOpenEndedMembership, organization_id: ids.organization,
     }));
+
+    // Overlapping in-force rows for the tie-break: every row is in force
+    // (`starts_at <= now`, `ends_at` far future), with at most one open-ended row
+    // per membership (the partial unique index constrains only `ends_at IS NULL`).
+    const orderedRows = [
+      { id: '10000000-0000-4000-8000-000000000003', starts_at: new Date('2025-01-01T00:00:00.000Z'), created_at: new Date('2026-12-01T00:00:00.000Z') },
+      { id: '10000000-0000-4000-8000-000000000001', starts_at: new Date('2026-01-01T00:00:00.000Z'), created_at: new Date('2026-01-01T00:00:00.000Z') },
+      { id: ORDERED_WINNER,                         starts_at: new Date('2026-01-01T00:00:00.000Z'), created_at: new Date('2026-06-01T00:00:00.000Z') },
+    ];
+    for (const row of orderedRows) {
+      await discounts.save(discounts.create({
+        id: row.id, membership_id: ids.orderedMembership, organization_id: ids.organization,
+        discount_type: 'fixed', amount: '1.00',
+        starts_at: row.starts_at, ends_at: new Date('2099-01-01T00:00:00.000Z'),
+      }));
+      // `created_at` is a `@CreateDateColumn`, set explicitly after insert so the
+      // fixture is deterministic rather than dependent on insert timing.
+      await discounts.update({ id: row.id }, { created_at: row.created_at });
+    }
+    const tieIdRows = [
+      { id: '40000000-0000-4000-8000-000000000002', ends_at: new Date('2099-01-01T00:00:00.000Z') },
+      { id: TIE_ID_WINNER,                          ends_at: null },
+    ];
+    for (const row of tieIdRows) {
+      await discounts.save(discounts.create({
+        id: row.id, membership_id: ids.tieIdMembership, organization_id: ids.organization,
+        discount_type: 'fixed', amount: '1.00',
+        starts_at: new Date('2026-01-01T00:00:00.000Z'), ends_at: row.ends_at,
+      }));
+      await discounts.update({ id: row.id }, { created_at: new Date('2026-01-01T00:00:00.000Z') });
+    }
 
     // `addDiscount` touches only the membership/discount repositories, the
     // DataSource and the tenant context. The three collaborators below are never
@@ -268,6 +318,10 @@ describeIntegration('MembershipDiscount duplicate guard (real Postgres)', () => 
         starts_at: LessThanOrEqual(now),
         ends_at: Or(IsNull(), MoreThan(now)),
       } as any,
+      // The SAME ORDER BY the service applies (Q8 D2 fix). The window predicate
+      // already excludes the stale row here, so the key itself is pinned by the
+      // dedicated overlapping-rows test below.
+      order: MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER,
     });
     expect(guardRow).not.toBeNull();
     expect(guardRow!.id).toBe(ids.activeDiscount);
@@ -342,5 +396,40 @@ describeIntegration('MembershipDiscount duplicate guard (real Postgres)', () => 
       discount_type: 'fixed', amount: '5.00',
       starts_at: new Date('2026-03-01T00:00:00.000Z'), ends_at: null,
     }))).rejects.toThrow(/UQ_membership_discounts_one_active|duplicate key value/);
+  }, 30000);
+
+  it('orders overlapping in-force rows deterministically (starts_at, created_at, id)', async () => {
+    // The tie-break only matters when MORE than one row satisfies the window
+    // predicate, which is legal here because the partial unique index constrains
+    // only `ends_at IS NULL`. Both reads use the SAME ORDER BY expression the
+    // service applies, so a drift in the service key fails this test.
+    const discounts = dataSource.getRepository(MembershipDiscount);
+    const now = new Date();
+    const windowFor = (membershipId: string) => ({
+      where: {
+        membership_id: membershipId,
+        organization_id: ids.organization,
+        starts_at: LessThanOrEqual(now),
+        ends_at: Or(IsNull(), MoreThan(now)),
+      } as any,
+      order: MEMBERSHIP_DISCOUNT_TIE_BREAK_ORDER,
+    });
+
+    // Tie on `starts_at` -> the later `created_at` wins; the earlier-`starts_at`
+    // row loses outright.
+    const ordered = await discounts.findOne(windowFor(ids.orderedMembership));
+    expect(ordered).not.toBeNull();
+    expect(ordered!.id).toBe(ORDERED_WINNER);
+
+    // Tie on `starts_at` AND `created_at` -> `id ASC` decides.
+    const tied = await discounts.findOne(windowFor(ids.tieIdMembership));
+    expect(tied).not.toBeNull();
+    expect(tied!.id).toBe(TIE_ID_WINNER);
+
+    // The service rejects on both (an in-force row exists), and WHICH row the
+    // key selects is settled above rather than by physical order.
+    await expect(service.addDiscount(ids.orderedMembership, {
+      discount_type: 'fixed', amount: 5,
+    })).rejects.toThrow(ConflictException);
   }, 30000);
 });
