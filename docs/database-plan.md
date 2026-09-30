@@ -535,6 +535,30 @@ PT_TRAINER_COMMISSIONS {
         string weight_used
         string notes
     }
+    PT_COMMISSION_PAYOUT_RUNS {
+        uuid id PK
+        uuid organization_id FK
+        date period_start
+        date period_end
+        string status
+        decimal total_amount
+        string currency
+        uuid created_by FK
+        timestamptz processed_at
+        timestamptz created_at
+    }
+    PT_COMMISSION_PAYOUT_ITEMS {
+        uuid id PK
+        uuid organization_id FK
+        uuid payout_run_id FK
+        uuid trainer_commission_id FK UK (organization_id, trainer_commission_id)
+        uuid trainer_id
+        decimal amount
+        string currency
+        string status
+        timestamptz paid_at
+        decimal paid_amount
+    }
     SCHEDULING_BATCHES {
         uuid id PK
         uuid organization_id FK
