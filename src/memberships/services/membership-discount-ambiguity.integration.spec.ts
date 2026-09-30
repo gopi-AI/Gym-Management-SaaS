@@ -115,7 +115,10 @@ describeIntegration('MembershipDiscount duplicate guard (real Postgres)', () => 
     // second open-ended row here.
     futureOpenEndedMembership: randomUUID(),
     futureOpenEndedDiscount: randomUUID(),
-    // Two overlapping in-force rows: `starts_at` ties, `created_at` breaks it.
+    // THREE overlapping in-force rows. Two tie on `starts_at` (2026-01-01), and
+    // `created_at` breaks that tie. The third is the decoy: EARLIEST `starts_at`,
+    // LATEST `created_at` — it wins the read when `starts_at` is dropped or
+    // reversed, so its presence is what pins `starts_at` as a real key.
     orderedMembership: randomUUID(),
     // Two overlapping in-force rows tied on `starts_at` AND `created_at`.
     tieIdMembership: randomUUID(),
