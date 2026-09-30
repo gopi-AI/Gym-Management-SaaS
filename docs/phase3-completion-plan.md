@@ -94,9 +94,9 @@ Backlog asks for 8 item endpoints; 4 are missing. Registered today: `GET/POST su
 
 ## Workstream 5 — Documented §12.3 prerequisites
 
-- [ ] **T5.1** `docs/database-plan.md` — add the 7 tables the Doc 2 row (`:422`) lists as missing: `FINANCE_WEBHOOK_EVENTS`, `FINANCE_PAYMENT_METHODS`, `FINANCE_DUNNING_ATTEMPTS`, `FINANCE_INVOICE_DISCOUNTS`, `CRM_SLA_POLICIES`, `CRM_SLA_BREACHES`, `PT_COMMISSION_PAYOUTS`.
-- [ ] **T5.2** `.env.example` — add `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (status-report Q3; `grep -n 'STRIPE' .env.example` → **0 matches** today, while the file documents SENTRY_DSN, AI_*, JWT_* in full).
-- [ ] **T5.3** `docs/task-backlog.md` — add the missing backlog items: recurring billing, dunning; un-truncate P3-02 (stops at `:412`) and P3-06 (stops at `:460`); fix the P3-03/P3-04 ordering (they appear after P3-07).
+- [x] **T5.1** `docs/database-plan.md` — add the tables the Doc 2 row (`:419`) lists as missing: `FINANCE_WEBHOOK_EVENTS`, `FINANCE_PAYMENT_METHODS`, `FINANCE_DUNNING_ATTEMPTS`, `FINANCE_INVOICE_DISCOUNTS`, `CRM_SLA_POLICIES`, `CRM_SLA_BREACHES` (done in `3090573b`), plus the real payout pair `PT_COMMISSION_PAYOUT_RUNS` / `PT_COMMISSION_PAYOUT_ITEMS` (done in `33a14f3a`) — `PT_COMMISSION_PAYOUTS` was never a real table.
+- [x] **T5.2** `.env.example` — add `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` (status-report Q3) — done in `287faeec`.
+- [x] **T5.3** `docs/task-backlog.md` — add the missing backlog items: recurring billing (P3-09) and dunning (P3-08) — done in `cb51f0ca`; rejoin the displaced P3-02 and P3-06 bodies — done in `e241aaac`; fix the P3-03/P3-04/P3-04b ordering — done in `1608cb31`.
 
 ---
 
@@ -118,14 +118,14 @@ If D12 rules **out of scope**, the task is one line: record the descope in `impl
 
 ## Workstream 7 — Documentation reconciliation *(agent-executable now, no rulings needed)*
 
-- [ ] **T7.1** `phase3-completion-checklist-report.md:421` — "Uncommitted diff of **+56/−1**" → committed `08978034` (and it ended +56/−0).
-- [ ] **T7.2** `:423` — "`inventory.events.ts` and `crm.events.ts` … are **untracked**" → tracked (`08978034`).
-- [ ] **T7.3** `:36`, `:48`, `:50`, `:480`, `:569` — "7 paths uncommitted", "this report itself is **untracked**", `git rev-list origin/main..main → 8` → tree clean, 0 ahead.
-- [ ] **T7.4** §5.3 `:430-432` — `🟡 uncommitted` / `🟡 untracked inventory.events.ts` / `🟡 untracked crm.events.ts` → `✅`.
-- [ ] **T7.5** `:655` — "❌ both **untracked**" → tracked.
-- [ ] **T7.6** `:551` and `:564` — **remove or correct the false "filed as backlog P3-13 … P3-17" claim** (those entries do not exist).
-- [ ] **T7.7** `docs/phase3-status-report.md` §0 carries the same stale labels (`:29`, `:36-45`, `:53`) — reconcile identically.
-- [ ] **T7.8** Record `PT_EVENT_VERSION = 'v1'` as ruled/churn per commit `e2d062c2` (status-report Q7).
+- [x] **T7.1** (done in `73f6aa36`) `phase3-completion-checklist-report.md:421` — "Uncommitted diff of **+56/−1**" → committed `08978034` (and it ended +56/−0).
+- [x] **T7.2** (done in `73f6aa36`) `:423` — "`inventory.events.ts` and `crm.events.ts` … are **untracked**" → tracked (`08978034`).
+- [x] **T7.3** (done in `73f6aa36`) `:36`, `:48`, `:50`, `:480`, `:569` — "7 paths uncommitted", "this report itself is **untracked**", `git rev-list origin/main..main → 8` → tree clean, 0 ahead.
+- [x] **T7.4** (done in `73f6aa36`) §5.3 `:430-432` — `🟡 uncommitted` / `🟡 untracked inventory.events.ts` / `🟡 untracked crm.events.ts` → `✅`.
+- [x] **T7.5** (done in `73f6aa36`) `:655` — "❌ both **untracked**" → tracked.
+- [x] **T7.6** (done in `73f6aa36`) `:551` and `:564` — **remove or correct the false "filed as backlog P3-13 … P3-17" claim** (those entries do not exist).
+- [x] **T7.7** (done in `73f6aa36`) `docs/phase3-status-report.md` §0 carries the same stale labels (`:29`, `:36-45`, `:53`) — reconcile identically.
+- [x] **T7.8** (done in `73f6aa36`) Record `PT_EVENT_VERSION = 'v1'` as ruled/churn per commit `e2d062c2` (status-report Q7).
 
 ---
 
@@ -150,3 +150,21 @@ If D12 rules **out of scope**, the task is one line: record the descope in `impl
 7. **Workstream 8** gate, then record completion.
 
 **Guardrails for the agent** (from `.clinerules`, worth restating because most of these touch tenancy): no invented entities/routes/permissions; org id never from client input; every read/write preserving the org boundary with `branchId`/`memberId` validated against it; outbox rows written in the **same** TypeORM transaction as the business change and never published directly; no parallel auth/tenancy system; no raw SQL unless the task requires it; don't weaken `buildKey()`'s signature; and **do not invent a ruling** — if a Workstream-0 item is unruled, stop and report rather than choose.
+
+---
+
+## Out-of-scope findings
+
+Verified this run; deliberately **not** fixed — each would touch the backlog's phase
+ordering (an owner concern) or an unruled area, and no ruling was made:
+
+- **Duplicate `### P0-03` headings** in `docs/task-backlog.md` — at lines `36` and `1858`
+  (`grep -n '^### P0-03' docs/task-backlog.md`).
+- **Non-numeric backlog ordering** in `docs/task-backlog.md` for P0/P1/P2/P4/P5/P6/P7 —
+  e.g. `P0-07`→`P0-10` (`:168`→`:175`, with `P0-08`/`P0-09` later at `:1761`/`:1786`),
+  `P1-02`→`P1-05` (`:239`→`:245`, `P1-03`/`P1-04` later at `:1652`/`:1688`),
+  `P2-06`→`P3-01` (`:357`→`:383`, `P2-03`/`P2-04` later at `:1521`/`:1543`),
+  `P4-06`→`P5-01` (`:671`→`:687`, `P4-03`/`P4-04` later at `:1281`/`:1304`),
+  `P5-05`→`P6-01` (`:753`→`:769`, `P5-03` later at `:1136`),
+  `P6-05`→`P7-01` (`:836`→`:851`, `P6-03` later at `:1033`),
+  `P7-05`→`P7-03` (`:914`→`:969`). Phase 3 is the only phase in numeric order (`1608cb31`).
