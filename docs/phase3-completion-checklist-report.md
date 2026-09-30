@@ -581,7 +581,7 @@ Two further decisions are needed but are **not** in that §6 list:
 7. **Concurrency/race behaviour beyond the pinned cases** — only what the specs cover (e.g. the payout-run 409, the discount lock) is known.
 
 *Git state was independently confirmed against the live remote during this session:*
-`git ls-remote origin refs/heads/main` → `b4b6464d2d1bc9795fcebcf036357943fa717d12`, local `main` → `d6c26095be8e43d149c5120529bb4a59b3d56124` → **6 local commits are not on the remote**.
+`git ls-remote origin refs/heads/main` → `b4b6464d2d1bc9795fcebcf036357943fa717d12`, local `main` → `d6c26095be8e43d149c5120529bb4a59b3d56124` → **6 local commits are not on the remote**. *(2026-09-25/26 reading — **superseded at the `a5a32f77` baseline**: those 6 commits are on `origin/main` (`d6c26095` is an ancestor of `a5a32f77`) and `git rev-list origin/main..main --count` → `0` at that baseline — the same correction `:105` carries.)*
 
 ---
 
