@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { InventoryItem } from '../entities/inventory-item.entity';
 import { InventoryLot } from '../entities/inventory-lot.entity';
 import { InventoryPurchaseOrder } from '../entities/inventory-purchase-order.entity';
@@ -63,6 +63,25 @@ describe('InventoryService', () => {
     const result = await service.updateItem('item-a', { organization_id: 'org-b', branch_id: 'branch-b', id: 'evil', created_at: '2000-01-01', quantity: 999, name: 'New' } as never);
     expect(result).toMatchObject({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a', name: 'New' });
     expect(items.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a' }));
+  });
+
+  it('scopes the update lookup to the organization', async () => {
+    items.findOne.mockResolvedValue({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a', name: 'Old' });
+    await service.updateItem('item-a', { name: 'New' } as never);
+    expect(items.findOne).toHaveBeenCalledWith({ where: { id: 'item-a', organization_id: 'org-a' } });
+  });
+  it('maps a duplicate SKU on update to a 409 instead of an unhandled driver error', async () => {
+    // `UQ_inventory_items_org_branch_sku` (organization_id, branch_id, sku) is the
+    // only unique source on this UPDATE, so a 23505 here is that collision.
+    items.findOne.mockResolvedValue({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a', sku: 'TAKEN' });
+    items.save.mockRejectedValue({ driverError: { code: '23505' } });
+    await expect(service.updateItem('item-a', { sku: 'TAKEN' } as never)).rejects.toBeInstanceOf(ConflictException);
+  });
+  it('does not swallow a non-unique save error as a 409', async () => {
+    items.findOne.mockResolvedValue({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a' });
+    const fk = { driverError: { code: '23503' } };
+    items.save.mockRejectedValue(fk);
+    await expect(service.updateItem('item-a', { name: 'X' } as never)).rejects.toBe(fk);
   });
 
   // --- T2.3 GET /v1/inventory/lots

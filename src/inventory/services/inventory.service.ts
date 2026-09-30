@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
@@ -14,6 +14,8 @@ import { ConsumeStockDto, CreateInventoryItemDto, CreatePurchaseOrderDto, Create
 
 const n = (value: string | number | null | undefined) => Number(value ?? 0);
 const money = (value: number) => value.toFixed(2);
+/** PostgreSQL SQLSTATE for a unique-constraint violation. */
+const UNIQUE_VIOLATION_CODE = '23505';
 
 @Injectable()
 export class InventoryService {
@@ -104,7 +106,17 @@ export class InventoryService {
     if (dto.unit !== undefined) item.unit = dto.unit;
     if (dto.selling_price !== undefined) item.selling_price = money(dto.selling_price);
     if (dto.is_active !== undefined) item.is_active = dto.is_active;
-    return this.items.save(item);
+    try {
+      return await this.items.save(item);
+    } catch (error) {
+      // A 23505 on this UPDATE can only be UQ_inventory_items_org_branch_sku: the
+      // `id` is given (the row was just loaded) and FK failures are 23503. Map it
+      // to the module's own 409 instead of an unhandled QueryFailedError (500).
+      if (InventoryService.isUniqueViolation(error)) {
+        throw new ConflictException('An inventory item with this SKU already exists in this branch');
+      }
+      throw error;
+    }
   }
 
   /**
@@ -150,6 +162,11 @@ export class InventoryService {
       await manager.query(`REFRESH MATERIALIZED VIEW "MV_INVENTORY_STOCK_LEVELS"`);
       return { transaction, costOfGoodsSold: money(fifo.cogs) };
     });
+  }
+
+  private static isUniqueViolation(error: unknown): boolean {
+    const candidate = error as { code?: string; driverError?: { code?: string } };
+    return (candidate?.driverError?.code ?? candidate?.code) === UNIQUE_VIOLATION_CODE;
   }
 
   /** FIFO helper used by sale flows and unit-tested independently of HTTP. */

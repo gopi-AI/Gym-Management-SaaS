@@ -33,7 +33,7 @@
  */
 import { randomUUID } from 'crypto';
 import { DataSource, In } from 'typeorm';
-import { NotFoundException, ValidationPipe } from '@nestjs/common';
+import { ConflictException, NotFoundException, ValidationPipe } from '@nestjs/common';
 import { InventoryService } from './inventory.service';
 import { InventoryItem } from '../entities/inventory-item.entity';
 import { InventoryLot } from '../entities/inventory-lot.entity';
@@ -52,6 +52,7 @@ const describeIntegration = RUN ? describe : describe.skip;
 
 // Distinct, greppable values so a leak is visible in the assertion itself.
 const A_ITEM_SKU = 'ORG-A-SKU-AAA';
+const A_ITEM2_SKU = 'ORG-A-SKU-AAA2';
 const B_ITEM_SKU = 'ORG-B-SKU-BBB';
 const A_LOT_NUMBER = 'ORG-A-LOT-111';
 const B_LOT_NUMBER = 'ORG-B-LOT-222';
@@ -76,7 +77,7 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
     orgA: randomUUID(), orgB: randomUUID(),
     branchA: randomUUID(), branchB: randomUUID(),
     supplierA: randomUUID(), supplierB: randomUUID(),
-    itemA: randomUUID(), itemB: randomUUID(),
+    itemA: randomUUID(), itemA2: randomUUID(), itemB: randomUUID(),
     lotA: randomUUID(), lotB: randomUUID(),
     poA: randomUUID(), poB: randomUUID(),
     poLineA: randomUUID(), poLineB: randomUUID(),
@@ -111,6 +112,7 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
 
     const items = dataSource.getRepository(InventoryItem);
     await items.save({ id: ids.itemA, organization_id: ids.orgA, branch_id: ids.branchA, name: 'Org A Widget', sku: A_ITEM_SKU, unit: 'unit', selling_price: '10.00' });
+    await items.save({ id: ids.itemA2, organization_id: ids.orgA, branch_id: ids.branchA, name: 'Org A Widget 2', sku: A_ITEM2_SKU, unit: 'unit', selling_price: '15.00' });
     await items.save({ id: ids.itemB, organization_id: ids.orgB, branch_id: ids.branchB, name: 'Org B Widget', sku: B_ITEM_SKU, unit: 'unit', selling_price: '20.00' });
 
     const lots = dataSource.getRepository(InventoryLot);
@@ -199,9 +201,9 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
     await expect(service.updateItem(ids.itemB, { name: 'Hijacked by A' } as never)).rejects.toThrow(NotFoundException);
 
     const after = await dataSource.getRepository(InventoryItem).findOneByOrFail({ id: ids.itemB });
-    expect(after).toMatchObject({ organization_id: ids.orgB, branch_id: ids.branchB, sku: B_ITEM_SKU });
-    expect(after.name).toBe(before.name);
-    expect(after.name).not.toBe('Hijacked by A');
+    // Byte-identical, not merely "not obviously changed": every column is compared.
+    expect(after).toEqual(before);
+    expect(after.name).toBe('Org B Widget');
   });
 
   it("updates only the whitelisted fields of the caller's own item", async () => {
@@ -232,5 +234,15 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
     expect(reread.branch_id).toBe(ids.branchA);
     expect(reread.name).toBe('Pipe Test Widget');
     expect(reread).not.toHaveProperty('quantity');
+  });
+
+  it("maps a duplicate SKU on PATCH to a 409 and leaves the row's sku unchanged", async () => {
+    // Org A already owns `itemA2` with this sku in the SAME branch, so the unique
+    // index UQ_inventory_items_org_branch_sku refuses the UPDATE (SQLSTATE 23505).
+    await expect(service.updateItem(ids.itemA, { sku: A_ITEM2_SKU } as never)).rejects.toBeInstanceOf(ConflictException);
+
+    // The failed UPDATE rolled back: itemA keeps its own sku.
+    const reread = await dataSource.getRepository(InventoryItem).findOneByOrFail({ id: ids.itemA });
+    expect(reread.sku).toBe(A_ITEM_SKU);
   });
 });
