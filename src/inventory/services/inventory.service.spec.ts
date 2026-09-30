@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { InventoryItem } from '../entities/inventory-item.entity';
 import { InventoryLot } from '../entities/inventory-lot.entity';
 import { InventoryPurchaseOrder } from '../entities/inventory-purchase-order.entity';
@@ -7,7 +7,7 @@ import { InventoryTransaction } from '../entities/inventory-transaction.entity';
 import { InventoryService } from './inventory.service';
 
 describe('InventoryService', () => {
-  const repo = () => ({ find: jest.fn(), findOne: jest.fn(), findOneBy: jest.fn(), createQueryBuilder: jest.fn(), create: jest.fn((value) => value), save: jest.fn((value) => Promise.resolve(value)), update: jest.fn() });
+  const repo = () => ({ find: jest.fn(), findOne: jest.fn(), findOneBy: jest.fn(), findAndCount: jest.fn(), createQueryBuilder: jest.fn(), create: jest.fn((value) => value), save: jest.fn((value) => Promise.resolve(value)), update: jest.fn() });
   let service: InventoryService; let items: any; let lots: any; let transactions: any; let suppliers: any; let orders: any; let orderItems: any; let manager: any; let tenant: any; let outbox: any; let dataSource: any;
   beforeEach(() => {
     items = repo(); lots = repo(); transactions = repo(); suppliers = repo(); orders = repo(); orderItems = repo();
@@ -38,4 +38,52 @@ describe('InventoryService', () => {
   });
   it('rejects cross-organization reads and writes', async () => { await service.listItems('branch-a'); expect(items.find).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ organization_id: 'org-a', branch_id: 'branch-a' }) })); tenant.requireBranchAccess.mockRejectedValue(new ForbiddenException()); await expect(service.listItems('branch-b')).rejects.toThrow(ForbiddenException); await expect(service.createItem({ branch_id: 'branch-b', name: 'Other', sku: 'OTHER' })).rejects.toThrow(ForbiddenException); });
   it('rejects cross-branch consumption even when the item exists elsewhere', async () => { items.findOne.mockResolvedValue(null); await expect(service.consumeStock({ branch_id: 'branch-b', inventory_item_id: 'item-a', quantity: 1 })).rejects.toThrow(ForbiddenException); expect(lots.createQueryBuilder).not.toHaveBeenCalled(); });
+
+  // --- T2.1 GET /v1/inventory/items/:id
+  it('gets a single item scoped to the organization', async () => {
+    items.findOne.mockResolvedValue({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a', sku: 'SKU-A' });
+    await expect(service.getItem('item-a')).resolves.toMatchObject({ id: 'item-a', organization_id: 'org-a' });
+    expect(items.findOne).toHaveBeenCalledWith({ where: { id: 'item-a', organization_id: 'org-a' } });
+  });
+  it('returns the same 404 for a missing and a cross-organization item', async () => {
+    items.findOne.mockResolvedValue(null);
+    await expect(service.getItem('item-b')).rejects.toThrow(NotFoundException);
+    await expect(service.updateItem('item-b', { name: 'X' } as never)).rejects.toThrow(NotFoundException);
+  });
+
+  // --- T2.2 PATCH /v1/inventory/items/:id
+  it('updates only the whitelisted fields of the caller\'s own item and cross-checks the branch', async () => {
+    items.findOne.mockResolvedValue({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a', name: 'Old', sku: 'SKU-A', selling_price: '5.00' });
+    const result = await service.updateItem('item-a', { name: 'New', selling_price: 12.5 } as never);
+    expect(tenant.requireBranchAccess).toHaveBeenCalledWith('org-a', 'branch-a');
+    expect(result).toMatchObject({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a', name: 'New', sku: 'SKU-A', selling_price: '12.50' });
+  });
+  it('ignores non-whitelisted keys, so PATCH can never re-home an item or write stock', async () => {
+    items.findOne.mockResolvedValue({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a', name: 'Old' });
+    const result = await service.updateItem('item-a', { organization_id: 'org-b', branch_id: 'branch-b', id: 'evil', created_at: '2000-01-01', quantity: 999, name: 'New' } as never);
+    expect(result).toMatchObject({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a', name: 'New' });
+    expect(items.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-a' }));
+  });
+
+  // --- T2.3 GET /v1/inventory/lots
+  it('lists lots org-scoped and paginated, oldest receipt first', async () => {
+    lots.findAndCount.mockResolvedValue([[{ id: 'lot-a', organization_id: 'org-a' }], 1]);
+    const result = await service.listLots({ page: 2, limit: 10, inventory_item_id: 'item-a' });
+    expect(lots.findAndCount).toHaveBeenCalledWith({ where: { organization_id: 'org-a', inventory_item_id: 'item-a' }, order: { received_at: 'ASC', id: 'ASC' }, take: 10, skip: 10 });
+    expect(result).toEqual({ data: [{ id: 'lot-a', organization_id: 'org-a' }], total: 1, page: 2, limit: 10 });
+  });
+
+  // --- T2.4 GET /v1/inventory/purchase-orders/:id
+  it('gets a purchase order with its lines, org-scoped on the parent', async () => {
+    orders.findOne.mockResolvedValue({ id: 'po-1', organization_id: 'org-a', branch_id: 'branch-a' });
+    orderItems.find.mockResolvedValue([{ id: 'line-1', po_id: 'po-1' }]);
+    await expect(service.getPurchaseOrder('po-1')).resolves.toEqual({ order: { id: 'po-1', organization_id: 'org-a', branch_id: 'branch-a' }, items: [{ id: 'line-1', po_id: 'po-1' }] });
+    expect(orders.findOne).toHaveBeenCalledWith({ where: { id: 'po-1', organization_id: 'org-a' } });
+    expect(orderItems.find).toHaveBeenCalledWith({ where: { po_id: 'po-1' } });
+  });
+  it('returns the same 404 for a missing and a cross-organization purchase order and reads no lines', async () => {
+    orders.findOne.mockResolvedValue(null);
+    await expect(service.getPurchaseOrder('po-x')).rejects.toThrow(NotFoundException);
+    expect(orderItems.find).not.toHaveBeenCalled();
+  });
 });

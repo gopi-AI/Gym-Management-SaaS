@@ -10,7 +10,7 @@ import { InventorySupplier } from '../entities/inventory-supplier.entity';
 import { InventoryPurchaseOrder } from '../entities/inventory-purchase-order.entity';
 import { InventoryPurchaseOrderItem } from '../entities/inventory-purchase-order-item.entity';
 import { INVENTORY_EVENT_TYPES, INVENTORY_EVENT_VERSION, INVENTORY_TRANSACTION_TYPES } from '../inventory.constants';
-import { ConsumeStockDto, CreateInventoryItemDto, CreatePurchaseOrderDto, CreateSupplierDto, ReceivePurchaseOrderDto } from '../dto/inventory.dto';
+import { ConsumeStockDto, CreateInventoryItemDto, CreatePurchaseOrderDto, CreateSupplierDto, QueryInventoryLotDto, ReceivePurchaseOrderDto, UpdateInventoryItemDto } from '../dto/inventory.dto';
 
 const n = (value: string | number | null | undefined) => Number(value ?? 0);
 const money = (value: number) => value.toFixed(2);
@@ -70,6 +70,73 @@ export class InventoryService {
   }
 
   async stock(branchId?: string): Promise<unknown[]> { const org = await this.org(); if (branchId) await this.branch(org, branchId); return this.dataSource.query(`SELECT s.organization_id,s.branch_id,s.inventory_item_id,i.name,i.sku,s.quantity_on_hand,s.transaction_value FROM "MV_INVENTORY_STOCK_LEVELS" s JOIN "INVENTORY_ITEMS" i ON i.id=s.inventory_item_id AND i.organization_id=s.organization_id WHERE s.organization_id=$1 ${branchId ? 'AND s.branch_id=$2' : ''} ORDER BY i.name`, branchId ? [org, branchId] : [org]); }
+
+  /**
+   * Single item, org-scoped. No branch check, matching the other org-scoped reads
+   * (`listItems()` with no filter, `listPurchaseOrders()`, `stock()`): tenancy is
+   * the boundary a read must not cross, and the branch filter is applied by the
+   * list endpoint when a caller asks for one.
+   */
+  async getItem(id: string): Promise<InventoryItem> {
+    const org = await this.org();
+    const item = await this.items.findOne({ where: { id, organization_id: org } });
+    if (!item) throw new NotFoundException('Inventory item not found');
+    return item;
+  }
+
+  /**
+   * Partial update. Each field is assigned individually rather than spread from
+   * the DTO (`.clinerules` §3), so a column added to `InventoryItem` later is not
+   * silently writable by a client-supplied key, and the row cannot be re-homed to
+   * another organization or branch (see `UpdateInventoryItemDto`).
+   *
+   * Unlike `getItem()`, this WRITE cross-checks the row's own branch — the same
+   * shape `receivePurchaseOrder()` uses after loading its order.
+   */
+  async updateItem(id: string, dto: UpdateInventoryItemDto): Promise<InventoryItem> {
+    const org = await this.org();
+    const item = await this.items.findOne({ where: { id, organization_id: org } });
+    if (!item) throw new NotFoundException('Inventory item not found');
+    await this.branch(org, item.branch_id);
+    if (dto.name !== undefined) item.name = dto.name;
+    if (dto.sku !== undefined) item.sku = dto.sku;
+    if (dto.barcode !== undefined) item.barcode = dto.barcode;
+    if (dto.unit !== undefined) item.unit = dto.unit;
+    if (dto.selling_price !== undefined) item.selling_price = money(dto.selling_price);
+    if (dto.is_active !== undefined) item.is_active = dto.is_active;
+    return this.items.save(item);
+  }
+
+  /**
+   * Paginated lot listing. `INVENTORY_LOTS` carries `organization_id` itself
+   * (`inventory-lot.entity.ts:7`), so tenancy is a direct predicate — no join
+   * through `INVENTORY_ITEMS` is required (the plan's §7 "problem 2" described the
+   * pre-implementation ERD and was resolved by migration `1788965263264`).
+   * Ordered oldest-receipt-first, which is both the FIFO consumption order and the
+   * order `IDX_inventory_lots_fifo` indexes.
+   */
+  async listLots(query: QueryInventoryLotDto): Promise<{ data: InventoryLot[]; total: number; page: number; limit: number }> {
+    const org = await this.org();
+    const page = query.page || 1; const limit = query.limit || 20;
+    const where: Record<string, unknown> = { organization_id: org };
+    if (query.inventory_item_id !== undefined) where.inventory_item_id = query.inventory_item_id;
+    const [data, total] = await this.lots.findAndCount({ where, order: { received_at: 'ASC', id: 'ASC' }, take: limit, skip: (page - 1) * limit });
+    return { data, total, page, limit };
+  }
+
+  /**
+   * Purchase order with its lines. The order is loaded org-scoped first and the
+   * lines are then read by `po_id`, exactly as `receivePurchaseOrder()` does:
+   * `INVENTORY_PURCHASE_ORDER_ITEMS` has no `organization_id` of its own, so the
+   * already-authorized parent is what makes the child read safe.
+   */
+  async getPurchaseOrder(id: string): Promise<{ order: InventoryPurchaseOrder; items: InventoryPurchaseOrderItem[] }> {
+    const org = await this.org();
+    const order = await this.orders.findOne({ where: { id, organization_id: org } });
+    if (!order) throw new NotFoundException('Purchase order not found');
+    const items = await this.orderItems.find({ where: { po_id: order.id } });
+    return { order, items };
+  }
 
   async consumeStock(dto: ConsumeStockDto): Promise<{ transaction: InventoryTransaction; costOfGoodsSold: string }> {
     const org = await this.org(); await this.branch(org, dto.branch_id);

@@ -142,6 +142,16 @@ This document outlines the API design for the Gym Management SaaS platform.
 - `GET /v1/inventory/lots` - List inventory lots (paginated, filterable)
 - `POST /v1/inventory/purchase-orders` - Create purchase order
 
+> Phase 3 status: `GET /v1/inventory/items/{id}`, `PATCH /v1/inventory/items/{id}`,
+> `GET /v1/inventory/lots` and `GET /v1/inventory/purchase-orders/{id}` are
+> implemented. `POST /v1/inventory/transactions` is **not** built: it ships as
+> `POST /v1/inventory/transactions/consume` — a FIFO stock-consumption write
+> (`ConsumeStockDto` → `InventoryService.consumeStock`), not a free-form
+> transaction recorder. That deviation was ratified 2026-10-01
+> (`docs/phase3-completion-plan.md` **T2.5**). Routes beyond this block:
+> `GET /v1/inventory/suppliers`, `GET /v1/inventory/stock` (reads
+> `MV_INVENTORY_STOCK_LEVELS`), `POST /v1/inventory/purchase-orders/{id}/receive`.
+
 ### Notifications
 - `GET /v1/notification/policies` - List notification policies (paginated)
 - `POST /v1/notification/policies` - Create notification policy
