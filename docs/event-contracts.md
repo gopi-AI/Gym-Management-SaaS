@@ -147,6 +147,7 @@ DTO or HTTP endpoint in `src/memberships`, so nothing publishes it yet.**
     "paymentDate": "timestamp"
   }
   ```
+
 - `InvoiceCreated.v1`
   ```json
   {
@@ -202,6 +203,61 @@ DTO or HTTP endpoint in `src/memberships`, so nothing publishes it yet.**
   invoice's own applied rate at creation time. `FINANCE_TAX_LINES` is never
   modified by a credit note, so `taxAmount` here is the authoritative record of
   the reversal.
+- `InvoiceOverdue.v1`
+  ```json
+  {
+    "invoiceId": "uuid",
+    "memberId": "uuid",
+    "organizationId": "uuid",
+    "amountOutstanding": "decimal",
+    "dueDate": "timestamp",
+    "daysOverdue": "integer"
+  }
+  ```
+- `DunningEscalated.v1`
+  ```json
+  {
+    "invoiceId": "uuid",
+    "organizationId": "uuid",
+    "attemptCount": "integer",
+    "escalatedAt": "timestamp"
+  }
+  ```
+  Dunning events are emitted by the finance dunning worker through the transactional
+  outbox. Notifications remain downstream consumers; this service records an
+  internal dispatch attempt only and does not send email or SMS.
+
+### Inventory Events
+- `InventoryItemCreated.v1`
+  ```json
+  { "inventoryItemId": "uuid", "organizationId": "uuid", "branchId": "uuid", "name": "string", "sku": "string" }
+  ```
+- `InventoryStockUpdated.v1`
+  ```json
+  { "inventoryItemId": "uuid", "organizationId": "uuid", "branchId": "uuid", "transactionId": "uuid", "transactionType": "string", "quantity": "decimal", "quantityOnHand": "decimal" }
+  ```
+- `InventoryItemSold.v1`
+  ```json
+  { "inventoryItemId": "uuid", "organizationId": "uuid", "branchId": "uuid", "quantity": "decimal", "costOfGoodsSold": "decimal" }
+  ```
+- `PurchaseOrderReceived.v1`
+  ```json
+  { "purchaseOrderId": "uuid", "organizationId": "uuid", "branchId": "uuid", "receivedAt": "timestamp", "lineItems": [{ "inventoryItemId": "uuid", "quantity": "decimal", "unitCost": "decimal" }] }
+  ```
+  Inventory events use the finance convention: bare event names in constants and `v1` in the envelope. `PurchaseOrderReceived.v1` is contract-only — no producer yet.
+
+### CRM Events
+- `LeadCreated.v1`: `{ leadId, organizationId, branchId, sourceId, status }`
+- `LeadContacted.v1`: `{ leadId, organizationId, activityId, activityType, occurredAt }`
+- `LeadQualified.v1`: `{ leadId, organizationId, stage, qualifiedAt }`
+- `MemberConverted.v1`: `{ conversionId, leadId, memberId, membershipId, organizationId, conversionDate }` (conversion route remains pending Q22 confirmation)
+- `LeadLost.v1`: `{ leadId, organizationId, reason, lostAt }` (contract defined — no producer yet; §15 Q23 dedup/merge path)
+- `FollowUpScheduled.v1`: `{ followUpId, leadId, organizationId, dueAt, slaPolicyId }` (P3-07)
+- `FollowUpCompleted.v1`: `{ followUpId, leadId, organizationId, outcome, completedAt }` (P3-07)
+- `SlaBreached.v1`: `{ breachId, leadId, organizationId, slaPolicyId, breachType, breachedAt }` (P3-07)
+- `SlaEscalated.v1`: `{ breachId, leadId, organizationId, escalatedAt }` (P3-07)
+
+The backend mirror is `src/crm/crm.constants.ts`; the shared TypeScript contracts are in `packages/contracts/src/events/crm.events.ts`.
 
 ### PT Events
 - `PTEnrollmentCreated.v1`: `{ enrollmentId, memberId, packageId, trainerId, startDate, sessionCount }`
