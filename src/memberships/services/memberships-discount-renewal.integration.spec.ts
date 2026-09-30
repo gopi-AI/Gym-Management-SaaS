@@ -69,6 +69,46 @@ const TODAY = '2026-02-01';
 const PLAN_PRICE = '100.00';
 const DISCOUNT_AMOUNT = '20.00';
 
+/**
+ * D2 follow-up: the tie-break is asserted HERE, through the service's own renew
+ * path, rather than only by replicating the `ORDER BY` in a spec-side query.
+ *
+ * `membership-discount-ambiguity.integration.spec.ts` replicates the key and
+ * therefore proves the key's shape; it never executes `MembershipsService`, so it
+ * cannot see a read that stopped applying the key at all. These fixtures close
+ * that gap: the rows are one-off amounts, so the renewal FEE names the row the
+ * service actually read.
+ *
+ * `fixed` discounts subtract their amount from the plan price
+ * (`invoices.service.ts:540`), so each distinct amount maps to a distinct fee:
+ *   decoy  3.00 -> 97.00   earliest `starts_at`, LATEST `created_at`
+ *   loser  5.00 -> 95.00   later `starts_at`, earlier `created_at`
+ *   winner 7.00 -> 93.00   same `starts_at` as loser, later `created_at`
+ * The decoy is what pins `starts_at`: it wins if `starts_at` is dropped or
+ * reversed, and it must never win here.
+ */
+const DECOY_DISCOUNT = '20000000-0000-4000-8000-000000000001';
+const LOSER_DISCOUNT = '20000000-0000-4000-8000-000000000002';
+const WINNER_DISCOUNT = '20000000-0000-4000-8000-000000000003';
+const DECOY_AMOUNT = '3.00';
+const LOSER_AMOUNT = '5.00';
+const WINNER_AMOUNT = '7.00';
+// Two rows identical except for `id` (and therefore the amount): the key ties on
+// `starts_at` AND `created_at`, so `id ASC` alone decides.
+const TIE_ID_LOW_DISCOUNT = '21000000-0000-4000-8000-000000000001';
+const TIE_ID_HIGH_DISCOUNT = '21000000-0000-4000-8000-000000000002';
+const TIE_ID_WIN_AMOUNT = '13.00';
+const TIE_ID_LOSE_AMOUNT = '11.00';
+
+/**
+ * The two extra memberships are renewed through the public `renew(id)` entry
+ * point. `renewOne` refuses a membership whose `renewal_date` is after today, and
+ * `renewDueMemberships` is driven elsewhere in this file with `TODAY`
+ * ('2026-02-01'); this date sits after that so the scan test never picks these
+ * up, and on/before the real clock date so `renew()` accepts them.
+ */
+const TIE_BREAK_RENEWAL_DATE = '2026-06-01';
+
 describeIntegration('MembershipsService renewal applies an active discount (real Postgres)', () => {
   let dataSource: DataSource;
   let service: MembershipsService;
@@ -82,6 +122,10 @@ describeIntegration('MembershipsService renewal applies an active discount (real
     plan: randomUUID(),
     membership: randomUUID(),
     discount: randomUUID(),
+    // D2 follow-up: one membership carrying three overlapping in-force rows, and
+    // one carrying two rows tied on `starts_at` AND `created_at`.
+    threeRowMembership: randomUUID(),
+    tieIdMembership: randomUUID(),
   };
 
   beforeAll(async () => {
@@ -133,6 +177,55 @@ describeIntegration('MembershipsService renewal applies an active discount (real
       discount_type: 'percentage', amount: DISCOUNT_AMOUNT,
       starts_at: new Date('2026-01-01T00:00:00.000Z'), ends_at: null,
     });
+
+    // --- D2 follow-up: overlapping in-force rows, seen through the real service.
+    // Both memberships are deliberately NOT due for this suite's scan (`TODAY` is
+    // '2026-02-01'), so the assertions of the scan test above cannot see them.
+    for (const membershipId of [ids.threeRowMembership, ids.tieIdMembership]) {
+      await dataSource.getRepository(Membership).save({
+        id: membershipId, organization_id: ids.organization, member_id: ids.member,
+        plan_id: ids.plan, branch_id: ids.branch, status: 'active',
+        start_date: '2026-01-01', end_date: TIE_BREAK_RENEWAL_DATE,
+        renewal_date: TIE_BREAK_RENEWAL_DATE,
+        price_at_signup: PLAN_PRICE, currency_at_signup: 'USD',
+      });
+    }
+
+    const discountRows = dataSource.getRepository(MembershipDiscount);
+    // Every row is bounded (`ends_at` far future) — the partial unique index
+    // `UQ_membership_discounts_one_active` constrains only `ends_at IS NULL`, so
+    // more than one in-force row per membership is legal.
+    const threeRowRows = [
+      { id: DECOY_DISCOUNT,   amount: DECOY_AMOUNT,   starts_at: new Date('2025-01-01T00:00:00.000Z'), created_at: new Date('2026-12-01T00:00:00.000Z') },
+      { id: LOSER_DISCOUNT,   amount: LOSER_AMOUNT,   starts_at: new Date('2026-01-01T00:00:00.000Z'), created_at: new Date('2026-01-01T00:00:00.000Z') },
+      { id: WINNER_DISCOUNT,  amount: WINNER_AMOUNT,  starts_at: new Date('2026-01-01T00:00:00.000Z'), created_at: new Date('2026-06-01T00:00:00.000Z') },
+    ];
+    for (const row of threeRowRows) {
+      await discountRows.save(discountRows.create({
+        id: row.id, membership_id: ids.threeRowMembership, organization_id: ids.organization,
+        discount_type: 'fixed', amount: row.amount,
+        starts_at: row.starts_at, ends_at: new Date('2099-01-01T00:00:00.000Z'),
+      }));
+      // `created_at` is a `@CreateDateColumn`, so it is written explicitly after
+      // the insert: the fixture must be deterministic, not insert-timing
+      // dependent. Note this is an UPDATE, which is also what moves each row's
+      // live tuple to the end of the heap — relevant only to the mutant that
+      // removes `order` entirely, where physical order decides.
+      await discountRows.update({ id: row.id }, { created_at: row.created_at });
+    }
+
+    const tieIdRows = [
+      { id: TIE_ID_LOW_DISCOUNT,  amount: TIE_ID_WIN_AMOUNT },
+      { id: TIE_ID_HIGH_DISCOUNT, amount: TIE_ID_LOSE_AMOUNT },
+    ];
+    for (const row of tieIdRows) {
+      await discountRows.save(discountRows.create({
+        id: row.id, membership_id: ids.tieIdMembership, organization_id: ids.organization,
+        discount_type: 'fixed', amount: row.amount,
+        starts_at: new Date('2026-01-01T00:00:00.000Z'), ends_at: new Date('2099-01-01T00:00:00.000Z'),
+      }));
+      await discountRows.update({ id: row.id }, { created_at: new Date('2026-01-01T00:00:00.000Z') });
+    }
 
     const tenantContext = {
       getCurrentOrganizationId: jest.fn().mockResolvedValue(ids.organization),
@@ -306,5 +399,78 @@ describeIntegration('MembershipsService renewal applies an active discount (real
       nextPaymentDate: '2026-03-03', // the advanced end/renewal date
       renewalFee: '80.00',           // what was charged — the DISCOUNTED total
     });
+  }, 30000);
+
+  // --- D2 follow-up ---------------------------------------------------------
+  // These drive the REAL `renew()` -> `renewOne()` -> real-SQL path against a
+  // migrated schema. The ambiguity spec next to this one replicates the ORDER BY
+  // inside a spec-side query, so it proves the key's SHAPE but never executes the
+  // service read; here the fee is the assertion, so a read that stopped applying
+  // the key at all is caught as well.
+  it('renews at the tie-break winner when one membership has three overlapping in-force rows', async () => {
+    const renewal = await service.renew(ids.threeRowMembership);
+    expect(renewal.payment.status).toBe(PAYMENT_STATUS.SUCCEEDED);
+
+    const invoice = await dataSource.getRepository(Invoice).findOne({
+      where: { membership_id: ids.threeRowMembership },
+    });
+    expect(invoice).not.toBeNull();
+    // The three rows carry distinct amounts, so the fee names the row the service
+    // read: 97.00 = decoy, 95.00 = loser, 93.00 = winner.
+    expect(invoice!.total_amount).toBe('93.00');
+
+    // The immutable snapshot is what proves WHICH row was applied, rather than
+    // only that some discount was.
+    const snapshot = await dataSource.getRepository(InvoiceDiscount).findOne({
+      where: { invoice_id: invoice!.id },
+    });
+    expect(snapshot).toMatchObject({
+      organization_id: ids.organization,
+      membership_discount_id: WINNER_DISCOUNT,
+      discount_type: 'fixed',
+      amount: WINNER_AMOUNT,
+      applied_amount: WINNER_AMOUNT,
+    });
+
+    // The fee as the contract publishes it, string-compared the same way the scan
+    // test above does.
+    const eventRow = await dataSource.getRepository(OutboxEntity).findOne({
+      where: { eventType: 'MembershipRenewed', correlationId: ids.threeRowMembership },
+    });
+    expect(eventRow).not.toBeNull();
+    const envelope = JSON.parse(eventRow!.payload) as { payload: { renewalFee: string } };
+    expect(envelope.payload.renewalFee).toBe('93.00');
+  }, 30000);
+
+  it('renews at the lower id when two in-force rows tie on starts_at AND created_at', async () => {
+    const renewal = await service.renew(ids.tieIdMembership);
+    expect(renewal.payment.status).toBe(PAYMENT_STATUS.SUCCEEDED);
+
+    const invoice = await dataSource.getRepository(Invoice).findOne({
+      where: { membership_id: ids.tieIdMembership },
+    });
+    expect(invoice).not.toBeNull();
+    // The two rows tie all the way through `starts_at` and `created_at`, so only
+    // `id` separates them and the 13.00 row carries the lower id. This pins the
+    // CURRENT behaviour (the constant's `id ASC`); it does not rule on the
+    // direction, which stays an open owner decision (plan §15 / T4.3).
+    expect(invoice!.total_amount).toBe('87.00');
+
+    const snapshot = await dataSource.getRepository(InvoiceDiscount).findOne({
+      where: { invoice_id: invoice!.id },
+    });
+    expect(snapshot).toMatchObject({
+      organization_id: ids.organization,
+      membership_discount_id: TIE_ID_LOW_DISCOUNT,
+      amount: TIE_ID_WIN_AMOUNT,
+      applied_amount: TIE_ID_WIN_AMOUNT,
+    });
+
+    const eventRow = await dataSource.getRepository(OutboxEntity).findOne({
+      where: { eventType: 'MembershipRenewed', correlationId: ids.tieIdMembership },
+    });
+    expect(eventRow).not.toBeNull();
+    const envelope = JSON.parse(eventRow!.payload) as { payload: { renewalFee: string } };
+    expect(envelope.payload.renewalFee).toBe('87.00');
   }, 30000);
 });
