@@ -1490,7 +1490,7 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Objective**: Create Member 360 page with tabs and lazy loading.
 - **Dependencies**: P2-01 through P2-08
 - **Files/modules affected**:
-  - apps/web/pages/members/[id]/360.tsx
+  - apps/web/src/app/members/[id]/page.tsx (to create)
   - Individual tab components
   - Lazy loading wrappers
   - Shared UI components
