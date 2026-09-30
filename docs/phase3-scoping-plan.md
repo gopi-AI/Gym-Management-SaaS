@@ -1024,12 +1024,15 @@ Each question states its options, a recommended default where one exists, and th
 
 **Q1 — Ledger materialization strategy.** Should the ledger read model be (a) materialized views refreshed on a schedule, (b) a denormalized table maintained by event handlers, or (c) plain views with no caching?
 *Recommendation*: (a) for reporting views + (c) for the per-member balance. Option (b) creates the second source of truth Phase 1 deliberately avoided. Also confirm the ledger's **`organization_id` and `currency` columns** — the ERD has neither. **Blocks §1.**
+**Decision (2026-10-01, owner):** Plain `V_*` ledger views — **ratified as shipped**. The ledger read model is three plain views (`V_FINANCE_MEMBER_OUTSTANDING`, `V_FINANCE_REVENUE_BY_PERIOD`, `V_FINANCE_OUTSTANDING_BY_STATUS`), not materialized (`src/finance/ledger.constants.ts:32,34,36`), pinned by `src/finance/ledger.constants.spec.ts:56-64` (“plain views, not materialized”, `.not.toMatch(/^MV_/)`).
 
 **Q2 — Financial period locking.** Do we need period close/lock (no backdated entries into a closed month)? No entity in the codebase has a period field today.
 *Impact*: if yes, it must be designed into P3-01 rather than retrofitted onto a live ledger. **See §14.1.**
+**Decision (2026-10-01, owner):** Period locking is **NOT BUILT** — deferred. No period/lock field or mechanism exists in the codebase (`grep -rniE 'period_lock|locked_at|closed_at|period_close|accounting_period' src` → 0 hits).
 
 **Q3 — Separate reporting permission?** Is reporting `finance:read` (reuse) or a new `finance:report` action? Same question for `crm:report` on `GET /v1/sla/reports`.
 *Recommendation*: add the distinct actions — the codebase already separates finance write actions (`finance:record-payment`), so separating reporting reads is consistent. **Affects §1, §9.**
+**Decision (2026-10-01, owner):** **No dedicated reporting permission** — the existing permission is reused, as shipped; **flagged as a possible future change**. No `finance:report` / `crm:report` token exists (`src/migrations` — the finance tokens are `finance:read`, `finance:create`, `finance:update`, `finance:record-payment`, `finance:admin`, `finance:refund`, `finance:credit-note`).
 
 **Q4 — Is line-level payment allocation in scope?** `FINANCE_PAYMENT_ALLOCATIONS` can allocate a payment to specific invoice items. Is that required in Phase 3, or is invoice-level payment enough?
 *Impact*: if out of scope, the table can be deferred entirely — it is not needed for refunds or credit notes. **Affects §2.**
@@ -1065,6 +1068,7 @@ Each question states its options, a recommended default where one exists, and th
 **Q8 — Membership discount ownership and scope.** Is first-class discounting in scope for Phase 3? If yes, `MEMBERSHIP_MEMBERSHIP_DISCOUNTS` must be **built from scratch** (it does not exist despite the backlog), and a decision is needed on whether Membership owns the definition while Finance applies it (recommended) or Finance owns both.
 *Impact*: materially changes P3-04's size. **Affects §4, §13, §14.5.**
 **Decision** (P3-04, recorded 2026-09-19): **First-class discounting stays in Phase 3 scope, but was split out of P3-04 into P3-04b.** P3-04 was built **tax-only**; at the time of that ruling `MEMBERSHIP_MEMBERSHIP_DISCOUNTS` was absent from the codebase and was P3-04b's deliverable (see `docs/task-backlog.md` P3-04 / P3-04b). **Update 2026-09-28: P3-04b was built in `021dc160`** — the table, entity, DTO, service, route and module wiring are committed, and Finance applies the discount on the invoice side (`invoices.service.ts`, 17 `discount` references). **Still open:** the ownership direction — Membership owning the definition while Finance applies it (§4's recommended default; §13 records the dependency as *"direction TBD"*) — is **not** yet recorded as ruled. `021dc160` implements exactly that direction (the definition lives in `src/memberships/entities/membership-discount.entity.ts`, the application in Finance), but §15 Q8 still carries no `Decision` line, so the practice should be confirmed against the paper rather than assumed.
+**Decision (2026-10-01, owner):** Discount **tie-break only** — when two discount windows are both in force, the latest `starts_at` wins, then the latest `created_at`, then `id`; to be enforced by an explicit `ORDER BY` on the three discount reads (`src/memberships/services/memberships.service.ts:460` `renewOne`, `:715` `create`, `:814` `addDiscount`). The `EXCLUDE USING gist` overlap constraint is **deferred** (the sweep found 0 overlapping rows — `docs/phase3-completion-plan.md:89`). Rationale: `discount_type` is `fixed | percentage` sharing one `amount` column (`src/memberships/entities/membership-discount.entity.ts:17,20`), so “highest wins” is undefined. **Ownership direction: NOT RULED.**
 
 **Q9 — Tax/discount representation and calculation order.** Confirm that (a) discounts apply before or after tax **as configured**, (b) `subtotal` means net-of-tax so the existing `subtotal`/`tax_amount`/`total_amount` triple is populated consistently, and (c) whether per-line tax amounts require an `InvoiceCreated.v2` contract.
 *Impact*: the calculation function signature and the `V2` decision both affect schema/contracts. **Affects §4, §14.4.**
@@ -1080,50 +1084,63 @@ Each question states its options, a recommended default where one exists, and th
 
 **Q11 — Gateway provider selection.** Which provider (Stripe, Paymob, …)? This determines the adapter name, the webhook signature scheme, and the `Payment.gateway_*` column set.
 *Note*: the `PaymentGatewayPort` seam means this is a **binding** decision, not an architectural one. **Affects §3.**
+**Decision (2026-10-01, owner):** **Stripe** is the gateway provider behind the gateway interface; the `STRIPE_*` variables are **optional at boot** (`src/app.boot.spec.ts:155`).
 
 **Q12 — Webhook processing model.** Process the gateway webhook inline within the request (simple; must be fast and idempotent) or persist it and process via a worker/queue? The backlog says “Webhook processing worker (if using queue)”.
 *Recommendation*: persist-then-process, because it makes the receipt→state-change step retryable. **Affects §3, §14.7.**
+**Decision (2026-10-01, owner):** Webhook events are **persisted and processed by a worker** — ratified as shipped (`src/shared/workers/webhook-event.worker.ts:9`).
 
 **Q13 — Renewal trigger point.** (a) Bill N days before expiry, (b) renew on expiry by extending `expireDueMemberships()` (recommended — reuses the existing row lock and exactly-once guarantee), or (c) hybrid with auto-charge.
 Also: **module dependency direction** — `MembershipsModule → FinanceModule` risks a second `forwardRef` cycle (§13); event-driven coupling is preferred. **Affects §5, §13.**
+**Decision (2026-10-01, owner):** Renewal is **worker-triggered only** (`src/shared/workers/membership-expiry.worker.ts:37`); there is **no operator renewal route** in Phase 3. A future route must reuse `renewOne` and the idempotency key `membership-renewal:{membershipId}:{renewalDate}` (`src/memberships/services/memberships.service.ts:423`).
 
 **Q14 — Dunning policy ownership.** (a) Which component owns the **max-attempts counter** — the existing `PAYMENT_RETRY` worker or the new dunning worker (two counters must not disagree)? (b) Is the schedule exponential (`paymentRetryDelayMs`, existing) or fixed `[1, 3, 7]` days (backlog)? (c) Notification channels — internal alert, email, or both? (d) Are staff-facing controls (pause dunning, force escalate) in scope? (e) Does dunning need its own table?
 **Affects §5, §3, §14.7.**
+**Decision (2026-10-01, owner):** **Ratified as shipped.** One counter: `Payment.retry_count` is owned by the retry path, dunning only reads it (`src/finance/services/dunning.service.ts:123`); exponential schedule (`src/finance/finance.constants.ts:133-139,159-161`); dunning cadence daily (`src/shared/workers/worker-config.ts:23`, batch 50 at `:38`).
 
 ### D. Commission Payout & Clawback
 
 **Q15 — Payout schema approach.** `TrainerCommission` has **no `paid` status** and **no `paid_at`/`paid_amount`** (Phase 2 excluded them by instruction). Choose: (a) a separate payout-run table pair (`PT_COMMISSION_PAYOUT_RUNS` / `PT_COMMISSION_PAYOUT_ITEMS` — recommended, it preserves the Phase 2 invariant and models a bulk run), or (b) add `payout_run_id` + `paid_at` + `paid_amount` to `TrainerCommission` (one migration, contradicts the Phase 2 exclusion).
 Also: add a **`paid`** value to `TRAINER_COMMISSION_STATUS_VALUES`? And is a new **`pt:payout`** permission acceptable?
 **Affects §6.**
+**Decision (2026-10-01, owner):** The payout tables are **`PT_COMMISSION_PAYOUT_RUNS`** and **`PT_COMMISSION_PAYOUT_ITEMS`** — ratified (`src/pt/entities/commission-payout-run.entity.ts:3`, `src/pt/entities/commission-payout-item.entity.ts:3`).
 
 **Q16 — Clawback granularity.** `TrainerCommission` is **one row per enrollment** (unique index on `pt_enrollment_id`), so a partial clawback cannot be a second row. Is clawback all-or-nothing (full reversal), or should a cancelled-after-N-sessions enrollment keep a pro-rata share? If pro-rata, `amount` must be adjusted or an adjustment line added.
 **Affects §6.**
+**Decision (2026-10-01, owner):** **All-or-nothing clawback, one row per enrollment** (`src/pt/entities/trainer-commission.entity.ts:35`, `@Index(['pt_enrollment_id'], { unique: true })`); the pro-rata alternative is **deferred**.
 
 **Q17 — PT event contracts.** Should `packages/contracts/src/events/pt.events.ts` be created (recommended — matching `finance.events.ts` / `membership.events.ts`), given that `TrainerCommissionEarned.v1` is currently **backend-only** and absent from `docs/event-contracts.md`? Also resolve the naming inconsistency: PT event names are versioned (`'TrainerCommissionEarned.v1'`) while finance names are not (`'InvoiceCreated'` + a separate `FINANCE_EVENT_VERSION`).
 **Affects §6.**
+**Decision (2026-10-01, owner):** `packages/contracts/src/events/pt.events.ts` **exists** — ratified.
 
 **Q18 — Loyalty redemption in Phase 3?** Phase 2 deferred redemption to “whenever finance integration exists”, and Phase 3 is that integration. `LoyaltyTransaction` already carries the `redeem` type, but `LoyaltyReward` has no workflow and no Phase 3 backlog item. Include it, or defer again?
 *Recommendation*: defer — it is the cleanest scope cut (§14.6). **Affects §6, §13.**
+**Decision (2026-10-01, owner):** Loyalty redemption is **out of Phase 3**; the `REDEEM` constant is **reserved** (`src/loyalty/loyalty.constants.ts:32`).
 
 ### E. Inventory
 
 **Q19 — Inventory costing method.** (a) FIFO — requires adding `unit_cost` to `INVENTORY_INVENTORY_LOTS`; (b) weighted average — workable with the current columns; (c) specific identification — requires a serial/lot identifier on every transaction.
 *Impact*: **changes the schema**, so it must be answered **before** the migration is written. **Blocks §7.**
+**Decision (2026-10-01, owner):** **FIFO** costing — ratified as shipped (`src/inventory/services/inventory.service.ts:89`, `consumeFifo`).
 
 **Q20 — Stock level: derived or denormalised?** Derive from `INVENTORY_INVENTORY_TRANSACTIONS` (consistent with the Phase 1 “never denormalise a derived balance” principle, with a materialized view for lists — recommended), or add a `quantity_on_hand` counter to the item?
 **Affects §7.**
+**Decision (2026-10-01, owner):** Stock is **derived**, no stock column — ratified (`src/inventory/entities/inventory-item.entity.ts` has no `quantity_on_hand`; derived into `MV_INVENTORY_STOCK_LEVELS`, `src/inventory/services/inventory.service.ts:72`).
 
 **Q21 — Branch-level stock scoping.** `INVENTORY_INVENTORY_ITEMS` has no `branch_id`, so all branches of an organization share one stock pool. Acceptable, or is per-branch stock required? If required, `branch_id` must be added to items *and* transactions.
 **Affects §7.**
+**Decision (2026-10-01, owner):** **Per-branch stock is intended.** `INVENTORY_LOTS` has no `branch_id` (`src/inventory/entities/inventory-lot.entity.ts:7-14`); branch safety holds via the branch-guarded item lookup (`src/inventory/services/inventory.service.ts:77`) and is pinned by `src/inventory/services/inventory.service.spec.ts` (“rejects cross-branch consumption even when the item exists elsewhere”). **No schema change.** Defence-in-depth only: adding `branch_id` to lots is optional and unscheduled.
 
 ### F. CRM
 
 **Q22 — Member auto-creation on lead conversion.** (a) Create the member immediately via `MembersService.create()` using lead data, (b) create a prospect record staff promote later, or (c) create the member but leave plan assignment to a separate step?
 Also: where does the **trial membership plan** come from (§14.3) — a seeded “Trial” plan, or a `membership_plan_id` parameter on the convert endpoint?
 **Affects §8, §13, §14.3.**
+**Decision (2026-10-01, owner):** **Option (a) ratified** — `convert()` creates the member via `MembersService.create()` (`src/crm/services/crm.service.ts:35-41`). **Second half (trial plan source) OPEN/DEFERRED:** unimplemented — `membership_id` is `null` (`:47`) and no trial plan or `membership_plan_id` parameter exists.
 
 **Q23 — Lead de-duplication.** How are duplicate leads prevented (same phone/email entered twice)? Options: a unique index on (`organization_id`, `email`) and/or (`organization_id`, `phone`), plus a manual merge endpoint. Note that the ERD defines no unique constraint on `CRM_LEADS`, and conversion idempotency depends on this.
 **Affects §8, §14.3.**
+**Decision (2026-10-01, owner):** Lead de-duplication is **not implemented in Phase 3** — `phone`/`email` have no unique index (`src/crm/entities/lead.entity.ts:12-13`; the only index is `['organization_id','branch_id','status']` at `:3`); **deferred**.
 
 ### 15.1 Flagged omissions and tensions (not questions)
 
@@ -1139,6 +1156,24 @@ These six are **not** open questions — none blocks a build decision, and resol
 | **O6** | **SLA policy management has no defined endpoint.** `CRM_SLA_POLICIES` is planned as a net-new table, but no API is specified to configure it, so policies could only be seeded. P3-07's backlog entry lists three endpoints, none of them a policy CRUD. | Scope gap (unspecified endpoint) | §9's API table reads “`CRM_SLA_POLICIES` is a planned net-new table … but no endpoint is specified to manage it”, with the Permission column `—`. §9's domain context: “**Neither `CRM_SLA_POLICIES` nor `CRM_SLA_BREACHES` exists in the ERD** … so both are **net-new tables**”. P3-07's backlog entry lists exactly three endpoints under “API changes” — `GET /v1/follow-ups/due`, `POST /v1/follow-ups/{id}/complete`, `GET /v1/sla/reports` — none a policy CRUD; its “Database changes” says “Create sla_policies table” (backlog snake_case, mapped by §9's naming note). No CRM migration exists in `src/migrations/`. |
 
 **O1 correction — added later, and it applies to O1's evidence only.** The “§11 line 839” citation is wrong twice over. First, the sentence is at **line 843** (the row beginning “RBAC via `@RequirePermissions({ resource, action })`”); line 839 is the unrelated “State value sets live in a domain constants file” row, which mentions the *planned* `crm.constants.ts` — the likely source of the slip. Second, and more substantively, that sentence sits in §11's **“Phase 3 application”** column, so “`inventory:*`, `crm:*` resource tokens added” is forward-looking: it lists work Phase 3 will do, not a claim that the tokens exist. A `grep -rni 'crm|inventory' src` returns **zero** hits, and neither `src/crm/` nor `src/inventory/` exists — which is precisely what a forward-looking statement predicts, so the grep does **not** contradict §11. O1's finding still stands on its other evidence (§7's missing subsections; api-plan's seven endpoints with no permission mapping), but this citation should be struck or reworded rather than counted as supporting it.
+
+### 15.2 Additional decisions (no question number)
+
+Owner decisions that do not map to a plan §15 question.
+
+**Decision (2026-10-01, owner):** P3-10 is in scope for **config only**: `@Global()` on `S3Module` (`src/shared/storage/s3.module.ts` — no `@Global()` today), the three `.env.example` vars (`S3_LOCAL_ROOT`, `S3_DOCUMENTS_BUCKET`, `AWS_REGION` — absent from `.env.example`), and `uploads/` in `.gitignore` (absent). The CRM/inventory key builders are **deferred until a consumer exists**. *(This item has no plan §15 question; source: plan §10 and `docs/phase3-status-report.md` §6 Q10.)*
+
+**Decision (2026-10-01, owner):** The five `implementation-roadmap.md` §Phase 3 frontend deliverables — inventory management UI; CRM pipeline and lead management; advanced financial reports; trainer commission statements; refund and credit note processing UI (`docs/implementation-roadmap.md:156-161`) — are **descoped from Phase 3**; Phase 3 is **API-only**. They are **UNSCHEDULED** — no target phase assigned — and **no “Phase 3b” is created**.
+
+**Decision (2026-10-01, owner):** The lot-expiry worker, the inventory reorder worker, and the `CRM_NURTURING` worker are **deferred** (no inventory worker exists in `src/shared/workers/`; `src/shared/workers/worker-config.ts` has no `CRM_NURTURING`).
+
+**Decision (2026-10-01, owner):** A security review is **REQUIRED**, scoped to the new surface: the unauthenticated `POST /v1/webhooks/payment-gateway` (`src/finance/controllers/gateway-webhook.controller.ts:8,12`) and stored provider tokens. `FINANCE_PAYMENT_METHODS` holds `stripe_customer_id`, `stripe_payment_method_id`, `card_brand`, `card_last4` only (`src/finance/entities/payment-method.entity.ts`); raw card data is rejected by `@IsEmpty` (`src/finance/dto/attach-payment-method.dto.ts:5-15`). **Not yet performed.**
+
+**Decision (2026-10-01, owner):** An API/integration gate is **required** (boot the app, apply migrations, exercise the new endpoints including cross-org rejection); browser E2E is **not required** in Phase 3. The gate **does not exist yet**.
+
+**Decision (2026-10-01, owner):** ESLINT-002 (`.github/workflows/ci.yml:40,58`), the `apps/web` build SIGBUS (**unconfirmed on a clean machine**), and CI coverage (web build, Docker build, DB integration) are **tracked as a separate hardening task**, not Phase 3 scope.
+
+**Decision (2026-10-01, owner):** P2-09 (Member 360 UI) is **carried over, unscheduled**. Intended route `apps/web/src/app/members/[id]/page.tsx` with tab child routes; tabs call **existing per-domain endpoints** plus `GET /v1/members/:memberId/360/header` (`src/members/controllers/member-360.controller.ts:23,37`); **no new 360 endpoints**.
 
 ---
 
