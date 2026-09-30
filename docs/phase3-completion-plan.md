@@ -131,10 +131,10 @@ If D12 rules **out of scope**, the task is one line: record the descope in `impl
 
 ## Workstream 8 — The actual sign-off gate
 
-- [ ] **T8.1** `npm run typecheck && npm run lint && npx jest --silent` on the full tree — currently green (106 passed suites, 1114 passed / 5 skipped of 1119). Paste raw output; never summarise it.
+- [x] **T8.1** — **DONE 2026-09-30, run at HEAD `6c3add58`** (docs-only commits since); raw logs `/tmp/p3gates/backend_typecheck.log` (`### EXIT=0`), `/tmp/p3gates/backend_lint.log` (`### EXIT=0`), `/tmp/p3gates/jest_default.log` (`Test Suites: 2 skipped, 106 passed, 106 of 108 total` / `Tests: 5 skipped, 1114 passed, 1119 total` / `### EXIT=0`); command `npm run typecheck && npm run lint && npx jest --silent` on the full tree — currently green (106 passed suites, 1114 passed / 5 skipped of 1119). Paste raw output; never summarise it.
 - [ ] **T8.2** The two DB integration specs report **SKIPPED** unless `RUN_DB_INTEGRATION=1` (that is why `npx jest` shows 2 skipped suites). If they are part of the gate, CI needs a migrated scratch database — today they prove nothing in a default run.
-- [ ] **T8.3** **Build the production Docker stage** — `GIT_REVISION=$(git rev-parse HEAD) docker compose build api`. This is the *only* step that would have caught the `@aws-sdk/client-s3` devDependency defect (`d6aab998`); the test suite could not. Strongly recommend adding it to CI.
-- [ ] **T8.4** Re-run migration replay from zero (45/45 apply) and drop the temp DB.
+- [x] **T8.3** — **DONE 2026-09-30, run at HEAD `6c3add58`**: `/tmp/p3gates/docker_build.log` (`revision 6c3add58`, `### EXIT=0`), then the built image was booted (`/tmp/p3gates/api_boot_probe.log`, `/tmp/p3gates/health.json`); **Build the production Docker stage** — `GIT_REVISION=$(git rev-parse HEAD) docker compose build api`. This is the *only* step that would have caught the `@aws-sdk/client-s3` devDependency defect (`d6aab998`); the test suite could not. Strongly recommend adding it to CI.
+- [x] **T8.4** — **DONE 2026-09-30, run at HEAD `6c3add58`**: `/tmp/p3gates/mig_replay.log` (`45 migrations were found in the source code.` / `45 migrations are new migrations must be executed.` / `### EXIT=0`), `/tmp/p3gates/mig_show.log` (`grep -c '\[X\]'` → `45`, `grep -c '\[ \]'` → `0`), scratch DB dropped (`/tmp/p3gates/mig_db_drop.log`, `/tmp/p3gates/mig_leftovers.log`); Re-run migration replay from zero (45/45 apply) and drop the temp DB.
 - [x] **T8.5** (done 2026-09-30) Pushed and verified independently with a fresh `git ls-remote origin refs/heads/main` compared against local `HEAD` — not the push exit code. Raw output:
 
     ```
@@ -145,6 +145,15 @@ If D12 rules **out of scope**, the task is one line: record the descope in `impl
     415ecc1e988c5d1d082fcfe151923d401942cfc6	refs/heads/main
     $ git rev-parse HEAD
     415ecc1e988c5d1d082fcfe151923d401942cfc6
+    ```
+
+- [x] **T8.5** (re-confirmed 2026-09-30 at the `55b22082` baseline — the same two commands, re-read in the sign-off session, still agreed):
+
+    ```
+    $ git ls-remote origin refs/heads/main
+    55b22082842127e28908bfb2d1c635e7ca524879	refs/heads/main
+    $ git rev-parse HEAD
+    55b22082842127e28908bfb2d1c635e7ca524879
     ```
 
 ---
