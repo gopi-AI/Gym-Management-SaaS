@@ -566,7 +566,7 @@ Two further decisions are needed but are **not** in that §6 list:
 - [x] Commit the uncommitted paths — **done 2026-09-30: 0 remain.** The last **7** (2026-09-28 reading: **4** modified tracked + **3** untracked — the untracked three included this report, which then had no committed baseline at all) landed in `08978034` (the 3 contract/doc artifacts `docs/event-contracts.md`, `crm.events.ts`, `inventory.events.ts`) and `bd19fca7` (this report plus the other Phase-3 docs). Down from **15** on 2026-09-27 because the memberships/discount/renewal work landed in `e16c1118` and `021dc160`. Gates were green on the pre-commit working tree (§1.1). *Dated history: this line read "12" when written on 2026-09-26, then "24" after the memberships work, then "15" on 2026-09-27 after the 9 paths landed in `3dee318a` (3 — DEF-01) and `d6c26095` (6 — RLS ruling).*
 - [x] Push the unpushed commits on `main` — **done: at the `a5a32f77` baseline `origin/main` == local `main` and `git rev-list origin/main..main --count` → `0`** (the 2026-09-28 reading of **8** is superseded; see §2)
 - [ ] Decide the `phase-6` integration path (82 commits apart; `phase-4` needs none — it is already in `main`)
-- [ ] After committing: re-run `npm run typecheck && npm run lint && npx jest`, then re-confirm with `git ls-remote origin refs/heads/main` against local `HEAD`
+- [x] After committing: re-run `npm run typecheck && npm run lint && npx jest`, then re-confirm with `git ls-remote origin refs/heads/main` against local `HEAD` — **done: at the `05df7985` baseline `origin/main` == local `HEAD`** (`git ls-remote origin refs/heads/main` → `05df79857fc61d5c539b93b60e527a107684dc77`; `git rev-parse HEAD` → `05df79857fc61d5c539b93b60e527a107684dc77` — identical).
 
 ---
 
