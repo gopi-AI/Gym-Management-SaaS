@@ -299,6 +299,49 @@ FINANCE_PAYMENTS {
         string reference_type
         timestamptz created_at
     }
+    FINANCE_WEBHOOK_EVENTS {
+        uuid id PK
+        string provider
+        string provider_event_id UK
+        string event_type
+        jsonb payload
+        uuid organization_id
+        string status
+        string error_message
+        timestamptz created_at
+        timestamptz processed_at
+    }
+    FINANCE_PAYMENT_METHODS {
+        uuid id PK
+        uuid organization_id FK
+        uuid member_id FK
+        string stripe_customer_id
+        string stripe_payment_method_id UK (organization_id, member_id, stripe_payment_method_id)
+        bool is_default
+        string card_brand
+        string card_last4
+    }
+    FINANCE_DUNNING_ATTEMPTS {
+        uuid id PK
+        uuid organization_id FK
+        uuid invoice_id FK
+        string channel
+        int attempt_number UK (organization_id, invoice_id, attempt_number)
+        string event_type
+        timestamptz scheduled_at
+        timestamptz sent_at
+        string outcome
+        timestamptz created_at
+    }
+    FINANCE_INVOICE_DISCOUNTS {
+        uuid id PK
+        uuid invoice_id FK
+        uuid organization_id
+        uuid membership_discount_id
+        string discount_type
+        decimal amount
+        decimal applied_amount
+    }
     CRM_LEADS {
         uuid id PK
         uuid organization_id FK
@@ -359,6 +402,32 @@ CRM_FOLLOW_UPS {
         uuid lead_id FK
         uuid membership_id FK
         timestamptz conversion_date
+    }
+    CRM_SLA_POLICIES {
+        uuid id PK
+        uuid organization_id FK
+        string name
+        string applies_to
+        int first_response_hours
+        int follow_up_interval_hours
+        int escalation_after_hours
+        int max_follow_ups_per_period
+        int cap_period_days
+        bool is_active
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    CRM_SLA_BREACHES {
+        uuid id PK
+        uuid organization_id FK
+        uuid sla_policy_id FK
+        uuid lead_id FK
+        uuid follow_up_id FK
+        timestamptz breached_at
+        string breach_type
+        timestamptz escalated_at
+        timestamptz resolved_at
+        timestamptz created_at
     }
     PT_TRAINERS {
         uuid id PK
