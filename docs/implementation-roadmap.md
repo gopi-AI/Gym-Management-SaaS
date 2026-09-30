@@ -159,6 +159,7 @@ This document outlines the phased implementation plan for the Gym Management Saa
 - Advanced financial reports
 - Trainer commission statements
 - Refund and credit note processing UI
+*2026-10-01: the five `Frontend Changes` items above are **descoped from Phase 3** — Phase 3 ships **API-only**. They are **unscheduled** (no target phase assigned) and no “Phase 3b” is created. Recorded by the owner, `docs/phase3-scoping-plan.md` §15.2.*
 
 ### Worker Changes
 - Dunning worker (processes overdue invoices)

@@ -1436,6 +1436,8 @@ This document contains the implementation tasks broken down by phase, with depen
   renewal is left to the expiry path (plan §5 lines 396-402), and no operator retry surface
   exists while `phase3-status-report.md` §6 Q8 is unruled.
 
+*2026-10-01: the five `implementation-roadmap.md` §Phase 3 frontend deliverables (inventory UI, CRM pipeline/lead management, advanced financial reports, trainer commission statements, refund/credit-note UI) are **descoped from Phase 3** — Phase 3 ships **API-only**. They are **unscheduled** (no target phase assigned) and no “Phase 3b” is created; deliberately **not** filed as backlog entries. Recorded by the owner, `docs/phase3-scoping-plan.md` §15.2.*
+
 ### P2-07: Measurements Tab API
 - **Objective**: Implement API for body measurements tracking tab.
 - **Dependencies**: P2-01
