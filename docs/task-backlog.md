@@ -421,6 +421,22 @@ This document contains the implementation tasks broken down by phase, with depen
   - credit_notes table (NOT built in P1-04, for the same reason — created by this task)
 - **API changes**:
   - POST /v1/payments/{id}/refunds (enhanced)
+  - POST /v1/invoices/{id}/credit-notes
+  - GET /v1/refunds (paginated)
+  - GET /v1/credit-notes (paginated)
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Refund validation (amount <= payment)
+  - Credit note validation (amount <= invoice)
+  - Financial ledger impact
+  - Reversal scenarios
+- **Acceptance criteria**:
+  - Refunds correctly reduce payment amount
+  - Credit notes correctly reduce invoice amount
+  - Both update financial ledger
+  - Cannot refund more than collected
+- **Risks**: Financial inaccuracies, fraud opportunities
 ### P3-03: Payment Gateway Integration
 - **Objective**: Integrate with real payment gateway (e.g., Stripe) with webhook handling.
 - **Dependencies**: P1-04, P0-06 (for idempotency)
@@ -551,6 +567,39 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Dependencies**: P0-05 (Identity for auth)
 - **Files/modules affected**:
   - src/crm/ (module, controller, service, dto, entity)
+- **Database changes**:
+  - leads table
+  - lead_sources table
+  - lead_stages table
+  - lead_activities table
+  - follow_ups table
+  - trials table
+  - visits table
+  - conversions table
+- **API changes**:
+  - GET /v1/leads (paginated, filterable)
+  - POST /v1/leads
+  - GET /v1/leads/{id}
+  - PATCH /v1/leads/{id}
+  - POST /v1/leads/{id}/activities
+  - POST /v1/leads/{id}/follow-ups
+  - POST /v1/leads/{id}/convert
+  - GET /v1/leads/{id}/trials
+- **Frontend changes**: None
+- **Worker changes**:
+  - Lead nurturing worker (automated follow-ups)
+  - Follow-up scheduler worker
+- **Tests**:
+  - Lead lifecycle progression
+  - Activity and follow-up logging
+  - Conversion tracking accuracy
+  - Lead source attribution
+- **Acceptance criteria**:
+  - Leads created and tracked
+  - Activities and follow-ups recorded
+  - Leads can be converted to members
+  - Trial memberships created
+- **Risks**: Lead leakage, incorrect conversion tracking
 ## Phase 4: Biometric + Offline Edge
 
 ### P4-01: Device Registry and Credentials
@@ -1274,39 +1323,6 @@ This document contains the implementation tasks broken down by phase, with depen
   - Translates to internal event format
   - Handles device errors gracefully
 - **Risks**: SDK compatibility, device communication failures
-- **Database changes**:
-  - leads table
-  - lead_sources table
-  - lead_stages table
-  - lead_activities table
-  - follow_ups table
-  - trials table
-  - visits table
-  - conversions table
-- **API changes**:
-  - GET /v1/leads (paginated, filterable)
-  - POST /v1/leads
-  - GET /v1/leads/{id}
-  - PATCH /v1/leads/{id}
-  - POST /v1/leads/{id}/activities
-  - POST /v1/leads/{id}/follow-ups
-  - POST /v1/leads/{id}/convert
-  - GET /v1/leads/{id}/trials
-- **Frontend changes**: None
-- **Worker changes**:
-  - Lead nurturing worker (automated follow-ups)
-  - Follow-up scheduler worker
-- **Tests**:
-  - Lead lifecycle progression
-  - Activity and follow-up logging
-  - Conversion tracking accuracy
-  - Lead source attribution
-- **Acceptance criteria**:
-  - Leads created and tracked
-  - Activities and follow-ups recorded
-  - Leads can be converted to members
-  - Trial memberships created
-- **Risks**: Lead leakage, incorrect conversion tracking
 
 ### P3-07: Follow-ups and SLAs
 - **Objective**: Implement automated follow-up tasks and service level agreements.
@@ -1337,22 +1353,6 @@ This document contains the implementation tasks broken down by phase, with depen
   - SLA compliance tracked
   - Escalation notifications sent
 - **Risks**: Follow-up fatigue, SLA gaming
-  - POST /v1/invoices/{id}/credit-notes
-  - GET /v1/refunds (paginated)
-  - GET /v1/credit-notes (paginated)
-- **Frontend changes**: None
-- **Worker changes**: None
-- **Tests**:
-  - Refund validation (amount <= payment)
-  - Credit note validation (amount <= invoice)
-  - Financial ledger impact
-  - Reversal scenarios
-- **Acceptance criteria**:
-  - Refunds correctly reduce payment amount
-  - Credit notes correctly reduce invoice amount
-  - Both update financial ledger
-  - Cannot refund more than collected
-- **Risks**: Financial inaccuracies, fraud opportunities
 
 ### P2-07: Measurements Tab API
 - **Objective**: Implement API for body measurements tracking tab.
