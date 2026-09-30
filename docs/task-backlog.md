@@ -421,6 +421,95 @@ This document contains the implementation tasks broken down by phase, with depen
   - credit_notes table (NOT built in P1-04, for the same reason — created by this task)
 - **API changes**:
   - POST /v1/payments/{id}/refunds (enhanced)
+### P3-03: Payment Gateway Integration
+- **Objective**: Integrate with real payment gateway (e.g., Stripe) with webhook handling.
+- **Dependencies**: P1-04, P0-06 (for idempotency)
+- **Files/modules affected**:
+  - src/finance/ (payment service enhancement)
+  - Webhook controller
+  - Payment provider adapters
+- **Database changes**:
+  - Enhance payments table with gateway-specific fields
+  - Potentially add webhook logs table
+- **API changes**:
+  - POST /v1/payments/{id}/process (initiate gateway payment)
+  - POST /v1/webhooks/payment-gateway (idempotent)
+- **Frontend changes**: None
+- **Worker changes**:
+  - Payment retry worker (enhanced for gateway)
+  - Webhook processing worker (if using queue)
+- **Tests**:
+  - Successful payment flow
+  - Failed payment handling
+  - Webhook idempotency
+  - Refund via gateway
+- **Acceptance criteria**:
+  - Payments processed via gateway
+  - Webhooks handled idempotently
+  - Failed payments retry appropriately
+  - Refunds processed via gateway
+- **Risks**: Security vulnerabilities, financial losses
+
+### P3-04: Tax Handling (tax-only; discounts split to P3-04b)
+- **Objective**: Implement tax calculation. Discounts are explicitly OUT of scope for
+  this item and tracked separately as P3-04b (see below).
+- **Dependencies**: P1-04
+- **Files/modules affected**:
+  - src/finance/ (tax rate configuration + tax calculation)
+  - src/members/ (tax-exemption flag on the member)
+- **Database changes**:
+  - `FINANCE_TAX_RATES` (net-new; not in the ERD) — per-organization configurable rates
+  - `FINANCE_TAX_LINES` (NOT built in P1-04 — the Phase 1 finance migration created
+    only invoices, invoice items, payments and the invoice-number counter)
+  - `MEMBERS_MEMBERS.tax_exempt` + `tax_exempt_reason` (net-new columns)
+  - membership_discounts table — MOVED to P3-04b; it was NOT built in P1-03
+- **API changes**:
+  - GET /v1/tax-rates
+  - POST /v1/tax-rates (admin — `finance:admin`, provisioned in migration 1788965263254)
+  - Enhance invoice creation with tax
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Tax calculation accuracy
+  - Tax-exempt handling
+  - Backwards compatibility (a line without a tax_code still yields tax_amount = 0.00)
+- **Acceptance criteria**:
+  - Tax calculated correctly from the organization's configured rates
+  - Tax-exempt members are charged no tax, and the zero-rated result is still
+    recorded as an audit row
+  - Tax reporting data available (`FINANCE_TAX_LINES`)
+- **Risks**: Tax calculation errors, compliance issues
+
+### P3-04b: Membership Discounts (split out of P3-04)
+- **Objective**: Implement first-class discounting on memberships.
+- **Dependencies**: P3-04
+- **Files/modules affected**:
+  - src/memberships/ (discount definition — Membership owns it)
+  - src/finance/ (discount application on the invoice)
+- **Database changes**:
+  - membership_discounts table (NOT built in P1-03 — there was no `MembershipDiscount`
+    entity or discount service in the codebase; verified 2026-09-17. **Built in P3-04b as
+    `021dc160`** on 2026-09-28: `src/memberships/entities/membership-discount.entity.ts`,
+    `MembershipsService.addDiscount`, migration `1788965263262-CreateMembershipDiscounts.ts`)
+- **API changes**:
+  - POST /v1/memberships/{id}/discount
+  - Enhance invoice creation with discount application
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - Discount application rules
+  - Combined tax and discount scenarios — the *fixed* discount-before-tax order
+    (pinned at `src/finance/services/invoices.service.spec.ts:330`; the
+    "configurable discount-before-tax vs discount-after-tax order" this bullet
+    originally asked for was dropped by the plan §15 Q9(a) ruling, 2026-09-27)
+- **Acceptance criteria**:
+  - Discounts applied **before** tax — fixed order (**relaxed 2026-09-27** per plan
+    §15 Q9(a): ordering is hard-coded discount-before-tax *by design, not
+    configurable*; no known customer or jurisdiction requirement for the
+    alternative ordering, revisit if one emerges)
+  - Discount definitions owned by Membership, applied by Finance
+- **Risks**: Discount calculation errors, unintended revenue leakage
+
 ### P3-05: Inventory Management
 - **Objective**: Implement inventory tracking for retail items and supplies.
 - **Dependencies**: P0-01
@@ -1264,95 +1353,6 @@ This document contains the implementation tasks broken down by phase, with depen
   - Both update financial ledger
   - Cannot refund more than collected
 - **Risks**: Financial inaccuracies, fraud opportunities
-
-### P3-03: Payment Gateway Integration
-- **Objective**: Integrate with real payment gateway (e.g., Stripe) with webhook handling.
-- **Dependencies**: P1-04, P0-06 (for idempotency)
-- **Files/modules affected**:
-  - src/finance/ (payment service enhancement)
-  - Webhook controller
-  - Payment provider adapters
-- **Database changes**:
-  - Enhance payments table with gateway-specific fields
-  - Potentially add webhook logs table
-- **API changes**:
-  - POST /v1/payments/{id}/process (initiate gateway payment)
-  - POST /v1/webhooks/payment-gateway (idempotent)
-- **Frontend changes**: None
-- **Worker changes**:
-  - Payment retry worker (enhanced for gateway)
-  - Webhook processing worker (if using queue)
-- **Tests**:
-  - Successful payment flow
-  - Failed payment handling
-  - Webhook idempotency
-  - Refund via gateway
-- **Acceptance criteria**:
-  - Payments processed via gateway
-  - Webhooks handled idempotently
-  - Failed payments retry appropriately
-  - Refunds processed via gateway
-- **Risks**: Security vulnerabilities, financial losses
-
-### P3-04: Tax Handling (tax-only; discounts split to P3-04b)
-- **Objective**: Implement tax calculation. Discounts are explicitly OUT of scope for
-  this item and tracked separately as P3-04b (see below).
-- **Dependencies**: P1-04
-- **Files/modules affected**:
-  - src/finance/ (tax rate configuration + tax calculation)
-  - src/members/ (tax-exemption flag on the member)
-- **Database changes**:
-  - `FINANCE_TAX_RATES` (net-new; not in the ERD) — per-organization configurable rates
-  - `FINANCE_TAX_LINES` (NOT built in P1-04 — the Phase 1 finance migration created
-    only invoices, invoice items, payments and the invoice-number counter)
-  - `MEMBERS_MEMBERS.tax_exempt` + `tax_exempt_reason` (net-new columns)
-  - membership_discounts table — MOVED to P3-04b; it was NOT built in P1-03
-- **API changes**:
-  - GET /v1/tax-rates
-  - POST /v1/tax-rates (admin — `finance:admin`, provisioned in migration 1788965263254)
-  - Enhance invoice creation with tax
-- **Frontend changes**: None
-- **Worker changes**: None
-- **Tests**:
-  - Tax calculation accuracy
-  - Tax-exempt handling
-  - Backwards compatibility (a line without a tax_code still yields tax_amount = 0.00)
-- **Acceptance criteria**:
-  - Tax calculated correctly from the organization's configured rates
-  - Tax-exempt members are charged no tax, and the zero-rated result is still
-    recorded as an audit row
-  - Tax reporting data available (`FINANCE_TAX_LINES`)
-- **Risks**: Tax calculation errors, compliance issues
-
-### P3-04b: Membership Discounts (split out of P3-04)
-- **Objective**: Implement first-class discounting on memberships.
-- **Dependencies**: P3-04
-- **Files/modules affected**:
-  - src/memberships/ (discount definition — Membership owns it)
-  - src/finance/ (discount application on the invoice)
-- **Database changes**:
-  - membership_discounts table (NOT built in P1-03 — there was no `MembershipDiscount`
-    entity or discount service in the codebase; verified 2026-09-17. **Built in P3-04b as
-    `021dc160`** on 2026-09-28: `src/memberships/entities/membership-discount.entity.ts`,
-    `MembershipsService.addDiscount`, migration `1788965263262-CreateMembershipDiscounts.ts`)
-- **API changes**:
-  - POST /v1/memberships/{id}/discount
-  - Enhance invoice creation with discount application
-- **Frontend changes**: None
-- **Worker changes**: None
-- **Tests**:
-  - Discount application rules
-  - Combined tax and discount scenarios — the *fixed* discount-before-tax order
-    (pinned at `src/finance/services/invoices.service.spec.ts:330`; the
-    "configurable discount-before-tax vs discount-after-tax order" this bullet
-    originally asked for was dropped by the plan §15 Q9(a) ruling, 2026-09-27)
-- **Acceptance criteria**:
-  - Discounts applied **before** tax — fixed order (**relaxed 2026-09-27** per plan
-    §15 Q9(a): ordering is hard-coded discount-before-tax *by design, not
-    configurable*; no known customer or jurisdiction requirement for the
-    alternative ordering, revisit if one emerges)
-  - Discount definitions owned by Membership, applied by Finance
-- **Risks**: Discount calculation errors, unintended revenue leakage
 
 ### P2-07: Measurements Tab API
 - **Objective**: Implement API for body measurements tracking tab.
