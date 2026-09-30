@@ -1436,6 +1436,114 @@ This document contains the implementation tasks broken down by phase, with depen
   renewal is left to the expiry path (plan §5 lines 396-402), and no operator retry surface
   exists while `phase3-status-report.md` §6 Q8 is unruled.
 
+### P3-10: Object Storage Configuration
+
+- **Objective**: Close the Phase 3 storage-configuration gap — make `S3Module` reusable,
+  document the S3 variables, and keep non-member object storage deferred. **Not started.**
+  No `@Global()` (`grep -n 'Global' src/shared/storage/s3.module.ts` → none), no non-member
+  key builders (`grep -rn 'buildCrmAttachmentKey\|buildInventoryImageKey' src` → none), and no
+  S3 variables in `.env.example` (`grep -niE 'S3_LOCAL_ROOT|S3_DOCUMENTS_BUCKET|AWS_REGION'
+  .env.example` → none). Scope per the owner decision (`docs/phase3-scoping-plan.md` §15.2).
+- **Dependencies**: None — plan §10 line 829 records storage as "not a critical-path blocker".
+- **Files/modules affected**:
+  - src/shared/storage/s3.module.ts (`@Global()`)
+  - .env.example (the three S3 variables)
+  - .gitignore (`uploads/`)
+  - src/shared/storage/s3.service.ts — **not** changed; the CRM/inventory key builders are
+    deferred until a consumer exists (§15.2)
+- **Database changes**: None.
+- **API changes**: None.
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**: None new (config only).
+- **Acceptance criteria** (owner decision, `docs/phase3-scoping-plan.md` §15.2; plan §10):
+  - `S3Module` is annotated `@Global()` (plan §10 line 823)
+  - `.env.example` documents `S3_LOCAL_ROOT`, `S3_DOCUMENTS_BUCKET`, `AWS_REGION`
+    (plan §10 line 824)
+  - `.gitignore` lists `uploads/` (§15.2)
+  - No CRM/inventory key builders are added — deferred until a consumer exists (§15.2)
+- **Risks**: None — config only. The CRM/inventory attachment features that would need new
+  key builders are themselves descoped (§15.2).
+
+### P3-11: PT Enrollment Cancellation & Commission Clawback
+
+- **Objective**: Implement PT enrollment cancellation with an atomic commission clawback.
+  **Shipped in `823c00d5`** — `git show --stat 823c00d5` ("feat(pt): add PT enrollment
+  cancellation with atomic commission clawback") is 13 files, +251/−57: the cancel route and
+  DTO, the PT-owned status transition, the enums, and the `TrainerCommissionClawedBack.v1`
+  event doc.
+- **Dependencies**: Phase 2 `TrainerCommission` (plan §6 line 470).
+- **Files/modules affected**:
+  - src/pt/controllers/pt-enrollments.controller.ts (`@Controller('v1/pt/enrollments')` `:14`;
+    `@Post(':id/cancel')` `:18`; `@RequirePermissions({ resource: 'pt', action: 'delete' })` `:20`)
+  - src/pt/dto/cancel-pt-enrollment.dto.ts
+  - src/pt/services/pt-enrollments.service.ts (`cancel()` `:229`; the clawback write `:261`;
+    the `TRAINER_COMMISSION_CLAWED_BACK` outbox write `:264`)
+  - src/pt/entities/ — `trainer-commission.entity.ts`, `trainer-commission-status.enum.ts`,
+    `pt-enrollment-status.enum.ts`
+  - src/pt/pt.constants.ts:20 (`TRAINER_COMMISSION_CLAWED_BACK: 'TrainerCommissionClawedBack.v1'`)
+- **Database changes**: None — **migration-free** (plan §6 line 508); the `clawed_back` state
+  value was pre-deployed (`trainer-commission-status.enum.ts` docblock). `823c00d5` touched no
+  migration file.
+- **API changes**:
+  - `POST /v1/pt/enrollments/{id}/cancel`, permission `pt:delete` (plan §6 line 525).
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - src/pt/services/pt-enrollments.service.spec.ts
+  - src/pt/controllers/pt-enrollments.controller.spec.ts
+- **Acceptance criteria** (plan §6 lines 492-494):
+  - Cancelling transitions the enrollment to `CANCELLED` under the row lock
+    (`pt-enrollments.service.ts:229`)
+  - The linked commission is set to `clawed_back` in the **same transaction** (`:261`)
+  - The clawback is PT-owned (single-write-path invariant) and publishes
+    `TrainerCommissionClawedBack.v1` (`:264`)
+  - Status transition only — no deletion (audit trail preserved)
+- **Risks**: None material — migration-free, a single status transition.
+
+### P3-12: PT Commission Payout Runs
+
+- **Objective**: Add bulk commission payout runs with the `paid` transition. **Shipped in
+  `fa8c5212`** — `git show --stat fa8c5212` ("feat(pt): add PT commission payout runs with the
+  paid transition") is 20 files, +713/−11: the payout tables and permission migrations, the
+  run/item entities, the payout service, the controller, `pt.events.ts`, and the `paid` status
+  value.
+- **Dependencies**: P3-11 (shared `TrainerCommissionStatus` lifecycle).
+- **Files/modules affected**:
+  - src/pt/entities/commission-payout-run.entity.ts (`PT_COMMISSION_PAYOUT_RUNS`)
+  - src/pt/entities/commission-payout-item.entity.ts (`PT_COMMISSION_PAYOUT_ITEMS`)
+  - src/pt/services/commission-payouts.service.ts (`create()` `:34`, `process()` `:120`)
+  - src/pt/controllers/commission-payouts.controller.ts (`@Controller('v1/pt/commission-payouts')`
+    `:6`; `@Post()` `:10`; `@Post(':id/process')` `:17`; `@Get(':id')` `:24`)
+  - src/pt/entities/trainer-commission-status.enum.ts (`PAID = 'paid'`)
+  - src/pt/pt.constants.ts:21 (`TRAINER_COMMISSION_PAID: 'TrainerCommissionPaid.v1'`)
+  - packages/contracts/src/events/pt.events.ts
+- **Database changes**:
+  - `PT_COMMISSION_PAYOUT_RUNS` / `PT_COMMISSION_PAYOUT_ITEMS` — migration
+    `1788965263270-CreatePtCommissionPayoutTables.ts` (net-new tables; the ERD has no payout
+    concept — plan §6 lines 505-508).
+  - `pt:payout` permission — migration `1788965263271-ProvisionPtPayoutPermission.ts`.
+- **API changes**:
+  - `POST /v1/pt/commission-payouts` — `pt:payout` (`commission-payouts.controller.ts:12`)
+  - `POST /v1/pt/commission-payouts/{id}/process` — `pt:payout`
+    (`commission-payouts.controller.ts:19`)
+  - `GET /v1/pt/commission-payouts/{id}` — `pt:read` (`commission-payouts.controller.ts:26`)
+- **Frontend changes**: None
+- **Worker changes**: None
+- **Tests**:
+  - src/pt/services/commission-payouts.service.spec.ts
+  - src/pt/controllers/commission-payouts.controller.spec.ts
+  - src/migrations/__specs__/1788965263270-CreatePtCommissionPayoutTables.spec.ts
+  - src/migrations/__specs__/1788965263271-ProvisionPtPayoutPermission.spec.ts
+- **Acceptance criteria** (plan §6 lines 498-499, 527):
+  - A payout run snapshots the commission lines in scope and marks them `paid` on completion
+    (`commission-payouts.service.ts:120`)
+  - `paid` is added to `TRAINER_COMMISSION_STATUS_VALUES` — the additive option (plan §6
+    line 499; `trainer-commission-status.enum.ts`)
+  - Both payout routes require `pt:payout` (`commission-payouts.controller.ts:12,19`)
+- **Risks**: The payout tables are net-new — "schema work is unavoidable for payout"
+  (plan §6 line 508).
+
 *2026-10-01: the five `implementation-roadmap.md` §Phase 3 frontend deliverables (inventory UI, CRM pipeline/lead management, advanced financial reports, trainer commission statements, refund/credit-note UI) are **descoped from Phase 3** — Phase 3 ships **API-only**. They are **unscheduled** (no target phase assigned) and no “Phase 3b” is created; deliberately **not** filed as backlog entries. Recorded by the owner, `docs/phase3-scoping-plan.md` §15.2.*
 
 ### P2-07: Measurements Tab API
