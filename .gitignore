@@ -21,6 +21,9 @@ npm-debug.log*
 *.pid
 *.seed
 
+# Local object-storage root (src/shared/storage/s3.service.ts, S3_LOCAL_ROOT)
+uploads/
+
 # Generated / one-off artifacts
 frontend-precommit-review.txt
 result
