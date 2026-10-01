@@ -72,7 +72,8 @@
     "migration:generate": "npm run typeorm -- migration:generate",
     "migration:run": "npm run typeorm -- migration:run",
     "migration:revert": "npm run typeorm -- migration:revert",
-    "bootstrap:dev": "ts-node --transpile-only src/scripts/bootstrap-dev.ts"
+    "bootstrap:dev": "ts-node --transpile-only src/scripts/bootstrap-dev.ts",
+    "api:gate": "node scripts/api-gate.js"
   },
   "allowScripts": {
     "@nestjs/core@10.4.22": true,
