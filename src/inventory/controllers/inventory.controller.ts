@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { RequirePermissions } from '../../shared/auth/permissions.guard';
 import { InventoryService } from '../services/inventory.service';
-import { ConsumeStockDto, CreateInventoryItemDto, CreatePurchaseOrderDto, CreateSupplierDto, QueryInventoryLotDto, ReceivePurchaseOrderDto, UpdateInventoryItemDto } from '../dto/inventory.dto';
+import { ConsumeStockDto, CreateInventoryItemDto, CreatePurchaseOrderDto, CreateSupplierDto, QueryInventoryItemDto, QueryInventoryLotDto, QueryInventoryStockDto, ReceivePurchaseOrderDto, UpdateInventoryItemDto } from '../dto/inventory.dto';
 
 @Controller('v1/inventory')
 export class InventoryController {
@@ -9,7 +9,7 @@ export class InventoryController {
 
   @Get('suppliers') @RequirePermissions({ resource: 'inventory', action: 'read' }) listSuppliers() { return this.service.listSuppliers(); }
   @Post('suppliers') @RequirePermissions({ resource: 'inventory', action: 'create' }) createSupplier(@Body() dto: CreateSupplierDto) { return this.service.createSupplier(dto); }
-  @Get('items') @RequirePermissions({ resource: 'inventory', action: 'read' }) listItems(@Query('branch_id') branchId?: string) { return this.service.listItems(branchId); }
+  @Get('items') @RequirePermissions({ resource: 'inventory', action: 'read' }) listItems(@Query() query: QueryInventoryItemDto) { return this.service.listItems(query.branch_id); }
   @Post('items') @RequirePermissions({ resource: 'inventory', action: 'create' }) createItem(@Body() dto: CreateInventoryItemDto) { return this.service.createItem(dto); }
   @Get('items/:id') @RequirePermissions({ resource: 'inventory', action: 'read' }) getItem(@Param('id', new ParseUUIDPipe({ version: '4' })) id: string) { return this.service.getItem(id); }
   @Patch('items/:id') @RequirePermissions({ resource: 'inventory', action: 'update' }) updateItem(@Param('id', new ParseUUIDPipe({ version: '4' })) id: string, @Body() dto: UpdateInventoryItemDto) { return this.service.updateItem(id, dto); }
@@ -18,6 +18,6 @@ export class InventoryController {
   @Get('purchase-orders/:id') @RequirePermissions({ resource: 'inventory', action: 'read' }) getPurchaseOrder(@Param('id', new ParseUUIDPipe({ version: '4' })) id: string) { return this.service.getPurchaseOrder(id); }
   @Post('purchase-orders') @RequirePermissions({ resource: 'inventory', action: 'create' }) createPurchaseOrder(@Body() dto: CreatePurchaseOrderDto) { return this.service.createPurchaseOrder(dto); }
   @Post('purchase-orders/:id/receive') @RequirePermissions({ resource: 'inventory', action: 'receive' }) receive(@Param('id', new ParseUUIDPipe({ version: '4' })) id: string, @Body() dto: ReceivePurchaseOrderDto) { return this.service.receivePurchaseOrder(id, dto); }
-  @Get('stock') @RequirePermissions({ resource: 'inventory', action: 'read' }) stock(@Query('branch_id') branchId?: string) { return this.service.stock(branchId); }
+  @Get('stock') @RequirePermissions({ resource: 'inventory', action: 'read' }) stock(@Query() query: QueryInventoryStockDto) { return this.service.stock(query.branch_id); }
   @Post('transactions/consume') @RequirePermissions({ resource: 'inventory', action: 'update' }) consume(@Body() dto: ConsumeStockDto) { return this.service.consumeStock(dto); }
 }

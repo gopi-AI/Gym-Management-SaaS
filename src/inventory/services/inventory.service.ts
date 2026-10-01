@@ -36,7 +36,7 @@ export class InventoryService {
 
   async listSuppliers(): Promise<InventorySupplier[]> { return this.suppliers.find({ where: { organization_id: await this.org() }, order: { name: 'ASC' } }); }
   async createSupplier(dto: CreateSupplierDto): Promise<InventorySupplier> { return this.suppliers.save(this.suppliers.create({ ...dto, organization_id: await this.org() })); }
-  async listItems(branchId?: string): Promise<InventoryItem[]> { const org = await this.org(); if (branchId) await this.branch(org, branchId); return this.items.find({ where: { organization_id: org, ...(branchId ? { branch_id: branchId } : {}) }, order: { name: 'ASC' } }); }
+  async listItems(branchId: string): Promise<InventoryItem[]> { const org = await this.org(); await this.branch(org, branchId); return this.items.find({ where: { organization_id: org, branch_id: branchId }, order: { name: 'ASC' } }); }
   async createItem(dto: CreateInventoryItemDto): Promise<InventoryItem> { const org = await this.org(); await this.branch(org, dto.branch_id); const item = await this.items.save(this.items.create({ organization_id: org, branch_id: dto.branch_id, name: dto.name, sku: dto.sku, barcode: dto.barcode, unit: dto.unit, selling_price: dto.selling_price === undefined ? null : money(dto.selling_price) })); await this.outbox.saveEventEnvelope(INVENTORY_EVENT_TYPES.ITEM_CREATED, INVENTORY_EVENT_VERSION, org, { inventoryItemId: item.id, organizationId: org, branchId: item.branch_id, name: item.name, sku: item.sku }); return item; }
 
   async createPurchaseOrder(dto: CreatePurchaseOrderDto): Promise<InventoryPurchaseOrder> {
@@ -71,18 +71,20 @@ export class InventoryService {
     });
   }
 
-  async stock(branchId?: string): Promise<unknown[]> { const org = await this.org(); if (branchId) await this.branch(org, branchId); return this.dataSource.query(`SELECT s.organization_id,s.branch_id,s.inventory_item_id,i.name,i.sku,s.quantity_on_hand,s.transaction_value FROM "MV_INVENTORY_STOCK_LEVELS" s JOIN "INVENTORY_ITEMS" i ON i.id=s.inventory_item_id AND i.organization_id=s.organization_id WHERE s.organization_id=$1 ${branchId ? 'AND s.branch_id=$2' : ''} ORDER BY i.name`, branchId ? [org, branchId] : [org]); }
+  async stock(branchId: string): Promise<unknown[]> { const org = await this.org(); await this.branch(org, branchId); return this.dataSource.query(`SELECT s.organization_id,s.branch_id,s.inventory_item_id,i.name,i.sku,s.quantity_on_hand,s.transaction_value FROM "MV_INVENTORY_STOCK_LEVELS" s JOIN "INVENTORY_ITEMS" i ON i.id=s.inventory_item_id AND i.organization_id=s.organization_id WHERE s.organization_id=$1 AND s.branch_id=$2 ORDER BY i.name`, [org, branchId]); }
 
   /**
-   * Single item, org-scoped. No branch check, matching the other org-scoped reads
-   * (`listItems()` with no filter, `listPurchaseOrders()`, `stock()`): tenancy is
-   * the boundary a read must not cross, and the branch filter is applied by the
-   * list endpoint when a caller asks for one.
+   * Single item, org- AND branch-scoped (OI-1). The row is loaded org-scoped
+   * first, then its own branch is cross-checked with `requireBranchAccess` — the
+   * same shape `updateItem()` uses. A missing id or another organization's id is a
+   * 404 (the org predicate hides it); an item in a branch the caller may not access
+   * is a 403.
    */
   async getItem(id: string): Promise<InventoryItem> {
     const org = await this.org();
     const item = await this.items.findOne({ where: { id, organization_id: org } });
     if (!item) throw new NotFoundException('Inventory item not found');
+    await this.branch(org, item.branch_id);
     return item;
   }
 
@@ -120,32 +122,39 @@ export class InventoryService {
   }
 
   /**
-   * Paginated lot listing. `INVENTORY_LOTS` carries `organization_id` itself
-   * (`inventory-lot.entity.ts:7`), so tenancy is a direct predicate — no join
-   * through `INVENTORY_ITEMS` is required (the plan's §7 "problem 2" described the
-   * pre-implementation ERD and was resolved by migration `1788965263264`).
-   * Ordered oldest-receipt-first, which is both the FIFO consumption order and the
-   * order `IDX_inventory_lots_fifo` indexes.
+   * Paginated, branch-scoped lot listing (OI-1). `INVENTORY_LOTS` carries
+   * `organization_id` (`inventory-lot.entity.ts:7`) so tenancy stays a direct
+   * predicate, but it has NO `branch_id`, so the branch predicate is applied by
+   * joining the row's item (`INVENTORY_LOTS.inventory_item_id = INVENTORY_ITEMS.id`)
+   * and matching that item's `branch_id` — with the item's `organization_id`
+   * pinned to the lot's, exactly as `memberships.service.ts:444` joins an invoice
+   * item. Ordered oldest-receipt-first (the FIFO order `IDX_inventory_lots_fifo`
+   * indexes).
    */
   async listLots(query: QueryInventoryLotDto): Promise<{ data: InventoryLot[]; total: number; page: number; limit: number }> {
-    const org = await this.org();
+    const org = await this.org(); await this.branch(org, query.branch_id);
     const page = query.page || 1; const limit = query.limit || 20;
-    const where: Record<string, unknown> = { organization_id: org };
-    if (query.inventory_item_id !== undefined) where.inventory_item_id = query.inventory_item_id;
-    const [data, total] = await this.lots.findAndCount({ where, order: { received_at: 'ASC', id: 'ASC' }, take: limit, skip: (page - 1) * limit });
+    const qb = this.lots.createQueryBuilder('lot')
+      .innerJoin(InventoryItem, 'item', 'item.id = lot.inventory_item_id AND item.organization_id = lot.organization_id')
+      .where('lot.organization_id = :org AND item.branch_id = :branch', { org, branch: query.branch_id });
+    if (query.inventory_item_id !== undefined) qb.andWhere('lot.inventory_item_id = :itemId', { itemId: query.inventory_item_id });
+    const [data, total] = await qb.orderBy('lot.received_at', 'ASC').addOrderBy('lot.id', 'ASC').take(limit).skip((page - 1) * limit).getManyAndCount();
     return { data, total, page, limit };
   }
 
   /**
-   * Purchase order with its lines. The order is loaded org-scoped first and the
-   * lines are then read by `po_id`, exactly as `receivePurchaseOrder()` does:
+   * Purchase order with its lines, org- AND branch-scoped (OI-1). The order is
+   * loaded org-scoped first, its own branch is cross-checked, and the lines are
+   * then read by `po_id`, exactly as `receivePurchaseOrder()` does:
    * `INVENTORY_PURCHASE_ORDER_ITEMS` has no `organization_id` of its own, so the
-   * already-authorized parent is what makes the child read safe.
+   * already-authorized parent is what makes the child read safe. Missing or
+   * other-organization id -> 404; an unauthorized branch -> 403.
    */
   async getPurchaseOrder(id: string): Promise<{ order: InventoryPurchaseOrder; items: InventoryPurchaseOrderItem[] }> {
     const org = await this.org();
     const order = await this.orders.findOne({ where: { id, organization_id: org } });
     if (!order) throw new NotFoundException('Purchase order not found');
+    await this.branch(org, order.branch_id);
     const items = await this.orderItems.find({ where: { po_id: order.id } });
     return { order, items };
   }
