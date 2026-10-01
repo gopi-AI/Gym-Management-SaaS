@@ -35,7 +35,8 @@ Two corrections to the record that shape the list, verified this turn:
 | **D14** | §15.2 item 4 — security review (`docs/phase3-scoping-plan.md:1170`) | **REQUIRED**; **not yet performed** | — |
 | **D15** | §15.2 item 5 — API/integration gate (`docs/phase3-scoping-plan.md:1172`) | **required**; **does not exist yet** | — |
 | **D16** | §15.2 item 6 — ESLINT-002 / `apps/web` SIGBUS / CI coverage (`docs/phase3-scoping-plan.md:1174`) | **tracked as a separate hardening task** | — |
-| **OI-1** | **Open input to the D14 security review** — Inventory read scoping: "GET by id and list are org-wide; branch scoping applies on writes and on explicit branch filters only." Confirm this is intended, or require branch scoping on reads too. | `getItem` (`inventory.service.ts:84`) and `getPurchaseOrder` (`:147`) filter by `organization_id` only; `listItems` (`:37`) / `stock` (`:72`) take an optional client `branch_id`, cross-checked via `requireBranchAccess`; the writes `updateItem` (`:100`) and `consumeStock` cross-check the row's own branch. Verified against the committed Batch 8b code. | Workstream 2 (read surface) |
+| **D17** | §15.2 item 7 — P2-09 (Member 360 UI) carried over, unscheduled (`docs/phase3-scoping-plan.md:1176`) | **carried over, unscheduled** | — |
+| **OI-1** | **Standalone open question** — Inventory read scoping: "GET by id and list are org-wide; branch scoping applies on writes and on explicit branch filters only." Confirm this is intended, or require branch scoping on reads too. | `getItem` (`inventory.service.ts:84`) and `getPurchaseOrder` (`:147`) filter by `organization_id` only; `listItems` (`:37`) / `stock` (`:72`) take an optional client `branch_id`, cross-checked via `requireBranchAccess`; the writes `updateItem` (`:100`) and `consumeStock` cross-check the row's own branch. Verified against the committed Batch 8b code. | Workstream 2 (read surface) |
 
 ---
 
@@ -188,7 +189,7 @@ If D12 rules **out of scope**, the task is one line: record the descope in `impl
 
 ## Suggested execution order
 
-1. **D1–D13 rulings** (owner). T7.1–T7.8 can run in parallel — pure doc work, no rulings.
+1. **D1–D17 rulings** (owner). T7.1–T7.8 can run in parallel — pure doc work, no rulings.
 2. **T5.1–T5.3** (`.env.example`, database-plan, backlog) — cheap, unblocks discoverability.
 3. **Workstream 1** (P3-10) once D1 says in-scope.
 4. **Workstream 2** endpoints, then workers if D13 says build.

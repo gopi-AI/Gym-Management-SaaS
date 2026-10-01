@@ -1173,7 +1173,7 @@ Owner decisions that do not map to a plan §15 question.
 
 **Decision (2026-10-01, owner):** ESLINT-002 (`.github/workflows/ci.yml:40,58`), the `apps/web` build SIGBUS (**unconfirmed on a clean machine**), and CI coverage (web build, Docker build, DB integration) are **tracked as a separate hardening task**, not Phase 3 scope. **(D16)**
 
-**Decision (2026-10-01, owner):** P2-09 (Member 360 UI) is **carried over, unscheduled**. Intended route `apps/web/src/app/members/[id]/page.tsx` with tab child routes; tabs call **existing per-domain endpoints** plus `GET /v1/members/:memberId/360/header` (`src/members/controllers/member-360.controller.ts:23,37`); **no new 360 endpoints**.
+**Decision (2026-10-01, owner):** P2-09 (Member 360 UI) is **carried over, unscheduled**. Intended route `apps/web/src/app/members/[id]/page.tsx` with tab child routes; tabs call **existing per-domain endpoints** plus `GET /v1/members/:memberId/360/header` (`src/members/controllers/member-360.controller.ts:23,37`); **no new 360 endpoints**. **(D17)**
 
 ---
 
