@@ -29,3 +29,6 @@ frontend-precommit-review.txt
 result
 
 memory-bank/
+
+# Agent tool state (autoharness run/session files)
+.claude/autoharness/
