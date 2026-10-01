@@ -33,7 +33,7 @@
  */
 import { randomUUID } from 'crypto';
 import { DataSource, In } from 'typeorm';
-import { ConflictException, NotFoundException, ValidationPipe } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException, ValidationPipe } from '@nestjs/common';
 import { InventoryService } from './inventory.service';
 import { InventoryItem } from '../entities/inventory-item.entity';
 import { InventoryLot } from '../entities/inventory-lot.entity';
@@ -53,8 +53,11 @@ const describeIntegration = RUN ? describe : describe.skip;
 // Distinct, greppable values so a leak is visible in the assertion itself.
 const A_ITEM_SKU = 'ORG-A-SKU-AAA';
 const A_ITEM2_SKU = 'ORG-A-SKU-AAA2';
+const A2_ITEM_SKU = 'ORG-A-B2-SKU';
 const B_ITEM_SKU = 'ORG-B-SKU-BBB';
 const A_LOT_NUMBER = 'ORG-A-LOT-111';
+const A2_LOT_NUMBER = 'ORG-A-B2-LOT';
+const A_DANGLING_LOT_NUMBER = 'ORG-A-DANGLING-LOT';
 const B_LOT_NUMBER = 'ORG-B-LOT-222';
 const A_SUPPLIER = 'Org A Supplies';
 const B_SUPPLIER = 'Org B Supplies';
@@ -64,23 +67,28 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
   let service: InventoryService;
   let currentOrg: string;
 
-  // A real branch lookup is out of scope: the subject of this suite is the org
-  // predicate on each query, which the service reads from the tenant context.
-  // `requireBranchAccess` is a no-op so a same-org write proceeds and a
-  // cross-org write is stopped by the org predicate, not by the branch mock.
+  // `requireBranchAccess` is implemented against the real DB — the same predicate
+  // `TenantContextService` uses (the branch must exist, be active and belong to the
+  // authorized organization). That makes the branch-scoping tests real rather than
+  // mock-driven: a branch of the caller's org resolves; a branch from another org
+  // raises the 403 the service propagates.
   const tenant = {
     getCurrentOrganizationId: jest.fn(async () => currentOrg),
-    requireBranchAccess: jest.fn(async () => undefined),
+    requireBranchAccess: jest.fn(async (orgId: string, branchId: string) => {
+      const branch = await dataSource.getRepository(Branch).findOne({ where: { id: branchId, organization_id: orgId, is_active: true } });
+      if (!branch) throw new ForbiddenException('Access to this branch is not allowed');
+      return branch;
+    }),
   } as unknown as TenantContextService;
 
   const ids = {
     orgA: randomUUID(), orgB: randomUUID(),
-    branchA: randomUUID(), branchB: randomUUID(),
+    branchA: randomUUID(), branchA2: randomUUID(), branchB: randomUUID(),
     supplierA: randomUUID(), supplierB: randomUUID(),
-    itemA: randomUUID(), itemA2: randomUUID(), itemB: randomUUID(),
-    lotA: randomUUID(), lotB: randomUUID(),
-    poA: randomUUID(), poB: randomUUID(),
-    poLineA: randomUUID(), poLineB: randomUUID(),
+    itemA: randomUUID(), itemA2: randomUUID(), itemA_b2: randomUUID(), itemB: randomUUID(),
+    lotA: randomUUID(), lotA_b2: randomUUID(), lotDanglingA: randomUUID(), lotB: randomUUID(),
+    poA: randomUUID(), poA_b2: randomUUID(), poB: randomUUID(),
+    poLineA: randomUUID(), poLineA_b2: randomUUID(), poLineB: randomUUID(),
   };
 
   beforeAll(async () => {
@@ -104,6 +112,7 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
 
     const branches = dataSource.getRepository(Branch);
     await branches.save({ id: ids.branchA, organization_id: ids.orgA, name: 'A Main', address: '1 A Street', phone: '+10000000001' });
+    await branches.save({ id: ids.branchA2, organization_id: ids.orgA, name: 'A Second', address: '2 A Street', phone: '+10000000003' });
     await branches.save({ id: ids.branchB, organization_id: ids.orgB, name: 'B Main', address: '1 B Street', phone: '+10000000002' });
 
     const suppliers = dataSource.getRepository(InventorySupplier);
@@ -113,20 +122,37 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
     const items = dataSource.getRepository(InventoryItem);
     await items.save({ id: ids.itemA, organization_id: ids.orgA, branch_id: ids.branchA, name: 'Org A Widget', sku: A_ITEM_SKU, unit: 'unit', selling_price: '10.00' });
     await items.save({ id: ids.itemA2, organization_id: ids.orgA, branch_id: ids.branchA, name: 'Org A Widget 2', sku: A_ITEM2_SKU, unit: 'unit', selling_price: '15.00' });
+    await items.save({ id: ids.itemA_b2, organization_id: ids.orgA, branch_id: ids.branchA2, name: 'Org A Second-Branch Widget', sku: A2_ITEM_SKU, unit: 'unit', selling_price: '11.00' });
     await items.save({ id: ids.itemB, organization_id: ids.orgB, branch_id: ids.branchB, name: 'Org B Widget', sku: B_ITEM_SKU, unit: 'unit', selling_price: '20.00' });
 
     const lots = dataSource.getRepository(InventoryLot);
     await lots.save({ id: ids.lotA, organization_id: ids.orgA, inventory_item_id: ids.itemA, lot_number: A_LOT_NUMBER, quantity: '5.0000', unit_cost: '10.00', received_at: new Date('2026-01-01T00:00:00.000Z') });
+    await lots.save({ id: ids.lotA_b2, organization_id: ids.orgA, inventory_item_id: ids.itemA_b2, lot_number: A2_LOT_NUMBER, quantity: '9.0000', unit_cost: '11.00', received_at: new Date('2026-01-01T00:00:00.000Z') });
+    // A deliberately inconsistent row: org A's lot pointing at ORG B's item. The FK
+    // permits it (no org in the FK), so it exists to prove the join's
+    // `item.organization_id = lot.organization_id` condition keeps it out of any
+    // result — a leak would surface as A_DANGLING_LOT_NUMBER.
+    await lots.save({ id: ids.lotDanglingA, organization_id: ids.orgA, inventory_item_id: ids.itemB, lot_number: A_DANGLING_LOT_NUMBER, quantity: '1.0000', unit_cost: '1.00', received_at: new Date('2026-01-01T00:00:00.000Z') });
     await lots.save({ id: ids.lotB, organization_id: ids.orgB, inventory_item_id: ids.itemB, lot_number: B_LOT_NUMBER, quantity: '7.0000', unit_cost: '20.00', received_at: new Date('2026-01-01T00:00:00.000Z') });
 
     const orders = dataSource.getRepository(InventoryPurchaseOrder);
     const order = { order_date: new Date('2026-01-01T00:00:00.000Z'), total_amount: '50.00', status: 'open' };
     await orders.save({ id: ids.poA, organization_id: ids.orgA, branch_id: ids.branchA, supplier_id: ids.supplierA, ...order });
+    await orders.save({ id: ids.poA_b2, organization_id: ids.orgA, branch_id: ids.branchA2, supplier_id: ids.supplierA, ...order });
     await orders.save({ id: ids.poB, organization_id: ids.orgB, branch_id: ids.branchB, supplier_id: ids.supplierB, ...order });
 
     const lines = dataSource.getRepository(InventoryPurchaseOrderItem);
     await lines.save({ id: ids.poLineA, po_id: ids.poA, inventory_item_id: ids.itemA, quantity_ordered: '5.0000', quantity_received: '0.0000', unit_cost: '10.00' });
+    await lines.save({ id: ids.poLineA_b2, po_id: ids.poA_b2, inventory_item_id: ids.itemA_b2, quantity_ordered: '3.0000', quantity_received: '0.0000', unit_cost: '11.00' });
     await lines.save({ id: ids.poLineB, po_id: ids.poB, inventory_item_id: ids.itemB, quantity_ordered: '2.0000', quantity_received: '0.0000', unit_cost: '20.00' });
+
+    // `GET stock` reads MV_INVENTORY_STOCK_LEVELS, so seed one movement per A branch
+    // and refresh it — that is what lets the stock test prove the branch filter.
+    const transactions = dataSource.getRepository(InventoryTransaction);
+    const movement = { transaction_type: 'adjustment', reference_id: null, reference_type: null, transaction_date: new Date('2026-01-01T00:00:00.000Z') };
+    await transactions.save({ id: randomUUID(), organization_id: ids.orgA, branch_id: ids.branchA, inventory_item_id: ids.itemA, quantity: '5.0000', unit_cost: '10.00', ...movement });
+    await transactions.save({ id: randomUUID(), organization_id: ids.orgA, branch_id: ids.branchA2, inventory_item_id: ids.itemA_b2, quantity: '9.0000', unit_cost: '11.00', ...movement });
+    await dataSource.query('REFRESH MATERIALIZED VIEW "MV_INVENTORY_STOCK_LEVELS"');
 
     // No path under test emits an event, so a stub outbox keeps this suite off
     // the OUTBOX table entirely.
@@ -149,7 +175,7 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
     const orgFilter = In([ids.orgA, ids.orgB]);
     // Children first. Every seeded row carries one of this suite's two org ids,
     // so this sweep can never touch pre-existing data.
-    await dataSource.getRepository(InventoryPurchaseOrderItem).delete({ po_id: In([ids.poA, ids.poB]) });
+    await dataSource.getRepository(InventoryPurchaseOrderItem).delete({ po_id: In([ids.poA, ids.poA_b2, ids.poB]) });
     await dataSource.getRepository(InventoryLot).delete({ organization_id: orgFilter });
     await dataSource.getRepository(InventoryTransaction).delete({ organization_id: orgFilter });
     await dataSource.getRepository(InventoryPurchaseOrder).delete({ organization_id: orgFilter });
@@ -173,18 +199,23 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
     expect(bRow).toMatchObject({ organization_id: ids.orgB, sku: B_ITEM_SKU });
   });
 
-  it("lists only org A's lots, never B's, and filters by item within the org", async () => {
-    const all = await service.listLots({ page: 1, limit: 20 });
-    expect(all.data.map((lot) => lot.lot_number)).toEqual([A_LOT_NUMBER]);
-    expect(all.data.map((lot) => lot.organization_id)).toEqual([ids.orgA]);
-    expect(all.data.map((lot) => lot.id)).not.toContain(ids.lotB);
+  it("lists only the requested branch's lots — never another branch's or another org's", async () => {
+    const branchA = await service.listLots({ branch_id: ids.branchA, page: 1, limit: 20 });
+    // Branch A's own lot only: the second-branch lot AND the cross-org dangling lot
+    // (org A's lot pointing at org B's item) are both excluded.
+    expect(branchA.data.map((lot) => lot.lot_number)).toEqual([A_LOT_NUMBER]);
+    expect(branchA.data.map((lot) => lot.id)).not.toContain(ids.lotA_b2);
+    expect(branchA.data.map((lot) => lot.id)).not.toContain(ids.lotDanglingA);
 
-    const filtered = await service.listLots({ page: 1, limit: 20, inventory_item_id: ids.itemA });
+    const branchA2 = await service.listLots({ branch_id: ids.branchA2, page: 1, limit: 20 });
+    expect(branchA2.data.map((lot) => lot.lot_number)).toEqual([A2_LOT_NUMBER]);
+    expect(branchA2.data.map((lot) => lot.id)).not.toContain(ids.lotA);
+
+    const filtered = await service.listLots({ branch_id: ids.branchA, page: 1, limit: 20, inventory_item_id: ids.itemA });
     expect(filtered.data.map((lot) => lot.id)).toEqual([ids.lotA]);
 
-    // B's item id matches no lot inside org A.
-    const crossItem = await service.listLots({ page: 1, limit: 20, inventory_item_id: ids.itemB });
-    expect(crossItem.data).toEqual([]);
+    // Another org's branch is not authorized -> 403.
+    await expect(service.listLots({ branch_id: ids.branchB, page: 1, limit: 20 })).rejects.toBeInstanceOf(ForbiddenException);
   });
 
   it("returns org A's purchase order with its lines and hides org B's", async () => {
@@ -244,5 +275,40 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
     // The failed UPDATE rolled back: itemA keeps its own sku.
     const reread = await dataSource.getRepository(InventoryItem).findOneByOrFail({ id: ids.itemA });
     expect(reread.sku).toBe(A_ITEM_SKU);
+  });
+
+  // --- OI-1: branch-scoped reads ------------------------------------------------
+  it('allows a by-id item read in another branch of the SAME org (requireBranchAccess admits any active org branch)', async () => {
+    // Documented reality: `requireBranchAccess` has no per-user branch scope, so a
+    // second branch of the caller's own org is authorized — this is a 200, not a 403.
+    const other = await service.getItem(ids.itemA_b2);
+    expect(other).toMatchObject({ id: ids.itemA_b2, organization_id: ids.orgA, branch_id: ids.branchA2 });
+  });
+
+  it('returns a purchase order in another branch of the same org', async () => {
+    const own = await service.getPurchaseOrder(ids.poA_b2);
+    expect(own.order).toMatchObject({ id: ids.poA_b2, organization_id: ids.orgA, branch_id: ids.branchA2 });
+    expect(own.items.map((line) => line.id)).toEqual([ids.poLineA_b2]);
+  });
+
+  it('lists only the requested branch of items, and 403s a branch from another org', async () => {
+    const a = await service.listItems(ids.branchA);
+    expect(a.map((i) => i.sku).sort()).toEqual([A_ITEM_SKU, A_ITEM2_SKU].sort());
+    const a2 = await service.listItems(ids.branchA2);
+    expect(a2.map((i) => i.sku)).toEqual([A2_ITEM_SKU]);
+    expect(a2.map((i) => i.id)).not.toContain(ids.itemA);
+    await expect(service.listItems(ids.branchB)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('returns only the requested branch of stock, and 403s a branch from another org', async () => {
+    const a = (await service.stock(ids.branchA)) as Array<{ inventory_item_id: string; branch_id: string }>;
+    expect(a.map((r) => r.inventory_item_id)).toEqual([ids.itemA]);
+    expect(a.every((r) => r.branch_id === ids.branchA)).toBe(true);
+    expect(a.map((r) => r.inventory_item_id)).not.toContain(ids.itemA_b2);
+
+    const a2 = (await service.stock(ids.branchA2)) as Array<{ inventory_item_id: string }>;
+    expect(a2.map((r) => r.inventory_item_id)).toEqual([ids.itemA_b2]);
+
+    await expect(service.stock(ids.branchB)).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

@@ -84,11 +84,17 @@ describe('InventoryService', () => {
     await expect(service.updateItem('item-a', { name: 'X' } as never)).rejects.toBe(fk);
   });
 
-  // --- T2.3 GET /v1/inventory/lots
-  it('lists lots org-scoped and paginated, oldest receipt first', async () => {
-    lots.findAndCount.mockResolvedValue([[{ id: 'lot-a', organization_id: 'org-a' }], 1]);
-    const result = await service.listLots({ page: 2, limit: 10, inventory_item_id: 'item-a' });
-    expect(lots.findAndCount).toHaveBeenCalledWith({ where: { organization_id: 'org-a', inventory_item_id: 'item-a' }, order: { received_at: 'ASC', id: 'ASC' }, take: 10, skip: 10 });
+  // --- GET /v1/inventory/lots (branch-scoped, OI-1)
+  it('lists lots branch-scoped via a join on the item, oldest receipt first', async () => {
+    const qb = { innerJoin: jest.fn().mockReturnThis(), where: jest.fn().mockReturnThis(), andWhere: jest.fn().mockReturnThis(), orderBy: jest.fn().mockReturnThis(), addOrderBy: jest.fn().mockReturnThis(), take: jest.fn().mockReturnThis(), skip: jest.fn().mockReturnThis(), getManyAndCount: jest.fn().mockResolvedValue([[{ id: 'lot-a', organization_id: 'org-a' }], 1]) };
+    lots.createQueryBuilder = jest.fn().mockReturnValue(qb);
+    const result = await service.listLots({ branch_id: 'branch-a', page: 2, limit: 10, inventory_item_id: 'item-a' });
+    expect(tenant.requireBranchAccess).toHaveBeenCalledWith('org-a', 'branch-a');
+    expect(lots.createQueryBuilder).toHaveBeenCalledWith('lot');
+    expect(qb.innerJoin).toHaveBeenCalledWith(InventoryItem, 'item', 'item.id = lot.inventory_item_id AND item.organization_id = lot.organization_id');
+    expect(qb.where).toHaveBeenCalledWith('lot.organization_id = :org AND item.branch_id = :branch', { org: 'org-a', branch: 'branch-a' });
+    expect(qb.andWhere).toHaveBeenCalledWith('lot.inventory_item_id = :itemId', { itemId: 'item-a' });
+    expect(qb.take).toHaveBeenCalledWith(10); expect(qb.skip).toHaveBeenCalledWith(10);
     expect(result).toEqual({ data: [{ id: 'lot-a', organization_id: 'org-a' }], total: 1, page: 2, limit: 10 });
   });
 
@@ -103,6 +109,21 @@ describe('InventoryService', () => {
   it('returns the same 404 for a missing and a cross-organization purchase order and reads no lines', async () => {
     orders.findOne.mockResolvedValue(null);
     await expect(service.getPurchaseOrder('po-x')).rejects.toThrow(NotFoundException);
+    expect(orderItems.find).not.toHaveBeenCalled();
+  });
+
+  // --- OI-1 by-id branch cross-check (a caller not authorized for the row's branch)
+  it('rejects a by-id item read when the row resides in a branch the caller cannot access', async () => {
+    items.findOne.mockResolvedValue({ id: 'item-a', organization_id: 'org-a', branch_id: 'branch-x' });
+    tenant.requireBranchAccess.mockRejectedValue(new ForbiddenException('Access to this branch is not allowed'));
+    await expect(service.getItem('item-a')).rejects.toThrow(ForbiddenException);
+    expect(tenant.requireBranchAccess).toHaveBeenCalledWith('org-a', 'branch-x');
+  });
+  it('rejects a by-id purchase-order read when the row resides in a branch the caller cannot access', async () => {
+    orders.findOne.mockResolvedValue({ id: 'po-1', organization_id: 'org-a', branch_id: 'branch-x' });
+    tenant.requireBranchAccess.mockRejectedValue(new ForbiddenException('Access to this branch is not allowed'));
+    await expect(service.getPurchaseOrder('po-1')).rejects.toThrow(ForbiddenException);
+    expect(tenant.requireBranchAccess).toHaveBeenCalledWith('org-a', 'branch-x');
     expect(orderItems.find).not.toHaveBeenCalled();
   });
 });
