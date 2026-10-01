@@ -2082,4 +2082,127 @@ This document contains the implementation tasks broken down by phase, with depen
   current: the plumbing is wired and unused, so the cost is paid by whoever adds
   filtering rather than by anyone today (see Blast radius). A second
   `@Type(() => Boolean)` occurrence was the one this defect was found next to; it is
+
+---
+
+### DEF-02: Concurrent duplicate webhook delivery surfaces as an unhandled 500
+- **Objective**: Map a `23505` on `FINANCE_WEBHOOK_EVENTS.provider_event_id` to the
+  idempotent success path instead of letting a `QueryFailedError` reach the global filter.
+- **Found during**: D14 security review, 2026-10-01 (`docs/phase3-security-review.md` F2).
+- **Dependencies**: None.
+- **Files/modules affected**: `src/finance/services/gateway-webhook.service.ts` (`receive`,
+  the check-then-insert at `:30-36`); `src/finance/services/gateway-webhook.service.spec.ts`.
+- **Database changes**: None. `UQ_finance_webhook_events_provider_event`
+  (`1788965263260-AddPaymentGatewayAndWebhookEvents.ts:15`) is already the backstop.
+- **Reproduction**: two concurrent `POST /v1/webhooks/payment-gateway` deliveries of the same
+  signed event — both `findOne` calls miss, the second `save` raises 23505 → 500. The gate's
+  `wh-05` covers only the sequential replay (201, one row).
+- **Fix**: reuse the module's existing `isUniqueViolation` shape (as inventory does for
+  `UQ_inventory_items_org_branch_sku`) so a duplicate insert returns `{ received: true }`.
+- **Tests**: a unit case with a mocked 23505 on `save` → resolves `{received:true}` and no
+  rethrow; the gate's `wh-05` stays green.
+- **Acceptance criteria**: a duplicate delivery never returns 5xx; exactly one row per
+  `provider_event_id`; Stripe does not retry on our behalf.
+- **Risks**: Low. The unique index already guarantees correctness; this is response hygiene.
+
+### DEF-03: `POST /v1/branches` returns 500 when `address`/`phone` are omitted
+- **Objective**: Return a 400 (validation) rather than an unhandled NOT NULL violation.
+- **Found during**: D15 API gate bring-up, 2026-10-01 — the gate's own fixture hit it.
+- **Dependencies**: None.
+- **Files/modules affected**: `src/tenancy/dto/create-branch.dto.ts` (`address`/`phone` are
+  `@IsOptional`), `src/tenancy/entities/branch.entity.ts:15-19` (both columns NOT NULL, no
+  default), `src/tenancy/services/branches.service.ts` (`create`).
+- **Database changes**: None (either make the DTO require them, or the migration nullable —
+  an owner call).
+- **API changes**: `POST /v1/branches` with only `name`+`organization_id` currently 500s.
+- **Reproduction**: `POST /v1/branches {organization_id, name}` → 500; adding `address` and
+  `phone` → 201 (the existing frontend and `browser-verify.mjs` always send them, which is why
+  it has gone unnoticed).
+- **Tests**: a controller/DTO case pinning the chosen contract; the gate fixture already sends
+  both fields.
+- **Acceptance criteria**: an omitted field yields 400 with a message naming it, never a 500.
+- **Risks**: Low; the shape is additive either way.
+
+### DEF-04: Webhook rows carry no tenant attribution
+- **Objective**: Populate `FINANCE_WEBHOOK_EVENTS.organization_id` (or drop the column as
+  deliberately unused).
+- **Found during**: D14 security review, 2026-10-01 (F3).
+- **Files/modules affected**: `src/finance/services/gateway-webhook.service.ts:32-35` (the
+  `create` payload); `src/finance/entities/webhook-event.entity.ts:22-23`.
+- **Database changes**: None. The column already exists (nullable).
+- **Reproduction**: `SELECT organization_id FROM "FINANCE_WEBHOOK_EVENTS"` → NULL for every row
+  (the gate's `wh-04` writes one and the column stays NULL).
+- **Fix**: derive the org from the referenced payment inside the processor's transaction (the
+  receive path has no authorized tenant context by design), or drop the column.
+- **Acceptance criteria**: every processed row names its tenant, or the column is gone.
+- **Risks**: Low.
+
+### DEF-05: Webhook events can be stuck in `processing`; `failed` is terminal
+- **Objective**: Recover rows claimed by a crashed process and allow bounded retries.
+- **Found during**: D14 security review, 2026-10-01 (F4).
+- **Files/modules affected**: `src/finance/services/webhook-event.processor.ts:22-26,56`.
+- **Database changes**: Possibly a `claimed_at`/lease column (a migration).
+- **Reproduction**: kill the process between the claim UPDATE (`:22-23`) and the final save
+  (`:56`); the row stays `processing` and no code path ever revisits it.
+- **Fix**: lease pattern mirroring the outbox poller's (`OUTBOX_LOCK_DURATION_MS`), and a
+  retry ceiling for `failed` before dead-lettering.
+- **Acceptance criteria**: a crash-orphaned row is reclaimed; `failed` rows are retried a
+  bounded number of times and then parked with their error.
+- **Risks**: Medium — touches the claim query; keep `FOR UPDATE SKIP LOCKED` semantics.
+
+### DEF-06: Outcome classification by substring, and an unscoped payment lookup
+- **Objective**: Classify by an explicit allowlist of handled event types, and cross-check the
+  payment's organization.
+- **Found during**: D14 security review, 2026-10-01 (F5).
+- **Files/modules affected**: `src/finance/services/webhook-event.processor.ts:41` (`type
+  .includes('succeeded')`), `src/finance/services/payments.service.ts:443-446` (`findOne({ id })`).
+- **Reproduction**: static — no signed event can currently reach a state these mis-handle;
+  both are defence-in-depth gaps, not live bypasses.
+- **Fix**: an explicit `handledEventTypes` map plus an org predicate derived from the payment
+  row inside the existing transaction.
+- **Acceptance criteria**: an unhandled event type is recorded but applies no state change.
+- **Risks**: Low.
+
+### DEF-07: No HTTP request throttling on unauthenticated endpoints
+- **Objective**: Throttle `POST /v1/webhooks/payment-gateway` and the auth routes (at minimum
+  `login` and `verify-mfa`).
+- **Found during**: D14 security review, 2026-10-01 (F6, out of D14 scope — app-wide).
+- **Files/modules affected**: `src/main.ts` / `src/app.module.ts` (a global throttler guard);
+  `@nestjs/throttler` is not a dependency today.
+- **Database changes**: None (Redis is already available; the blacklist pattern exists).
+- **Reproduction**: `grep -rniE 'throttler' src package.json` → nothing; rapid repeated
+  login attempts all execute. Note the AI module DOES enforce per-organization usage limits in
+  Redis (`src/ai/services/ai-usage-limit.service.ts`) — those are budget counters on AI
+  endpoints, not HTTP request throttling, and they do not cover the webhook or auth routes.
+- **Acceptance criteria**: a documented per-IP/per-tenant limit with 429 responses; the webhook
+  limit must not drop legitimate Stripe retries (Stripe's own guidance applies).
+- **Risks**: Medium — a careless limit can blackhole webhooks; the plan's own §"Rate limiting"
+  (api-plan.md:27) is the intent to match.
+
+### DEF-08: Webhook hardening residuals (Low)
+- **Objective**: Bundle of low-severity hardening items recorded by the D14 review:
+  (a) pass an explicit `tolerance` to `constructEvent` (`gateway-webhook.service.ts:28` relies
+  on Stripe's 300 s default); (b) log rejections (the service logs nothing); (c) decide a
+  retention/encryption policy for the raw `payload` jsonb; (d) decide whether provider tokens
+  and `card_last4` in `FINANCE_PAYMENT_METHODS` should be encrypted with the existing
+  `EncryptionService` (currently used only for MFA; Stripe tokens are not cardholder data, so
+  this is defence-in-depth).
+- **Found during**: D14 security review, 2026-10-01 (F7).
+- **Acceptance criteria**: each sub-item is either implemented or explicitly waived with a
+  one-line rationale in this entry.
+- **Risks**: Low.
   already fixed, and the acceptance criterion covers it.
+
+### DEF-09: Jest teardown leak — `A worker process has failed to exit gracefully`
+- **Objective**: Find and fix the root cause of the Jest teardown warning. A worker process
+  keeps a handle open after the suite completes, so Jest prints
+  `A worker process has failed to exit gracefully` and still exits 0. It is a leak, not a test
+  failure, but it masks any future genuinely-stuck worker and holds up CI shutdown. It is
+  **intermittent** — the 2026-10-02 re-measurement of the suite runtime did not reproduce it —
+  so reproducing it reliably is the first task, and the handle that survives teardown the second.
+- **Found during**: Phase 3 sign-off, 2026-10-02 (re-measuring the runtime recorded in
+  `CLAUDE.md`; the warning did not appear in that run).
+- **Acceptance criteria**: either the leak is fixed and the warning stops appearing across N
+  consecutive full runs, or the specific handle is identified and recorded here with a one-line
+  rationale for leaving it open.
+- **Risks**: Low — test-only; affects neither shipped behaviour nor the exit code.

@@ -10,7 +10,7 @@ All required planning documents have been successfully created in the `/docs` di
 4. **docs/api-plan.md** - REST versioning, authn/z, conventions, endpoint catalog, webhooks, security, documentation
 5. **docs/event-contracts.md** - Broker topology, envelope schema, versioned events, outbox/inbox patterns, versioning
 6. **docs/security-plan.md** - Authentication, authorization, data protection, network security, app security, monitoring
-7. **docs/biometric-edge-plan.md** - Edge agent architecture, device integration, eligibility cache, access decisions, sync protocol
+7. ~~**docs/biometric-edge-plan.md**~~ *(corrected 2026-10-01: this document has never existed — no such file is in `git ls-files docs` and `git log -- docs/biometric-edge-plan.md` returns no commits. The edge-sync design that DOES exist is `docs/offline-sync-plan.md`, item 8.)*
 8. **docs/offline-sync-plan.md** - Consistency model, sync protocol, conflict resolution, offline scenarios, security
 9. **docs/implementation-roadmap.md** - 7-phase roadmap with features, DB changes, APIs, frontend, workers, infrastructure
 10. **docs/task-backlog.md** - Detailed implementation tasks with ID, objective, dependencies, files, DB/API/frontend/worker changes, tests, acceptance criteria, risks
