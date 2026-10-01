@@ -30,5 +30,5 @@ result
 
 memory-bank/
 
-# Agent tool state (autoharness run/session files)
-.claude/autoharness/
+# Agent tool state (autoharness run/session files, at any depth)
+**/.claude/autoharness/
