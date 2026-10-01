@@ -271,3 +271,61 @@ carries the command that shows it:
    → *No such file or directory* for both, and `git ls-files | grep -cE
    '^src/(scheduling|notifications)/'` → `0` / `0`. The points service actually
    lives under `src/loyalty/`, and enrollments under `src/pt/`.
+
+---
+
+## Inventory write-path unique-constraint (23505) sweep — 2026-10-01
+
+Swept every inventory write path that can reach a PostgreSQL unique-constraint
+violation (SQLSTATE `23505`), so a client-influenced collision returns the module's
+own status instead of an unhandled `QueryFailedError` (500). Verified against the DDL
+that actually exists: `src/migrations/1788965263264-CreateInventorySchema.ts` is the
+only inventory migration that emits DDL (`synchronize: false`, `src/data-source.ts:25`)
+and no later migration alters these tables.
+
+**Unique indexes that exist** (`CREATE TABLE` statements in that migration):
+
+| Index | Columns | Carries `organization_id`? |
+|---|---|---|
+| `UQ_inventory_items_org_branch_sku` | `(organization_id, branch_id, sku)` | yes |
+| `UQ_inventory_po_item` | `(po_id, inventory_item_id)` | no |
+| `UQ_inventory_stock_levels` (matview) | `(organization_id, branch_id, inventory_item_id)` | yes |
+
+Every other inventory table carries only its primary key.
+
+**Narrowed STOP rule.** An index is a STOP only when a duplicate could be caused by a
+row owned by ANOTHER organization. `UQ_inventory_po_item` is not: `po_id` is the
+server-generated primary key of the purchase order created in the same request, so
+only repeated lines inside one body can collide and nothing cross-organization is
+revealed (owner ruling, 2026-10-01). `UQ_inventory_stock_levels` is a materialized view
+refreshed from already-committed rows — not a client-supplied write.
+
+**Mapped — client-influenced and org-scoped:**
+
+- `createItem` (`src/inventory/services/inventory.service.ts:40`) — a `23505` on this
+  INSERT can only be `UQ_inventory_items_org_branch_sku` (the PK is database-generated
+  and an FK failure is `23503`), so it now reuses `isUniqueViolation` (`:200`) and
+  throws `ConflictException('An inventory item with this SKU already exists in this
+  branch')` — the wording `updateItem` already returned. The outbox write stays OUTSIDE
+  the `try`, so the outbox's own unique key is never reported as a SKU clash.
+- `createPurchaseOrder` (`:60`) — duplicate `inventory_item_id` values in `dto.items`
+  are rejected with `BadRequestException('Duplicate inventory_item_id in items')`
+  BEFORE the transaction opens (`:68-69`), so no `23505` reaches the driver and nothing
+  is rolled back. This is a request-shape check, not a database-error path.
+
+**Already mapped, unchanged:** `updateItem` (`:124`, mapping at `:141`) — the precedent
+this sweep reuses.
+
+**Intentionally untouched** — no client-reachable unique violation exists on them:
+`createSupplier`, `receivePurchaseOrder`, `consumeStock`, and the read paths. Each
+either writes a database-generated primary key only, or has no unique index beyond its
+PK on the table it writes.
+
+**Tests.** `inventory.service.spec.ts`: a mocked `QueryFailedError` `23505` on create →
+409 with no outbox event; a `23503` rethrown unchanged; duplicate PO lines → 400 with
+`dataSource.transaction` never called. `inventory-tenancy.integration.spec.ts` (real
+Postgres): same org + branch + sku → 409 with the row count unchanged; the same sku in
+a different org and in a different branch of the same org both succeed; duplicate PO
+lines → 400 with the purchase-order count unchanged; distinct lines still create a
+purchase order.
+
