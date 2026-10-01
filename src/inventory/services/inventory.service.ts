@@ -37,12 +37,36 @@ export class InventoryService {
   async listSuppliers(): Promise<InventorySupplier[]> { return this.suppliers.find({ where: { organization_id: await this.org() }, order: { name: 'ASC' } }); }
   async createSupplier(dto: CreateSupplierDto): Promise<InventorySupplier> { return this.suppliers.save(this.suppliers.create({ ...dto, organization_id: await this.org() })); }
   async listItems(branchId: string): Promise<InventoryItem[]> { const org = await this.org(); await this.branch(org, branchId); return this.items.find({ where: { organization_id: org, branch_id: branchId }, order: { name: 'ASC' } }); }
-  async createItem(dto: CreateInventoryItemDto): Promise<InventoryItem> { const org = await this.org(); await this.branch(org, dto.branch_id); const item = await this.items.save(this.items.create({ organization_id: org, branch_id: dto.branch_id, name: dto.name, sku: dto.sku, barcode: dto.barcode, unit: dto.unit, selling_price: dto.selling_price === undefined ? null : money(dto.selling_price) })); await this.outbox.saveEventEnvelope(INVENTORY_EVENT_TYPES.ITEM_CREATED, INVENTORY_EVENT_VERSION, org, { inventoryItemId: item.id, organizationId: org, branchId: item.branch_id, name: item.name, sku: item.sku }); return item; }
+  async createItem(dto: CreateInventoryItemDto): Promise<InventoryItem> {
+    const org = await this.org(); await this.branch(org, dto.branch_id);
+    let item: InventoryItem;
+    try {
+      item = await this.items.save(this.items.create({ organization_id: org, branch_id: dto.branch_id, name: dto.name, sku: dto.sku, barcode: dto.barcode, unit: dto.unit, selling_price: dto.selling_price === undefined ? null : money(dto.selling_price) }));
+    } catch (error) {
+      // A 23505 on this INSERT can only be UQ_inventory_items_org_branch_sku: the
+      // PK is database-generated and FK failures are 23503. Map it to the module's
+      // own 409 — the wording updateItem() already returns — instead of an
+      // unhandled QueryFailedError (500). The outbox write stays OUTSIDE this try:
+      // its own unique key is not this collision and must not be reported as one.
+      if (InventoryService.isUniqueViolation(error)) {
+        throw new ConflictException('An inventory item with this SKU already exists in this branch');
+      }
+      throw error;
+    }
+    await this.outbox.saveEventEnvelope(INVENTORY_EVENT_TYPES.ITEM_CREATED, INVENTORY_EVENT_VERSION, org, { inventoryItemId: item.id, organizationId: org, branchId: item.branch_id, name: item.name, sku: item.sku });
+    return item;
+  }
 
   async createPurchaseOrder(dto: CreatePurchaseOrderDto): Promise<InventoryPurchaseOrder> {
     const org = await this.org(); await this.branch(org, dto.branch_id);
     const supplier = await this.suppliers.findOne({ where: { id: dto.supplier_id, organization_id: org } }); if (!supplier) throw new NotFoundException('Supplier not found');
     if (!dto.items?.length) throw new BadRequestException('At least one purchase-order line is required');
+    // `INVENTORY_PURCHASE_ORDER_ITEMS` carries a UNIQUE key on (po_id, inventory_item_id)
+    // and no organization_id, so a repeated item id in ONE body would abort the line
+    // INSERT with a 23505 and roll the whole transaction back. Reject the shape before
+    // the transaction opens — a request error, not a database-error path.
+    const seenItemIds = new Set<string>();
+    for (const line of dto.items) { if (seenItemIds.has(line.inventory_item_id)) throw new BadRequestException('Duplicate inventory_item_id in items'); seenItemIds.add(line.inventory_item_id); }
     for (const line of dto.items) { const item = await this.items.findOne({ where: { id: line.inventory_item_id, organization_id: org, branch_id: dto.branch_id } }); if (!item) throw new ForbiddenException('Item is not in the authorized branch'); }
     const total = dto.items.reduce((sum, line) => sum + line.quantity_ordered * line.unit_cost, 0);
     return this.dataSource.transaction(async manager => {

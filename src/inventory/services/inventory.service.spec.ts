@@ -84,6 +84,32 @@ describe('InventoryService', () => {
     await expect(service.updateItem('item-a', { name: 'X' } as never)).rejects.toBe(fk);
   });
 
+  // --- Batch 8d: 23505 on CREATE (UQ_inventory_items_org_branch_sku)
+  it('maps a duplicate SKU on create to a 409 instead of an unhandled driver error', async () => {
+    // `UQ_inventory_items_org_branch_sku` (organization_id, branch_id, sku) is the
+    // only unique source on this INSERT: the PK is database-generated and an FK
+    // failure is 23503 — so a 23505 here is that collision and nothing else.
+    items.save.mockRejectedValue({ driverError: { code: '23505' } });
+    await expect(service.createItem({ branch_id: 'branch-a', name: 'Dup', sku: 'TAKEN' })).rejects.toBeInstanceOf(ConflictException);
+    // The conflict is raised at the INSERT, so no event is queued for a row that
+    // was never written.
+    expect(outbox.saveEventEnvelope).not.toHaveBeenCalled();
+  });
+  it('does not swallow a non-unique create error as a 409', async () => {
+    const fk = { driverError: { code: '23503' } };
+    items.save.mockRejectedValue(fk);
+    await expect(service.createItem({ branch_id: 'branch-a', name: 'X', sku: 'NEW' })).rejects.toBe(fk);
+  });
+
+  // --- Batch 8d: duplicate PO lines are rejected before the transaction opens
+  it('rejects duplicate inventory_item_id lines before the transaction opens', async () => {
+    suppliers.findOne.mockResolvedValue({ id: 'sup-a', organization_id: 'org-a' });
+    await expect(service.createPurchaseOrder({ branch_id: 'branch-a', supplier_id: 'sup-a', items: [{ inventory_item_id: 'item-a', quantity_ordered: 1, unit_cost: 5 }, { inventory_item_id: 'item-a', quantity_ordered: 2, unit_cost: 6 }] })).rejects.toBeInstanceOf(BadRequestException);
+    // A request-shape check, not a database-error path: nothing was opened.
+    expect(dataSource.transaction).not.toHaveBeenCalled();
+    expect(orderItems.save).not.toHaveBeenCalled();
+  });
+
   // --- GET /v1/inventory/lots (branch-scoped, OI-1)
   it('lists lots branch-scoped via a join on the item, oldest receipt first', async () => {
     const qb = { innerJoin: jest.fn().mockReturnThis(), where: jest.fn().mockReturnThis(), andWhere: jest.fn().mockReturnThis(), orderBy: jest.fn().mockReturnThis(), addOrderBy: jest.fn().mockReturnThis(), take: jest.fn().mockReturnThis(), skip: jest.fn().mockReturnThis(), getManyAndCount: jest.fn().mockResolvedValue([[{ id: 'lot-a', organization_id: 'org-a' }], 1]) };

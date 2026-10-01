@@ -33,7 +33,7 @@
  */
 import { randomUUID } from 'crypto';
 import { DataSource, In } from 'typeorm';
-import { ConflictException, ForbiddenException, NotFoundException, ValidationPipe } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException, ValidationPipe } from '@nestjs/common';
 import { InventoryService } from './inventory.service';
 import { InventoryItem } from '../entities/inventory-item.entity';
 import { InventoryLot } from '../entities/inventory-lot.entity';
@@ -66,6 +66,11 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
   let dataSource: DataSource;
   let service: InventoryService;
   let currentOrg: string;
+  // Purchase orders this suite creates through the service. `INVENTORY_PURCHASE_ORDER_ITEMS`
+  // has NO foreign key on `po_id` (`1788965263264-CreateInventorySchema.ts`), so deleting a
+  // PO does NOT cascade to its lines: they are tracked here and swept explicitly, otherwise
+  // the later item delete would be blocked by lines still pointing at those items.
+  const createdPoIds: string[] = [];
 
   // `requireBranchAccess` is implemented against the real DB — the same predicate
   // `TenantContextService` uses (the branch must exist, be active and belong to the
@@ -175,7 +180,7 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
     const orgFilter = In([ids.orgA, ids.orgB]);
     // Children first. Every seeded row carries one of this suite's two org ids,
     // so this sweep can never touch pre-existing data.
-    await dataSource.getRepository(InventoryPurchaseOrderItem).delete({ po_id: In([ids.poA, ids.poA_b2, ids.poB]) });
+    await dataSource.getRepository(InventoryPurchaseOrderItem).delete({ po_id: In([ids.poA, ids.poA_b2, ids.poB, ...createdPoIds]) });
     await dataSource.getRepository(InventoryLot).delete({ organization_id: orgFilter });
     await dataSource.getRepository(InventoryTransaction).delete({ organization_id: orgFilter });
     await dataSource.getRepository(InventoryPurchaseOrder).delete({ organization_id: orgFilter });
@@ -275,6 +280,50 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
     // The failed UPDATE rolled back: itemA keeps its own sku.
     const reread = await dataSource.getRepository(InventoryItem).findOneByOrFail({ id: ids.itemA });
     expect(reread.sku).toBe(A_ITEM_SKU);
+  });
+
+  // --- Batch 8d: duplicate-value write paths ----------------------------------
+  it('maps a duplicate SKU on CREATE to a 409 and writes no row', async () => {
+    const repo = dataSource.getRepository(InventoryItem);
+    const before = await repo.count({ where: { organization_id: ids.orgA, branch_id: ids.branchA } });
+    // Org A already owns `itemA` with this sku in the SAME branch, so the unique
+    // index UQ_inventory_items_org_branch_sku refuses the INSERT (SQLSTATE 23505).
+    await expect(service.createItem({ branch_id: ids.branchA, name: 'Dup', sku: A_ITEM_SKU } as never)).rejects.toBeInstanceOf(ConflictException);
+    const after = await repo.count({ where: { organization_id: ids.orgA, branch_id: ids.branchA } });
+    expect(after).toBe(before);
+  });
+
+  it('allows the SAME sku in a different org and in a different branch of the same org', async () => {
+    // The key is (organization_id, branch_id, sku), so the 409 is scoped to that
+    // key and not to the sku globally.
+    currentOrg = ids.orgB;
+    const otherOrg = await service.createItem({ branch_id: ids.branchB, name: 'B reuses an A sku', sku: A_ITEM_SKU } as never);
+    expect(otherOrg).toMatchObject({ organization_id: ids.orgB, branch_id: ids.branchB, sku: A_ITEM_SKU });
+
+    currentOrg = ids.orgA;
+    const otherBranch = await service.createItem({ branch_id: ids.branchA2, name: 'A2 reuses an A sku', sku: A_ITEM_SKU } as never);
+    expect(otherBranch).toMatchObject({ organization_id: ids.orgA, branch_id: ids.branchA2, sku: A_ITEM_SKU });
+
+    // Restore the seeded fixture: other tests assert exact per-branch contents.
+    await dataSource.getRepository(InventoryItem).delete({ id: In([otherOrg.id, otherBranch.id]) });
+  });
+
+  it('rejects duplicate inventory_item_id lines with a 400 and creates no purchase order', async () => {
+    const repo = dataSource.getRepository(InventoryPurchaseOrder);
+    const before = await repo.count({ where: { organization_id: ids.orgA } });
+    await expect(service.createPurchaseOrder({ branch_id: ids.branchA, supplier_id: ids.supplierA, items: [{ inventory_item_id: ids.itemA, quantity_ordered: 1, unit_cost: 5 }, { inventory_item_id: ids.itemA, quantity_ordered: 2, unit_cost: 6 }] } as never)).rejects.toBeInstanceOf(BadRequestException);
+    // The check runs BEFORE the transaction, so no 23505 ever reaches the driver and
+    // there is nothing to roll back — the PO table is untouched.
+    const after = await repo.count({ where: { organization_id: ids.orgA } });
+    expect(after).toBe(before);
+  });
+
+  it('creates a purchase order when the lines reference distinct items', async () => {
+    const order = await service.createPurchaseOrder({ branch_id: ids.branchA, supplier_id: ids.supplierA, items: [{ inventory_item_id: ids.itemA, quantity_ordered: 1, unit_cost: 5 }, { inventory_item_id: ids.itemA2, quantity_ordered: 2, unit_cost: 6 }] } as never);
+    createdPoIds.push(order.id);
+    expect(order).toMatchObject({ organization_id: ids.orgA, branch_id: ids.branchA, supplier_id: ids.supplierA, status: 'open' });
+    const lines = await dataSource.getRepository(InventoryPurchaseOrderItem).find({ where: { po_id: order.id } });
+    expect(lines.map((line) => line.inventory_item_id).sort()).toEqual([ids.itemA, ids.itemA2].sort());
   });
 
   // --- OI-1: branch-scoped reads ------------------------------------------------
