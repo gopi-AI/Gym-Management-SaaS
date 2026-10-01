@@ -11,7 +11,20 @@ import { CreateActivityDto, CreateLeadDto, ListLeadsDto, UpdateLeadDto } from '.
 @Injectable()
 export class CrmService {
   constructor(@InjectRepository(Lead) private readonly leads: Repository<Lead>, @InjectRepository(LeadSource) private readonly sources: Repository<LeadSource>, @InjectRepository(LeadStage) private readonly stages: Repository<LeadStage>, @InjectRepository(LeadActivity) private readonly activities: Repository<LeadActivity>, @InjectRepository(Conversion) private readonly conversions: Repository<Conversion>, private readonly tenant: TenantContextService, private readonly outbox: OutboxService, private readonly members: MembersService) {}
-  private async org(): Promise<string> { const id = await this.tenant.getCurrentOrganizationId(); if (!id) throw new ForbiddenException('Organization context required'); return id; }
+  /**
+   * Authorized organization for the current request — the same shape every other
+   * tenant module uses. `TenantContextInterceptor` records only the *requested*
+   * organization; the authorized `organizationId` is set by
+   * `requireOrganizationAccess`, so the fallback below is what authorizes the
+   * request rather than a redundant check.
+   */
+  private async org(): Promise<string> {
+    const currentOrgId = await this.tenant.getCurrentOrganizationId();
+    if (currentOrgId) return currentOrgId;
+    const requestedOrgId = await this.tenant.getRequestedOrganizationId();
+    if (!requestedOrgId) throw new ForbiddenException('Organization context required');
+    return this.tenant.requireOrganizationAccess(requestedOrgId);
+  }
   private async branch(org: string, id: string) { await this.tenant.requireBranchAccess(org, id); }
   private async lead(id: string, org: string) { const lead = await this.leads.findOne({ where: { id, organization_id: org } }); if (!lead) throw new NotFoundException('Lead not found'); return lead; }
   async list(dto: ListLeadsDto) { const org = await this.org(); if (dto.branch_id) await this.branch(org, dto.branch_id); const [data,total] = await this.leads.findAndCount({ where: { organization_id: org, ...(dto.branch_id ? { branch_id: dto.branch_id } : {}), ...(dto.status ? { status: dto.status } : {}) }, order: { created_at: 'DESC' }, take: dto.limit, skip: (dto.page - 1) * dto.limit }); return { data, total, page: dto.page, limit: dto.limit }; }

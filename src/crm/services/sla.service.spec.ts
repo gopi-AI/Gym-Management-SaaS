@@ -31,6 +31,8 @@ describe("SlaService", () => {
     };
     const tenant = {
       getCurrentOrganizationId: jest.fn().mockResolvedValue("org-1"),
+      getRequestedOrganizationId: jest.fn().mockResolvedValue(null),
+      requireOrganizationAccess: jest.fn(async (id: string) => id),
     };
     const dataSource = {
       transaction: jest.fn(async (callback: (manager: unknown) => unknown) =>
@@ -240,6 +242,20 @@ describe("SlaService", () => {
           to: "2026-03-01T00:00:00.000Z",
         }),
       ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it("authorizes the REQUESTED organization when no context is established yet (the HTTP path)", async () => {
+      // TenantContextInterceptor records only the requested organization; the
+      // authorized organizationId is set by requireOrganizationAccess. Without
+      // the fallback every SLA route answers 403 over real HTTP.
+      const x = setup();
+      wireCounts(x);
+      x.tenant.getCurrentOrganizationId.mockResolvedValue(null);
+      x.tenant.getRequestedOrganizationId.mockResolvedValue("org-1");
+
+      await x.service.report({});
+
+      expect(x.tenant.requireOrganizationAccess).toHaveBeenCalledWith("org-1");
     });
 
     it("reports a null compliance rate until something has reached a verdict", async () => {

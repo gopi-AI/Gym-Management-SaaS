@@ -97,10 +97,19 @@ export class SlaService {
     private readonly outbox: OutboxService,
   ) {}
 
+  /**
+   * Authorized organization for the current request — the same shape every other
+   * tenant module uses. `TenantContextInterceptor` records only the *requested*
+   * organization; the authorized `organizationId` is set by
+   * `requireOrganizationAccess`, so the fallback below is what authorizes the
+   * request rather than a redundant check.
+   */
   private async org(): Promise<string> {
-    const id = await this.tenant.getCurrentOrganizationId();
-    if (!id) throw new ForbiddenException("Organization context required");
-    return id;
+    const currentOrgId = await this.tenant.getCurrentOrganizationId();
+    if (currentOrgId) return currentOrgId;
+    const requestedOrgId = await this.tenant.getRequestedOrganizationId();
+    if (!requestedOrgId) throw new ForbiddenException("Organization context required");
+    return this.tenant.requireOrganizationAccess(requestedOrgId);
   }
 
   /** `POST /v1/sla/policies` — see `CreateSlaPolicyDto` for the O6 rationale. */

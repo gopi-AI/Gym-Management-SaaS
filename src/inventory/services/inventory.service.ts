@@ -31,7 +31,22 @@ export class InventoryService {
     private readonly outbox: OutboxService,
   ) {}
 
-  private async org(): Promise<string> { const id = await this.tenant.getCurrentOrganizationId(); if (!id) throw new ForbiddenException('Organization context required'); return id; }
+  /**
+   * Authorized organization for the current request — the same shape every other
+   * tenant module uses (`InvoicesService.resolveAuthorizedOrg` etc.). Reading
+   * `getCurrentOrganizationId()` alone is NOT sufficient: `TenantContextInterceptor`
+   * records only the *requested* organization (`X-Organization-Id`), and the
+   * authorized `organizationId` stays unset until a require/validate call
+   * establishes it. Falling back to `requireOrganizationAccess(requested)` is
+   * what authorizes the request; without it every route here answers 403.
+   */
+  private async org(): Promise<string> {
+    const currentOrgId = await this.tenant.getCurrentOrganizationId();
+    if (currentOrgId) return currentOrgId;
+    const requestedOrgId = await this.tenant.getRequestedOrganizationId();
+    if (!requestedOrgId) throw new ForbiddenException('Organization context required');
+    return this.tenant.requireOrganizationAccess(requestedOrgId);
+  }
   private async branch(org: string, id: string): Promise<void> { await this.tenant.requireBranchAccess(org, id); }
 
   async listSuppliers(): Promise<InventorySupplier[]> { return this.suppliers.find({ where: { organization_id: await this.org() }, order: { name: 'ASC' } }); }
@@ -76,7 +91,13 @@ export class InventoryService {
     });
   }
 
-  async listPurchaseOrders(): Promise<InventoryPurchaseOrder[]> { return this.orders.find({ where: { organization_id: await this.org() }, order: { order_date: 'DESC' } }); }
+  /**
+   * Branch-scoped purchase-order list (OI-2, owner ruling 2026-10-01): the same
+   * shape as `listItems()` — the caller must name a branch it is authorized for,
+   * and the query carries the branch predicate. `INVENTORY_PURCHASE_ORDERS` has
+   * its own indexed `branch_id`, so no join is required.
+   */
+  async listPurchaseOrders(branchId: string): Promise<InventoryPurchaseOrder[]> { const org = await this.org(); await this.branch(org, branchId); return this.orders.find({ where: { organization_id: org, branch_id: branchId }, order: { order_date: 'DESC' } }); }
   async receivePurchaseOrder(id: string, dto: ReceivePurchaseOrderDto): Promise<InventoryPurchaseOrder> {
     const org = await this.org();
     return this.dataSource.transaction(async manager => {

@@ -360,4 +360,20 @@ describeIntegration('InventoryService tenant isolation (real Postgres)', () => {
 
     await expect(service.stock(ids.branchB)).rejects.toBeInstanceOf(ForbiddenException);
   });
+
+  // --- OI-2: branch-scoped purchase-order list ----------------------------------
+  it('lists only the requested branch of purchase orders, and 403s a branch from another org', async () => {
+    const a = await service.listPurchaseOrders(ids.branchA);
+    expect(a.map((po) => po.id)).toContain(ids.poA);
+    // Same org, other branch: the branch predicate must exclude it.
+    expect(a.map((po) => po.id)).not.toContain(ids.poA_b2);
+    // Other org: the org predicate must exclude it.
+    expect(a.map((po) => po.id)).not.toContain(ids.poB);
+    expect(a.every((po) => po.branch_id === ids.branchA)).toBe(true);
+
+    const a2 = await service.listPurchaseOrders(ids.branchA2);
+    expect(a2.map((po) => po.id)).toEqual([ids.poA_b2]);
+
+    await expect(service.listPurchaseOrders(ids.branchB)).rejects.toBeInstanceOf(ForbiddenException);
+  });
 });

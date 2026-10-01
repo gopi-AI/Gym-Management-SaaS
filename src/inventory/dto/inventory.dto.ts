@@ -38,6 +38,16 @@ export class QueryInventoryItemDto { @IsUUID() branch_id!: string; }
 export class QueryInventoryStockDto { @IsUUID() branch_id!: string; }
 
 /**
+ * Query for `GET /v1/inventory/purchase-orders` (branch-scoped, OI-2). `branch_id`
+ * is REQUIRED for the same reason as `QueryInventoryItemDto` — purchase-order
+ * reads are branch-scoped, and `INVENTORY_PURCHASE_ORDERS` carries its own
+ * indexed `branch_id`, so the filter is a direct predicate. A missing or
+ * non-UUID `branch_id` is rejected by the global `ValidationPipe`
+ * (`whitelist: true`, `src/main.ts`) with a 400.
+ */
+export class QueryPurchaseOrderDto { @IsUUID() branch_id!: string; }
+
+/**
  * Query for `GET /v1/inventory/lots` (paginated, branch-scoped). `branch_id` is
  * REQUIRED. `INVENTORY_LOTS` has no `branch_id` column (`inventory-lot.entity.ts`),
  * so the branch predicate is applied by joining the row's item

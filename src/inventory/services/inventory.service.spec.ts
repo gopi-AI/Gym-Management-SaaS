@@ -12,7 +12,7 @@ describe('InventoryService', () => {
   beforeEach(() => {
     items = repo(); lots = repo(); transactions = repo(); suppliers = repo(); orders = repo(); orderItems = repo();
     manager = { getRepository: jest.fn((entity) => ({ [InventoryItem.name]: items, [InventoryLot.name]: lots, [InventoryTransaction.name]: transactions, [InventoryPurchaseOrder.name]: orders, [InventoryPurchaseOrderItem.name]: orderItems }[entity.name] ?? repo())), query: jest.fn() };
-    tenant = { getCurrentOrganizationId: jest.fn().mockResolvedValue('org-a'), requireBranchAccess: jest.fn().mockResolvedValue(undefined) };
+    tenant = { getCurrentOrganizationId: jest.fn().mockResolvedValue('org-a'), getRequestedOrganizationId: jest.fn().mockResolvedValue(null), requireOrganizationAccess: jest.fn(async (id) => id), requireBranchAccess: jest.fn().mockResolvedValue(undefined) };
     outbox = { saveEventEnvelope: jest.fn().mockResolvedValue(undefined) }; dataSource = { transaction: jest.fn((callback) => callback(manager)), query: jest.fn() };
     service = new InventoryService(items, lots, transactions, suppliers, orders, orderItems, dataSource, tenant, outbox);
   });
@@ -37,6 +37,22 @@ describe('InventoryService', () => {
     expect(lots.save).toHaveBeenCalledWith(expect.objectContaining({ organization_id: 'org-a', inventory_item_id: 'item-a', quantity: '5', unit_cost: '10.00', lot_number: 'LOT-A' })); expect(transactions.save).toHaveBeenCalledWith(expect.objectContaining({ organization_id: 'org-a', branch_id: 'branch-a', inventory_item_id: 'item-a', quantity: '5', unit_cost: '10.00' })); expect(orderItems.save).toHaveBeenCalledWith(expect.objectContaining({ id: 'line-1', quantity_received: '5' })); expect(orders.save).toHaveBeenCalledWith(expect.objectContaining({ status: 'received' })); expect(manager.query).toHaveBeenCalledWith('REFRESH MATERIALIZED VIEW "MV_INVENTORY_STOCK_LEVELS"');
   });
   it('rejects cross-organization reads and writes', async () => { await service.listItems('branch-a'); expect(items.find).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ organization_id: 'org-a', branch_id: 'branch-a' }) })); tenant.requireBranchAccess.mockRejectedValue(new ForbiddenException()); await expect(service.listItems('branch-b')).rejects.toThrow(ForbiddenException); await expect(service.createItem({ branch_id: 'branch-b', name: 'Other', sku: 'OTHER' })).rejects.toThrow(ForbiddenException); });
+  it('authorizes the REQUESTED organization when no context is established yet (the HTTP path)', async () => {
+    // TenantContextInterceptor records only the requested organization; the
+    // authorized organizationId is set by requireOrganizationAccess. Without the
+    // fallback every inventory route answers 403 over real HTTP.
+    tenant.getCurrentOrganizationId.mockResolvedValue(null);
+    tenant.getRequestedOrganizationId.mockResolvedValue('org-a');
+    items.find.mockResolvedValue([]);
+    await service.listItems('branch-a');
+    expect(tenant.requireOrganizationAccess).toHaveBeenCalledWith('org-a');
+  });
+  it('refuses when there is neither an authorized nor a requested organization', async () => {
+    tenant.getCurrentOrganizationId.mockResolvedValue(null);
+    tenant.getRequestedOrganizationId.mockResolvedValue(null);
+    await expect(service.listSuppliers()).rejects.toThrow(ForbiddenException);
+    expect(tenant.requireOrganizationAccess).not.toHaveBeenCalled();
+  });
   it('rejects cross-branch consumption even when the item exists elsewhere', async () => { items.findOne.mockResolvedValue(null); await expect(service.consumeStock({ branch_id: 'branch-b', inventory_item_id: 'item-a', quantity: 1 })).rejects.toThrow(ForbiddenException); expect(lots.createQueryBuilder).not.toHaveBeenCalled(); });
 
   // --- T2.1 GET /v1/inventory/items/:id
@@ -122,6 +138,19 @@ describe('InventoryService', () => {
     expect(qb.andWhere).toHaveBeenCalledWith('lot.inventory_item_id = :itemId', { itemId: 'item-a' });
     expect(qb.take).toHaveBeenCalledWith(10); expect(qb.skip).toHaveBeenCalledWith(10);
     expect(result).toEqual({ data: [{ id: 'lot-a', organization_id: 'org-a' }], total: 1, page: 2, limit: 10 });
+  });
+
+  // --- OI-2 GET /v1/inventory/purchase-orders (branch-scoped list)
+  it('lists purchase orders branch-scoped, cross-checking the branch', async () => {
+    orders.find.mockResolvedValue([{ id: 'po-a', organization_id: 'org-a', branch_id: 'branch-a' }]);
+    await expect(service.listPurchaseOrders('branch-a')).resolves.toEqual([{ id: 'po-a', organization_id: 'org-a', branch_id: 'branch-a' }]);
+    expect(tenant.requireBranchAccess).toHaveBeenCalledWith('org-a', 'branch-a');
+    expect(orders.find).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ organization_id: 'org-a', branch_id: 'branch-a' }) }));
+  });
+  it("refuses a purchase-order list for a branch the caller cannot access", async () => {
+    tenant.requireBranchAccess.mockRejectedValueOnce(new ForbiddenException());
+    await expect(service.listPurchaseOrders('branch-b')).rejects.toThrow(ForbiddenException);
+    expect(orders.find).not.toHaveBeenCalled();
   });
 
   // --- T2.4 GET /v1/inventory/purchase-orders/:id

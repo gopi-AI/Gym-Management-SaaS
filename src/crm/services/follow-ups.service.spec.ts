@@ -29,6 +29,8 @@ describe("FollowUpsService", () => {
     };
     const tenant = {
       getCurrentOrganizationId: jest.fn().mockResolvedValue("org-1"),
+      getRequestedOrganizationId: jest.fn().mockResolvedValue(null),
+      requireOrganizationAccess: jest.fn(async (id: string) => id),
     };
     const dataSource = {
       transaction: jest.fn(async (callback: (manager: unknown) => unknown) =>
@@ -260,6 +262,27 @@ describe("FollowUpsService", () => {
           follow_up_date: "2026-03-01T09:00:00.000Z",
         } as never),
       ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it("authorizes the REQUESTED organization when no context is established yet (the HTTP path)", async () => {
+      // TenantContextInterceptor records only the requested organization; the
+      // authorized organizationId is set by requireOrganizationAccess. Without
+      // the fallback every follow-up route answers 403 over real HTTP.
+      const x = setup();
+      x.tenant.getCurrentOrganizationId.mockResolvedValue(null);
+      x.tenant.getRequestedOrganizationId.mockResolvedValue("org-1");
+      x.leads.findOne.mockResolvedValue({
+        id: "lead-1",
+        organization_id: "org-1",
+        status: "new",
+      });
+      x.followUps.save.mockResolvedValue({ id: "fu-1" });
+
+      await x.service.schedule("lead-1", {
+        follow_up_date: "2026-03-01T09:00:00.000Z",
+      } as never);
+
+      expect(x.tenant.requireOrganizationAccess).toHaveBeenCalledWith("org-1");
     });
   });
 
