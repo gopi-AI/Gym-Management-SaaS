@@ -2232,8 +2232,9 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Why nothing caught it**: the mocked unit spec calls `processOne` directly and never exercises
   the claim; the `WEBHOOK` worker is OFF by default, so the D15 API gate — which drives the
   webhook over HTTP and asserts only that the row was persisted — never ran `processBatch` either.
-- **Status**: **Open** as filed — the fix is staged on `hardening/webhook-def-02-06` and lands with
-  the `DEF-05` commit.
+- **Status**: **Fixed** — `processBatch` destructures the rows out of the tuple, and
+  `src/finance/services/webhook-event-lease.integration.spec.ts` is the regression guard: reverting
+  the destructure fails every test in it.
 - **Acceptance criteria**: `processBatch` processes a claimed row end to end; the real-DB spec
   above is the regression guard, and moving the increment or the destructure fails it.
 - **Risks**: High before the fix — a delivery was accepted (201), persisted, and then never
