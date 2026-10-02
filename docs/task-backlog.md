@@ -2273,6 +2273,34 @@ This document contains the implementation tasks broken down by phase, with depen
   forged without our Stripe secret key.
 - **Risks**: Low.
 
+### DEF-14: The webhook refund path (`refundId` in event metadata) is unreachable today (Low)
+- **Objective**: Record that the processor's refund branch cannot be reached by any event Stripe
+  sends today, and what must change before gateway-created refunds are scheduled.
+- **Found during**: the `DEF-02`/`DEF-04`/`DEF-05`/`DEF-06` hardening pass, 2026-10-02.
+- **Files/modules affected**: `src/finance/services/stripe-payment-gateway.adapter.ts` (`refund()`),
+  `src/finance/services/refunds.service.ts`, `src/finance/finance.module.ts`, the processor's
+  refund fixtures; Stripe SDK 18.5.0 type files `types/EventTypes.d.ts` (`ChargeRefundedEvent`),
+  `Charges.d.ts`, `Refunds.d.ts`.
+- **Root cause**: two independent gaps. (a) `StripePaymentGatewayAdapter.refund()` has no caller:
+  `RefundsService` records staff-initiated refunds directly as `succeeded` and does not use
+  `PAYMENT_GATEWAY` (`refunds.service.ts`, `finance.module.ts`), so no refund is created through
+  the gateway for a webhook to report. (b) Even when one is, a `charge.refunded` event carries a
+  `Charge`, whose own metadata is not the Refund's — the refund's metadata is under
+  `object.refunds.data[n].metadata` (stripe SDK 18.5.0, `types/EventTypes.d.ts`
+  `ChargeRefundedEvent`, `Charges.d.ts`, `Refunds.d.ts`). The `DEF-04` and `DEF-06` refund
+  fixtures encode a shape Stripe does not send.
+- **Why nothing caught it**: the path has no caller and the webhook worker is OFF by default, so
+  nothing exercises it; the fixtures are hand-written, and no real test-mode refund event has been
+  observed to contradict them.
+- **Owner ruling (2026-10-02)**: the refund webhook path is documented, not changed.
+- **When scheduled**: key on `refund.created` / `refund.updated` (object = `Refund`,
+  `metadata.refundId`) and update the allowlist and fixtures. Needs an owner ruling when that work
+  is scheduled.
+- **Acceptance criteria**: the processor keys on the event types whose object actually carries the
+  refund's metadata, and the refund fixtures match an event Stripe sends.
+- **Risks**: Low — nothing shipped is affected today; the cost lands when gateway refunds are built
+  on the current fixtures.
+
 ## Hardening pass rulings (owner, 2026-10-02)
 
 Recorded verbatim. These govern the webhook hardening work — `DEF-02`, `DEF-04`, `DEF-05`,

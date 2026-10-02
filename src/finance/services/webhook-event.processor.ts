@@ -23,6 +23,9 @@ import { PaymentAttemptOutcome } from './payment-gateway.port';
 const HANDLED_EVENT_TYPES: Record<string, { kind: 'payment' | 'refund'; succeeded: boolean }> = {
   'payment_intent.succeeded': { kind: 'payment', succeeded: true },
   'payment_intent.payment_failed': { kind: 'payment', succeeded: false },
+  // DEF-14: kept for the future gateway-refund flow. It cannot currently receive a
+  // `refundId` — a `charge.refunded` event carries a `Charge`, whose metadata is not
+  // the `Refund`'s — so this entry is unreachable today.
   'charge.refunded': { kind: 'refund', succeeded: true },
 };
 
