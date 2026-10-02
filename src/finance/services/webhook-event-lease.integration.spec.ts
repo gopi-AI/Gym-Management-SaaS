@@ -378,7 +378,7 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
    * the webhook row was attributed to `orgId` specifically, rather than merely to
    * something non-null.
    */
-  async function seedPaymentGraph(): Promise<{ orgId: string; paymentId: string }> {
+  async function seedPaymentGraph(): Promise<{ orgId: string; paymentId: string; invoiceId: string }> {
     const orgId = randomUUID();
     const branchId = randomUUID();
     const memberId = randomUUID();
@@ -409,7 +409,7 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       status: 'pending', idempotency_key: `idem-${paymentId}`,
     });
 
-    return { orgId, paymentId };
+    return { orgId, paymentId, invoiceId };
   }
 
   it('attributes a payment event to the organization of the payment it names (DEF-04)', async () => {
@@ -463,10 +463,15 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
   });
 
   it('records an unhandled event type with no state change (DEF-06)', async () => {
-    const { paymentId } = await seedPaymentGraph();
+    const { paymentId, invoiceId } = await seedPaymentGraph();
     const { id: eventId } = await seed({ paymentId, eventType: 'customer.created' });
 
-    const outboxBefore = await dataSource.getRepository(OutboxEntity).count();
+    // Scoped to this event's own aggregate — the invoice is the `correlationId`
+    // its payment outcomes would carry. A global outbox count races the other
+    // integration suites, which write `shared.outbox` in parallel.
+    const outboxBefore = await dataSource.getRepository(OutboxEntity).count({
+      where: { correlationId: invoiceId },
+    });
     await makeProcessor().processBatch(50);
 
     const row = await read(eventId);
@@ -476,9 +481,12 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       attempts: 1,
     });
 
-    // Nothing downstream ran: no gateway call, no outbox row, payment untouched.
+    // Nothing downstream ran: no gateway call, no outbox row for this aggregate,
+    // payment untouched.
     expect(applyCalls).toHaveLength(0);
-    expect(await dataSource.getRepository(OutboxEntity).count()).toBe(outboxBefore);
+    expect(
+      await dataSource.getRepository(OutboxEntity).count({ where: { correlationId: invoiceId } }),
+    ).toBe(outboxBefore);
     const payment = await dataSource.getRepository(Payment).findOneOrFail({ where: { id: paymentId } });
     expect({ status: payment.status, retryCount: payment.retry_count }).toEqual({
       status: 'pending',
@@ -489,10 +497,13 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
   it('does not treat charge.succeeded as a successful payment (DEF-06)', async () => {
     // The substring test matched this type; the allowlist does not, because this
     // processor only applies the `payment_intent.*` pair.
-    const { paymentId } = await seedPaymentGraph();
+    const { paymentId, invoiceId } = await seedPaymentGraph();
     const { id: eventId } = await seed({ paymentId, eventType: 'charge.succeeded' });
 
-    const outboxBefore = await dataSource.getRepository(OutboxEntity).count();
+    // Scoped to this event's own aggregate, as above.
+    const outboxBefore = await dataSource.getRepository(OutboxEntity).count({
+      where: { correlationId: invoiceId },
+    });
     await makeProcessor().processBatch(50);
 
     const row = await read(eventId);
@@ -501,7 +512,9 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       org: null,
     });
     expect(applyCalls).toHaveLength(0);
-    expect(await dataSource.getRepository(OutboxEntity).count()).toBe(outboxBefore);
+    expect(
+      await dataSource.getRepository(OutboxEntity).count({ where: { correlationId: invoiceId } }),
+    ).toBe(outboxBefore);
     const payment = await dataSource.getRepository(Payment).findOneOrFail({ where: { id: paymentId } });
     expect(payment.status).toBe('pending');
   });
@@ -592,7 +605,9 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
     const outboxRepository = dataSource.getRepository(OutboxEntity);
 
     const before = await paymentRepository.findOneOrFail({ where: { id: gatewayPaymentId } });
-    const outboxBefore = await outboxRepository.count();
+    // Scoped to this payment's own aggregate — its invoice is the `correlationId`
+    // its outcomes carry. A global count races the other integration suites.
+    const outboxBefore = await outboxRepository.count({ where: { correlationId: invoiceId } });
 
     const replay = new WebhookEventProcessor(
       dataSource,
@@ -616,9 +631,9 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       gatewayResponse: before.gateway_response,
     });
 
-    // Nothing downstream ran: no PaymentSucceeded re-emitted, and the event row
-    // still completed normally.
-    expect(await outboxRepository.count()).toBe(outboxBefore);
+    // Nothing downstream ran: no PaymentSucceeded re-emitted for this invoice,
+    // and the event row still completed normally.
+    expect(await outboxRepository.count({ where: { correlationId: invoiceId } })).toBe(outboxBefore);
     expect((await read(eventId)).status).toBe('processed');
   });
 

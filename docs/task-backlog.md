@@ -2234,7 +2234,8 @@ This document contains the implementation tasks broken down by phase, with depen
   webhook over HTTP and asserts only that the row was persisted — never ran `processBatch` either.
 - **Status**: **Fixed** — `processBatch` destructures the rows out of the tuple, and
   `src/finance/services/webhook-event-lease.integration.spec.ts` is the regression guard: reverting
-  the destructure fails every test in it.
+  the destructure fails 10 of the 16 lease tests (the number at the time of measurement,
+  2026-10-02).
 - **Acceptance criteria**: `processBatch` processes a claimed row end to end; the real-DB spec
   above is the regression guard, and moving the increment or the destructure fails it.
 - **Risks**: High before the fix — a delivery was accepted (201), persisted, and then never
