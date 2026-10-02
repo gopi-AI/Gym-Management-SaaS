@@ -2264,6 +2264,15 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Risks**: Medium — silent duplicate application if a future consumer path is not idempotent.
   The lease duration is the tunable that trades this against recovery latency.
 
+### DEF-13: Add `organizationId` to PaymentIntent and refund metadata (Low)
+- **Objective**: Add `organizationId` to PaymentIntent and refund metadata at creation, and
+  cross-check it in the processor.
+- **Blocked on**: confirming whether payment retries reuse `payment.idempotency_key`, since Stripe
+  rejects a key reused with different parameters.
+- **Rationale**: defence in depth against our own cross-tenant bugs; signed payloads cannot be
+  forged without our Stripe secret key.
+- **Risks**: Low.
+
 ## Hardening pass rulings (owner, 2026-10-02)
 
 Recorded verbatim. These govern the webhook hardening work — `DEF-02`, `DEF-04`, `DEF-05`,
@@ -2290,3 +2299,16 @@ boolean, 2026-10-02. The migration is `1788965263272-AddWebhookEventLease`.
 **Note on ruling 12.** The residual risk, recorded here as the ruling asks: `scripts/api-gate.js`
 has no concurrency case, so the `DEF-02` duplicate-delivery race is covered only by the sequential
 replay check (`wh-05`). A concurrent duplicate cannot be produced by that harness as it stands.
+
+### Amendments (owner, 2026-10-02)
+
+- **Ruling 6 is WITHDRAWN.** `applyGatewayOutcome` keeps its current signature; no `organizationId`
+  parameter is added and no callers are updated.
+- **Ruling 7 is resolved as option (b).** The organization is derived from the payment or refund
+  row inside the processor's transaction — which is what `DEF-04` was implemented as. There is no
+  independent source available today: the check ruling 7 asked for found that the PaymentIntent
+  metadata carries only `paymentId` (`src/finance/services/stripe-payment-gateway.adapter.ts`, the
+  `paymentIntents.create` call), so metadata alone cannot name a tenant.
+- **`DEF-06`'s organization predicate is dropped**, because with ruling 6 withdrawn it would be
+  circular: the predicate would have to be derived from the very row it is used to find. The
+  independent-source work is deferred to `DEF-13`.
