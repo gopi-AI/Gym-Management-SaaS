@@ -3,6 +3,8 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import Stripe from 'stripe';
 import { DataSource } from 'typeorm';
 import { WebhookEvent } from '../entities/webhook-event.entity';
+import { Payment } from '../entities/payment.entity';
+import { Refund } from '../entities/refund.entity';
 import { PAYMENT_STATUS } from '../finance.constants';
 import { WEBHOOK_LOCK_DURATION_MS } from '../../shared/workers/worker-config';
 import { PaymentsService } from './payments.service';
@@ -110,12 +112,20 @@ export class WebhookEventProcessor {
           failureReason: object.status,
         };
         await this.payments.applyGatewayOutcome(manager, paymentId, outcome);
+        // DEF-04: attribute the row to a tenant. The receive path has no
+        // authorized tenant context by design (it is `@Public()`, authenticated by
+        // signature alone), so the org has to come from the row this event refers
+        // to, read here where the transaction already holds it.
+        const payment = await manager.getRepository(Payment).findOne({ where: { id: paymentId } });
+        if (payment) event.organization_id = payment.organization_id;
       }
       if (refundId) {
         await this.refunds.applyGatewayOutcome(manager, refundId, {
           succeeded: stripeEvent.type === 'charge.refunded',
           gatewayStatus: object.status,
         });
+        const refund = await manager.getRepository(Refund).findOne({ where: { id: refundId } });
+        if (refund) event.organization_id = refund.organization_id;
       }
       event.status = 'processed'; event.processed_at = new Date(); event.locked_at = null; await manager.getRepository(WebhookEvent).save(event);
     });

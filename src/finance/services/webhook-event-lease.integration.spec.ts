@@ -52,6 +52,7 @@ import { InvoiceNumberCounter } from '../entities/invoice-number-counter.entity'
 import { TaxRate } from '../entities/tax-rate.entity';
 import { OutboxEntity } from '../../shared/outbox/outbox.entity';
 import { OutboxService } from '../../shared/outbox/outbox.service';
+import { Refund } from '../entities/refund.entity';
 import { Organization } from '../../tenancy/entities/organization.entity';
 import { Branch } from '../../tenancy/entities/branch.entity';
 import { Member } from '../../members/entities/member.entity';
@@ -144,11 +145,19 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       attempts?: number;
       lockedAgoMs?: number;
       paymentId?: string | null;
+      refundId?: string | null;
     } = {},
   ): Promise<Seeded> {
     const id = randomUUID();
-    const paymentId = options.paymentId === undefined ? `pay_${id}` : options.paymentId;
-    const metadata = paymentId === null ? {} : { paymentId };
+    // A real UUID, because the processors look the referenced row up by id and the
+    // column is `uuid`: a `pay_<uuid>` placeholder fails Postgres's cast. The
+    // adapter writes `payment.id` here (`stripe-payment-gateway.adapter.ts`), so a
+    // UUID is also what Stripe actually delivers.
+    const paymentId = options.paymentId === undefined ? randomUUID() : options.paymentId;
+    const refundId = options.refundId ?? null;
+    const metadata: Record<string, string> = {};
+    if (paymentId !== null) metadata.paymentId = paymentId;
+    if (refundId !== null) metadata.refundId = refundId;
     const repository = dataSource.getRepository(WebhookEvent);
 
     await repository.save({
@@ -358,6 +367,92 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       status: 'dead_lettered',
       attempts: WebhookEventProcessor.MAX_ATTEMPTS,
       processed: null,
+    });
+  });
+
+  /**
+   * org -> branch -> member -> invoice -> payment, the minimum chain the FKs
+   * demand before a payment row can exist. Returns the ids so a test can assert
+   * the webhook row was attributed to `orgId` specifically, rather than merely to
+   * something non-null.
+   */
+  async function seedPaymentGraph(): Promise<{ orgId: string; paymentId: string }> {
+    const orgId = randomUUID();
+    const branchId = randomUUID();
+    const memberId = randomUUID();
+    const invoiceId = randomUUID();
+    const paymentId = randomUUID();
+
+    await dataSource.getRepository(Organization).save({
+      id: orgId, name: 'Attribution Org', timezone: 'UTC', locale: 'en-US', currency: 'USD',
+    });
+    await dataSource.getRepository(Branch).save({
+      id: branchId, organization_id: orgId, name: 'Attribution Branch',
+      address: '2 Attribution Street', phone: '+10000000888',
+    });
+    await dataSource.getRepository(Member).save({
+      id: memberId, organization_id: orgId, branch_id: branchId,
+      global_uuid: randomUUID(), local_id: Math.floor(Math.random() * 1_000_000_000),
+      first_name: 'Attribution', last_name: 'Member',
+    });
+    await dataSource.getRepository(Invoice).save({
+      id: invoiceId, organization_id: orgId, member_id: memberId,
+      invoice_number: `INV-ATTR-${invoiceId.slice(0, 8)}`,
+      invoice_date: new Date(), due_date: new Date(),
+      subtotal: '10.00', total_amount: '10.00', status: 'pending',
+    });
+    await dataSource.getRepository(Payment).save({
+      id: paymentId, organization_id: orgId, member_id: memberId, invoice_id: invoiceId,
+      payment_method: 'card', amount: '10.00', payment_date: new Date(),
+      status: 'pending', idempotency_key: `idem-${paymentId}`,
+    });
+
+    return { orgId, paymentId };
+  }
+
+  it('attributes a payment event to the organization of the payment it names (DEF-04)', async () => {
+    const { orgId, paymentId } = await seedPaymentGraph();
+    const { id: eventId } = await seed({ paymentId });
+
+    await makeProcessor().processBatch(50);
+
+    const row = await read(eventId);
+    expect({ status: row.status, org: row.organization_id }).toEqual({
+      status: 'processed',
+      org: orgId,
+    });
+  });
+
+  it('attributes a refund event to the organization of the refund it names (DEF-04)', async () => {
+    const { orgId, paymentId } = await seedPaymentGraph();
+    const refundId = randomUUID();
+    await dataSource.getRepository(Refund).save({
+      id: refundId, organization_id: orgId, payment_id: paymentId,
+      idempotency_key: `idem-${refundId}`, reason: 'customer request',
+      amount: '10.00', refund_date: new Date(), status: 'pending',
+    });
+    // The processor selects the refund branch on `metadata.refundId`, so that is
+    // the discriminator this test varies.
+    const { id: eventId } = await seed({ paymentId: null, refundId });
+
+    await makeProcessor().processBatch(50);
+
+    const row = await read(eventId);
+    expect({ status: row.status, org: row.organization_id }).toEqual({
+      status: 'processed',
+      org: orgId,
+    });
+  });
+
+  it('leaves organization_id null for an event naming no payment or refund (DEF-04)', async () => {
+    const { id: eventId } = await seed({ paymentId: null });
+
+    await makeProcessor().processBatch(50);
+
+    const row = await read(eventId);
+    expect({ status: row.status, org: row.organization_id }).toEqual({
+      status: 'processed',
+      org: null,
     });
   });
 
