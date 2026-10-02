@@ -11,6 +11,33 @@ import { PaymentsService } from './payments.service';
 import { RefundsService } from './refunds.service';
 import { PaymentAttemptOutcome } from './payment-gateway.port';
 
+/**
+ * DEF-06: the event types that change state, and the outcome each one applies.
+ *
+ * This replaces a `type.includes('succeeded')` substring test. That test was
+ * broader than the processor's intent — it also matched `charge.succeeded` and
+ * `invoice.payment_succeeded`, neither of which this processor should act on, and
+ * it would have matched any future type with the word in it. Only these three
+ * types change state today; everything else is recorded and left alone.
+ */
+const HANDLED_EVENT_TYPES: Record<string, { kind: 'payment' | 'refund'; succeeded: boolean }> = {
+  'payment_intent.succeeded': { kind: 'payment', succeeded: true },
+  'payment_intent.payment_failed': { kind: 'payment', succeeded: false },
+  'charge.refunded': { kind: 'refund', succeeded: true },
+};
+
+/**
+ * DEF-06: a reference is usable only if it can address a `uuid` column. Anything
+ * else is treated as NO reference rather than handed to the database, where it
+ * would raise `invalid input syntax for type uuid` — failing the event, retrying
+ * it to the ceiling and parking it over what is really a malformed payload.
+ */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function referenceId(value: unknown): string | undefined {
+  return typeof value === 'string' && UUID_PATTERN.test(value) ? value : undefined;
+}
+
 @Injectable()
 export class WebhookEventProcessor {
   private readonly logger = new Logger(WebhookEventProcessor.name);
@@ -100,11 +127,16 @@ export class WebhookEventProcessor {
       if (!event || event.status === 'processed') return;
       const stripeEvent = event.payload as unknown as Stripe.Event;
       const object = stripeEvent.data?.object as unknown as { id?: string; status?: string; metadata?: Record<string, unknown> };
-      const paymentId = typeof object.metadata?.paymentId === 'string' ? object.metadata.paymentId : undefined;
-      const refundId = typeof object.metadata?.refundId === 'string' ? object.metadata.refundId : undefined;
-      if (paymentId) {
+      const paymentId = referenceId(object.metadata?.paymentId);
+      const refundId = referenceId(object.metadata?.refundId);
+      const handler = HANDLED_EVENT_TYPES[stripeEvent.type];
+      const who = `Webhook event ${event.provider_event_id} (${stripeEvent.type})`;
+
+      if (!handler) {
+        this.logger.log(`${who} is not a handled event type — recorded with no state change`);
+      } else if (handler.kind === 'payment' && paymentId) {
         const outcome: PaymentAttemptOutcome = {
-          succeeded: stripeEvent.type.includes('succeeded'),
+          succeeded: handler.succeeded,
           transactionId: object.id,
           gatewayReference: object.id,
           gatewayStatus: object.status,
@@ -118,15 +150,20 @@ export class WebhookEventProcessor {
         // to, read here where the transaction already holds it.
         const payment = await manager.getRepository(Payment).findOne({ where: { id: paymentId } });
         if (payment) event.organization_id = payment.organization_id;
-      }
-      if (refundId) {
+      } else if (handler.kind === 'refund' && refundId) {
         await this.refunds.applyGatewayOutcome(manager, refundId, {
-          succeeded: stripeEvent.type === 'charge.refunded',
+          succeeded: handler.succeeded,
           gatewayStatus: object.status,
         });
         const refund = await manager.getRepository(Refund).findOne({ where: { id: refundId } });
         if (refund) event.organization_id = refund.organization_id;
+      } else {
+        // A handled type that cannot be applied: no reference at all, or a
+        // reference that is not a UUID (see `referenceId`). Neither is a failure —
+        // the event is recorded, consumes no retry, and stays unattributed.
+        this.logger.log(`${who} names no usable ${handler.kind} reference (absent or not a UUID) — recorded with no state change`);
       }
+
       event.status = 'processed'; event.processed_at = new Date(); event.locked_at = null; await manager.getRepository(WebhookEvent).save(event);
     });
   }

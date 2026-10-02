@@ -146,9 +146,11 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       lockedAgoMs?: number;
       paymentId?: string | null;
       refundId?: string | null;
+      eventType?: string;
     } = {},
   ): Promise<Seeded> {
     const id = randomUUID();
+    const eventType = options.eventType ?? 'payment_intent.succeeded';
     // A real UUID, because the processors look the referenced row up by id and the
     // column is `uuid`: a `pay_<uuid>` placeholder fails Postgres's cast. The
     // adapter writes `payment.id` here (`stripe-payment-gateway.adapter.ts`), so a
@@ -164,10 +166,10 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       id,
       provider: 'stripe',
       provider_event_id: `evt_${id}`,
-      event_type: 'payment_intent.succeeded',
+      event_type: eventType,
       payload: {
         id: `evt_${id}`,
-        type: 'payment_intent.succeeded',
+        type: eventType,
         data: { object: { id: 'pi_1', status: 'succeeded', metadata } },
       },
       status: options.status ?? 'received',
@@ -431,9 +433,13 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       idempotency_key: `idem-${refundId}`, reason: 'customer request',
       amount: '10.00', refund_date: new Date(), status: 'pending',
     });
-    // The processor selects the refund branch on `metadata.refundId`, so that is
-    // the discriminator this test varies.
-    const { id: eventId } = await seed({ paymentId: null, refundId });
+    // A refund is applied only by a refund TYPE carrying a refund reference
+    // (DEF-06): both have to line up, so this fixture varies both.
+    const { id: eventId } = await seed({
+      paymentId: null,
+      refundId,
+      eventType: 'charge.refunded',
+    });
 
     await makeProcessor().processBatch(50);
 
@@ -454,6 +460,67 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       status: 'processed',
       org: null,
     });
+  });
+
+  it('records an unhandled event type with no state change (DEF-06)', async () => {
+    const { paymentId } = await seedPaymentGraph();
+    const { id: eventId } = await seed({ paymentId, eventType: 'customer.created' });
+
+    const outboxBefore = await dataSource.getRepository(OutboxEntity).count();
+    await makeProcessor().processBatch(50);
+
+    const row = await read(eventId);
+    expect({ status: row.status, org: row.organization_id, attempts: row.attempts }).toEqual({
+      status: 'processed',
+      org: null,
+      attempts: 1,
+    });
+
+    // Nothing downstream ran: no gateway call, no outbox row, payment untouched.
+    expect(applyCalls).toHaveLength(0);
+    expect(await dataSource.getRepository(OutboxEntity).count()).toBe(outboxBefore);
+    const payment = await dataSource.getRepository(Payment).findOneOrFail({ where: { id: paymentId } });
+    expect({ status: payment.status, retryCount: payment.retry_count }).toEqual({
+      status: 'pending',
+      retryCount: 0,
+    });
+  });
+
+  it('does not treat charge.succeeded as a successful payment (DEF-06)', async () => {
+    // The substring test matched this type; the allowlist does not, because this
+    // processor only applies the `payment_intent.*` pair.
+    const { paymentId } = await seedPaymentGraph();
+    const { id: eventId } = await seed({ paymentId, eventType: 'charge.succeeded' });
+
+    const outboxBefore = await dataSource.getRepository(OutboxEntity).count();
+    await makeProcessor().processBatch(50);
+
+    const row = await read(eventId);
+    expect({ status: row.status, org: row.organization_id }).toEqual({
+      status: 'processed',
+      org: null,
+    });
+    expect(applyCalls).toHaveLength(0);
+    expect(await dataSource.getRepository(OutboxEntity).count()).toBe(outboxBefore);
+    const payment = await dataSource.getRepository(Payment).findOneOrFail({ where: { id: paymentId } });
+    expect(payment.status).toBe('pending');
+  });
+
+  it('treats a non-UUID reference as unreferenced: processed, no retry (DEF-06)', async () => {
+    // Without the UUID guard this value reaches a `uuid` column lookup, the event
+    // fails, and DEF-05 retries it to the ceiling and parks it.
+    const { id: eventId } = await seed({ paymentId: 'not-a-uuid' });
+
+    await makeProcessor().processBatch(50);
+
+    const row = await read(eventId);
+    expect({
+      status: row.status,
+      attempts: row.attempts,
+      org: row.organization_id,
+      processed: row.processed_at !== null,
+    }).toEqual({ status: 'processed', attempts: 1, org: null, processed: true });
+    expect(applyCalls).toHaveLength(0);
   });
 
   it('does not double-apply a payment that is already succeeded', async () => {

@@ -4,8 +4,10 @@ import { Payment } from '../entities/payment.entity';
 
 describe('WebhookEventProcessor', () => {
   const eventId = 'event-row-1';
-  const paymentId = 'payment-1';
-  const refundId = 'refund-1';
+  // Real UUIDs: DEF-06 rejects a reference the `uuid` column could not address,
+  // so a `payment-1` placeholder is no longer a usable fixture id.
+  const paymentId = '11111111-1111-4111-8111-111111111111';
+  const refundId = '22222222-2222-4222-8222-222222222222';
   const ORG = 'org-1';
   let event: WebhookEvent;
   let manager: Record<string, any>;
@@ -99,5 +101,29 @@ describe('WebhookEventProcessor', () => {
 
     expect(paymentRepo.findOne).toHaveBeenCalled();
     expect(event.organization_id).toBe(ORG);
+  });
+
+  it('applies nothing for an event type outside the allowlist (DEF-06)', async () => {
+    event.event_type = 'customer.created';
+    (event.payload as any).type = 'customer.created';
+    const processor = new WebhookEventProcessor(dataSource as any, payments as any, refunds as any);
+
+    await (processor as any).processOne(eventId);
+
+    expect(payments.applyGatewayOutcome).not.toHaveBeenCalled();
+    expect(refunds.applyGatewayOutcome).not.toHaveBeenCalled();
+    expect(event.status).toBe('processed');
+    expect(event.organization_id).toBeUndefined();
+  });
+
+  it('treats a reference that is not a UUID as unreferenced (DEF-06)', async () => {
+    (event.payload.data as any).object.metadata = { paymentId: 'not-a-uuid' };
+    const processor = new WebhookEventProcessor(dataSource as any, payments as any, refunds as any);
+
+    await (processor as any).processOne(eventId);
+
+    expect(payments.applyGatewayOutcome).not.toHaveBeenCalled();
+    expect(paymentRepo.findOne).not.toHaveBeenCalled();
+    expect(event.status).toBe('processed');
   });
 });
