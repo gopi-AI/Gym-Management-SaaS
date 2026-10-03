@@ -80,7 +80,7 @@ Phase 3 surface over HTTP. It needs `docker compose up -d postgres redis`; it cr
 its own `gym_gate_*` database and never opens `DB_DATABASE`:
 
 ```bash
-npm run api:gate                        # 69 checks; exits non-zero on any failure
+npm run api:gate                        # prints its own check table; exits non-zero on any failure
 node scripts/api-gate.js --list-checks  # the check inventory, no database needed
 node scripts/api-gate.js --only=inventory,webhook --keep-on-failure
 ```

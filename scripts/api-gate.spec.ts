@@ -101,6 +101,9 @@ describe('api-gate CLI', () => {
 
     const ids = lines.map((line) => line.split('\t')[0]);
     expect(new Set(ids).size).toBe(ids.length); // ids are unique
+    // The worker checks are the DEF-11 regression guard; losing them silently
+    // would leave processBatch unexercised again.
+    expect(ids).toEqual(expect.arrayContaining(['wh-06', 'wh-07']));
     for (const line of lines) {
       // id, group, title, requires, provides — the trailing field may be empty.
       const fields = line.split('\t');
@@ -213,5 +216,17 @@ describe('api-gate coverage contract', () => {
     // The refusal is structural: one connection helper, and it compares against
     // DB_DATABASE before connecting.
     expect(SOURCE).toContain('refusing to connect to DB_DATABASE');
+  });
+
+  it('runs the webhook worker in a second app with only WEBHOOK enabled', () => {
+    // wh-04 asserts the stored row is still 'received', so a ticking worker in
+    // the same instance would race it. The worker checks therefore run against a
+    // separate instance that enables only WEBHOOK, ticking at the floor read
+    // from worker-config.ts rather than a number copied into the gate.
+    expect(SOURCE).toContain("name === 'WEBHOOK' ? 'true' : 'false'");
+    expect(SOURCE).toContain('WORKERS_WEBHOOK_INTERVAL_MS');
+    expect(SOURCE).toContain('MIN_WORKER_INTERVAL_MS');
+    expect(SOURCE).toContain('worker-config.ts');
+    expect(SOURCE).toMatch(/worker: true/);
   });
 });

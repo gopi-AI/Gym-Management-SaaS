@@ -283,6 +283,23 @@ function migrationFileCount() {
     .filter((name) => /^\d{13}-.*\.ts$/.test(name)).length;
 }
 
+/**
+ * The worker tick-interval floor, read from its source of truth —
+ * `MIN_WORKER_INTERVAL_MS` in `src/shared/workers/worker-config.ts` — rather than
+ * copied here, so the gate can never set an interval the app would clamp.
+ */
+function minWorkerIntervalMs() {
+  const source = fs.readFileSync(
+    path.join(ROOT, 'src', 'shared', 'workers', 'worker-config.ts'),
+    'utf8',
+  );
+  const match = source.match(/export const MIN_WORKER_INTERVAL_MS = ([\d_]+);/);
+  if (!match) {
+    throw new Error('could not read MIN_WORKER_INTERVAL_MS from src/shared/workers/worker-config.ts');
+  }
+  return Number(match[1].replace(/_/g, ''));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // The check table
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1733,6 +1750,119 @@ check({
   },
 });
 
+/**
+ * Deadline for the worker checks (wh-06/07). The worker ticks every
+ * `MIN_WORKER_INTERVAL_MS`, so processing is quick; 30 s is generous headroom
+ * and the poll reports the row's own state on timeout rather than a bare
+ * "timed out".
+ */
+const WORKER_CHECK_TIMEOUT_MS = 30_000;
+
+// ── webhook, with the real worker running (DEF-11 coverage) ──────────────────
+// These run last, against the second, worker-enabled app (`worker: true`).
+
+check({
+  id: 'wh-06',
+  group: 'webhook',
+  title: 'the webhook worker drives a signed payment_intent.succeeded end to end',
+  worker: true,
+  requires: ['orgA', 'memberA', 'invoiceA'],
+  run: async (ctx) => {
+    if (!ctx.workerBaseUrl) {
+      return verdict(false, `worker app unavailable: ${ctx.workerBootFailure || 'not booted'}`);
+    }
+    const paymentId = await ctx.seedPendingPayment({
+      organizationId: ctx.orgA,
+      memberId: ctx.memberA,
+      invoiceId: ctx.invoiceA,
+    });
+    const eventId = `evt_gate_worker_a_${ctx.runId}`;
+    const payload = ctx.webhookPayload(eventId, paymentId);
+    const r = await call(
+      { ...ctx, baseUrl: ctx.workerBaseUrl },
+      {
+        method: 'POST',
+        path: '/v1/webhooks/payment-gateway',
+        rawBody: payload,
+        headers: { 'stripe-signature': ctx.signWebhook(payload, ctx.webhookSecret) },
+      },
+    );
+    if (r.status !== 201) {
+      return verdict(false, `POST /v1/webhooks/payment-gateway (worker app) -> ${r.status} "${fragment(r)}"`);
+    }
+    const polled = await pollWebhookEvent(ctx, eventId, WORKER_CHECK_TIMEOUT_MS);
+    const payments = await ctx.queryScratch(
+      'SELECT status, organization_id FROM "FINANCE_PAYMENTS" WHERE id = $1',
+      [paymentId],
+    );
+    const payment = payments[0];
+    const ok =
+      Boolean(polled.row) &&
+      polled.row.status === 'processed' &&
+      Boolean(payment) &&
+      payment.status === 'succeeded' &&
+      polled.row.organization_id === payment.organization_id;
+    return verdict(
+      ok,
+      ok
+        ? `event processed in ${polled.elapsedMs}ms; payment succeeded, event org == payment org`
+        : `event row status=${polled.row && polled.row.status} attempts=${polled.row && polled.row.attempts} ` +
+            `error=${polled.row && polled.row.error_message}; payment status=${payment && payment.status}`,
+    );
+  },
+});
+
+check({
+  id: 'wh-07',
+  group: 'webhook',
+  title: 'an unhandled event type is recorded with no state change',
+  worker: true,
+  requires: ['orgA', 'memberA', 'invoiceA'],
+  run: async (ctx) => {
+    if (!ctx.workerBaseUrl) {
+      return verdict(false, `worker app unavailable: ${ctx.workerBootFailure || 'not booted'}`);
+    }
+    const paymentId = await ctx.seedPendingPayment({
+      organizationId: ctx.orgA,
+      memberId: ctx.memberA,
+      invoiceId: ctx.invoiceA,
+    });
+    const eventId = `evt_gate_worker_b_${ctx.runId}`;
+    const payload = ctx.webhookPayload(eventId, paymentId, { type: 'customer.created' });
+    const r = await call(
+      { ...ctx, baseUrl: ctx.workerBaseUrl },
+      {
+        method: 'POST',
+        path: '/v1/webhooks/payment-gateway',
+        rawBody: payload,
+        headers: { 'stripe-signature': ctx.signWebhook(payload, ctx.webhookSecret) },
+      },
+    );
+    if (r.status !== 201) {
+      return verdict(false, `POST /v1/webhooks/payment-gateway (worker app) -> ${r.status} "${fragment(r)}"`);
+    }
+    const polled = await pollWebhookEvent(ctx, eventId, WORKER_CHECK_TIMEOUT_MS);
+    const payments = await ctx.queryScratch('SELECT status FROM "FINANCE_PAYMENTS" WHERE id = $1', [
+      paymentId,
+    ]);
+    const payment = payments[0];
+    const ok =
+      Boolean(polled.row) &&
+      polled.row.status === 'processed' &&
+      Boolean(payment) &&
+      payment.status === 'pending' &&
+      polled.row.organization_id === null;
+    return verdict(
+      ok,
+      ok
+        ? `event processed in ${polled.elapsedMs}ms; payment still pending, organization_id NULL`
+        : `event row status=${polled.row && polled.row.status} attempts=${polled.row && polled.row.attempts} ` +
+            `error=${polled.row && polled.row.error_message}; payment status=${payment && payment.status}, ` +
+            `event org=${polled.row && JSON.stringify(polled.row.organization_id)}`,
+    );
+  },
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Selection
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1807,11 +1937,92 @@ let ENV_FILE_PATH = path.join(ROOT, '.env');
 const guardEnvFile = () => ENV_FILE_PATH;
 
 /**
+ * Boot a SECOND application instance on the same scratch database with ONLY the
+ * webhook-event worker enabled (`WORKERS_ENABLED=true`; every other worker's
+ * per-worker switch explicitly `false`), ticking at `MIN_WORKER_INTERVAL_MS`.
+ *
+ * Why a second instance rather than enabling the worker on the first: `wh-04`
+ * asserts the stored row is still `'received'` — the pre-processing state — so a
+ * ticking worker in the same process could claim `wh-03`'s row before that check
+ * reads it. The worker checks (wh-06/07) run last, after every pre-existing check
+ * has already been decided against the worker-less app.
+ */
+async function bootWorkerApp({ childEnv, opts, logPath, tail, log }) {
+  const port = await freePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const env = {
+    ...childEnv,
+    PORT: String(port),
+    DB_MIGRATIONS_RUN: 'false', // the first boot already migrated this scratch database
+    WORKERS_ENABLED: 'true',
+    WORKERS_WEBHOOK_INTERVAL_MS: String(minWorkerIntervalMs()),
+  };
+  for (const name of WORKER_NAMES) {
+    env[`WORKERS_${name}_ENABLED`] = name === 'WEBHOOK' ? 'true' : 'false';
+  }
+  const command = opts.built
+    ? { cmd: process.execPath, args: ['dist/main.js'] }
+    : { cmd: TS_NODE, args: ['--transpile-only', 'src/main.ts'] };
+  const child = spawn(command.cmd, command.args, {
+    cwd: ROOT,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const onData = (chunk) => {
+    try {
+      fs.appendFileSync(logPath, chunk);
+    } catch {
+      /* the log is a convenience; never fail the run over it */
+    }
+    for (const line of chunk.toString('utf8').split('\n')) {
+      if (!line.trim()) continue;
+      tail.push(line);
+      if (tail.length > 400) tail.shift();
+      if (opts.verbose) process.stderr.write(`  worker| ${line}\n`);
+    }
+  };
+  child.stdout.on('data', onData);
+  child.stderr.on('data', onData);
+  child.on('exit', (code) => {
+    if (code !== null && code !== 0) log(`[api-gate] worker app exited early with code ${code}`);
+  });
+  log(
+    `[api-gate] worker app ${command.cmd} ${command.args.join(' ')} (pid ${child.pid}) ` +
+      `WEBHOOK worker every ${env.WORKERS_WEBHOOK_INTERVAL_MS}ms`,
+  );
+  const ready = await waitForHealth(baseUrl, opts.bootTimeoutMs, child);
+  if (!ready.ok) return { ok: false, child, reason: ready.reason };
+  return { ok: true, child, baseUrl };
+}
+
+/**
+ * Bounded poll of one webhook row until the worker has processed it. The
+ * deadline is explicit; on timeout the caller reports the row's
+ * status/attempts/error_message rather than a bare "timed out".
+ */
+async function pollWebhookEvent(ctx, eventId, timeoutMs) {
+  const started = Date.now();
+  for (;;) {
+    const rows = await ctx.queryScratch(
+      'SELECT status, attempts, error_message, organization_id FROM "FINANCE_WEBHOOK_EVENTS" WHERE provider_event_id = $1',
+      [eventId],
+    );
+    const row = rows[0];
+    if (row && row.status === 'processed') return { row, elapsedMs: Date.now() - started };
+    if (Date.now() - started >= timeoutMs) {
+      return { row, elapsedMs: Date.now() - started, timedOut: true };
+    }
+    await sleep(250);
+  }
+}
+
+/**
  * Resources this run owns. Module scope so `cleanupGate` can release them even
  * when an unexpected error unwinds out of `runGuarded`.
  */
 const gateState = {
   child: null,
+  workerChild: null,
   redisClient: null,
   scratch: null,
   scratchApp: null,
@@ -1820,7 +2031,16 @@ const gateState = {
 };
 let activeLog = (line) => process.stdout.write(`${line}\n`);
 
-/** Idempotent teardown: stop the app, close clients, drop the scratch database. */
+/** Stop one booted app instance: SIGTERM, then SIGKILL after a short grace. */
+async function stopAppChild(child) {
+  if (!child || child.exitCode !== null || child.killed) return;
+  child.kill('SIGTERM');
+  const deadline = Date.now() + 5_000;
+  while (child.exitCode === null && Date.now() < deadline) await sleep(100);
+  if (child.exitCode === null) child.kill('SIGKILL');
+}
+
+/** Idempotent teardown: stop the apps, close clients, drop the scratch database. */
 async function cleanupGate({ keep }) {
   if (gateState.scratchApp) {
     try {
@@ -1830,12 +2050,8 @@ async function cleanupGate({ keep }) {
     }
     gateState.scratchApp = null;
   }
-  if (gateState.child && gateState.child.exitCode === null && !gateState.child.killed) {
-    gateState.child.kill('SIGTERM');
-    const deadline = Date.now() + 5_000;
-    while (gateState.child.exitCode === null && Date.now() < deadline) await sleep(100);
-    if (gateState.child.exitCode === null) gateState.child.kill('SIGKILL');
-  }
+  await stopAppChild(gateState.child);
+  await stopAppChild(gateState.workerChild);
   if (gateState.redisClient) {
     try {
       if (!keep) await gateState.redisClient.flushDb();
@@ -2127,20 +2343,19 @@ async function runGuarded(opts) {
         secret,
       });
     },
-    webhookPayload: (eventId, paymentId) =>
-      JSON.stringify({
-        id: eventId,
-        object: 'event',
-        type: 'payment_intent.succeeded',
-        data: {
-          object: {
+    webhookPayload: (eventId, paymentId, options = {}) => {
+      const type = options.type || 'payment_intent.succeeded';
+      // The default path stays byte-identical: wh-03 uses it unchanged.
+      const object = type.startsWith('payment_intent.')
+        ? {
             id: `pi_${runId}`,
             object: 'payment_intent',
             status: 'succeeded',
             metadata: { paymentId },
-          },
-        },
-      }),
+          }
+        : { id: `obj_gate_${runId}`, object: type.split('.')[0], metadata: { paymentId } };
+      return JSON.stringify({ id: eventId, object: 'event', type, data: { object } });
+    },
     queryScratch: async (sql, params) => {
       const result = await scratchClient.query(sql, params);
       return result.rows;
@@ -2183,6 +2398,24 @@ async function runGuarded(opts) {
         return { ok: false, evidence: `membership seed failed: ${error.message}` };
       }
     },
+    /**
+     * Create a PENDING payment directly. No route produces one: the manual
+     * recording path writes `succeeded` immediately, and the gateway path only
+     * drives rows that are already pending. The worker checks need a payment the
+     * gateway outcome can actually move, so this is the gate's direct-insert
+     * fixture (same shape as the membership grant above).
+     */
+    seedPendingPayment: async ({ organizationId, memberId, invoiceId }) => {
+      const id = crypto.randomUUID();
+      await scratchClient.query(
+        `INSERT INTO "FINANCE_PAYMENTS"
+           (id, organization_id, member_id, invoice_id, payment_method, amount, payment_date,
+            status, idempotency_key, retry_count, created_at)
+         VALUES ($1, $2, $3, $4, 'card', '100.00', now(), 'pending', $5, 0, now())`,
+        [id, organizationId, memberId, invoiceId, `gate-worker:${id}`],
+      );
+      return id;
+    },
   };
   await scratchClient.connect();
   state.scratchApp = scratchClient;
@@ -2198,6 +2431,25 @@ async function runGuarded(opts) {
       results.push(entry);
       log(`SKIP  ${pad(c.id, 9)} ${pad(c.title, 62)} ${entry.evidence}`);
       continue;
+    }
+    if (c.worker && !state.workerChild && !ctx.workerBootFailure) {
+      // Lazy boot at the FIRST worker check, which registration order puts after
+      // every pre-existing check — wh-04's 'received' assertion included. A
+      // selection without worker checks never pays for the second instance.
+      try {
+        const booted = await bootWorkerApp({ childEnv, opts, logPath, tail, log });
+        state.workerChild = booted.child;
+        if (booted.ok) {
+          ctx.workerBaseUrl = booted.baseUrl;
+          log('[api-gate] worker app healthy');
+        } else {
+          ctx.workerBootFailure = booted.reason;
+          log(`[api-gate] worker app did NOT become healthy: ${booted.reason}`);
+        }
+      } catch (error) {
+        ctx.workerBootFailure = error && error.message ? error.message : String(error);
+        log(`[api-gate] worker app could not be started: ${ctx.workerBootFailure}`);
+      }
     }
     let outcome;
     try {
