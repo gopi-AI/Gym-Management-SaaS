@@ -26,7 +26,7 @@ import { buildThrottlers } from './throttle.config';
       imports: [ConfigModule],
       inject: [ConfigService, CACHE_MANAGER],
       useFactory: (config: ConfigService, cache: Cache) => ({
-        storage: new RedisThrottlerStorage(cache),
+        storage: new RedisThrottlerStorage(cache, config),
         throttlers: buildThrottlers(config),
       }),
     }),

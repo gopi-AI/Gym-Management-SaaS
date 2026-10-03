@@ -44,6 +44,17 @@ export const throttleEnvNames = (key: ThrottleKey) => ({
 });
 
 /**
+ * The storage's own deadline, alongside the window counters above: how long one
+ * `EVAL` may take before `RedisThrottlerStorage` abandons it and fails open.
+ * Milliseconds, parsed with the same positive-integer rule as every other
+ * `THROTTLE_*` number, so a malformed value fails the boot instead of silently
+ * leaving requests unbounded. A healthy round trip is sub-millisecond; this is
+ * a failure bound, not a latency budget.
+ */
+export const THROTTLE_STORAGE_TIMEOUT_MS_ENV = 'THROTTLE_STORAGE_TIMEOUT_MS';
+export const THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT = 250;
+
+/**
  * Read one positive-integer setting, falling back to the documented default.
  * Throws on a value that is present but unusable, so a typo fails the boot
  * (`validateEnv` runs the same parser) rather than silently disabling a limit.
@@ -64,6 +75,11 @@ export function validateThrottleEnv(config: Record<string, unknown>): void {
     readThrottleNumber(config[names.limit], names.limit, THROTTLE_DEFAULTS[key].limit);
     readThrottleNumber(config[names.ttlMs], names.ttlMs, THROTTLE_DEFAULTS[key].ttlMs);
   }
+  readThrottleNumber(
+    config[THROTTLE_STORAGE_TIMEOUT_MS_ENV],
+    THROTTLE_STORAGE_TIMEOUT_MS_ENV,
+    THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT,
+  );
 }
 
 /**

@@ -110,5 +110,22 @@ describe('throttle configuration', () => {
         /THROTTLE_LOGIN_IP_LIMIT/,
       );
     });
+
+    it('accepts a valid storage deadline override', () => {
+      expect(() => validateThrottleEnv({ THROTTLE_STORAGE_TIMEOUT_MS: '500' })).not.toThrow();
+    });
+
+    it('treats a blank storage deadline as unset (the default applies)', () => {
+      expect(() => validateThrottleEnv({ THROTTLE_STORAGE_TIMEOUT_MS: '  ' })).not.toThrow();
+    });
+
+    it.each(['0', '-1', 'abc', '1.5', '250ms'])(
+      'rejects the malformed storage deadline %s at boot',
+      (raw) => {
+        expect(() => validateThrottleEnv({ THROTTLE_STORAGE_TIMEOUT_MS: raw })).toThrow(
+          /THROTTLE_STORAGE_TIMEOUT_MS must be a positive integer/,
+        );
+      },
+    );
   });
 });

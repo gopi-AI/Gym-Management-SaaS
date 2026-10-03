@@ -2319,6 +2319,33 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Risks**: Low — nothing shipped is affected today; the cost lands when gateway refunds are built
   on the current fixtures.
 
+### DEF-15: The token blacklist's fail-closed check can hang instead of refusing (Medium)
+- **Objective**: Give the blacklist read the same bound the throttling storage now has, so a Redis
+  outage refuses a token promptly instead of holding the request open.
+- **Found during**: the `DEF-07` fail-open fix, 2026-10-03 — the blacklist was quoted as the
+  counter-example to the storage's fail-open ruling (`redis-throttler.storage.ts`, class comment).
+- **Files/modules affected**: `src/shared/auth/jwt-auth.guard.ts:58-68`.
+- **Root cause**: the guard awaits `this.cacheManager.get('blacklisted:' + token)` (`:60`) with no
+  deadline and no readiness check. The cache is the same node-redis client the throttler storage
+  uses, so it has the same driver behaviour: mid-outage the client is open but not ready
+  (`isReady === false`), and `@redis/client` 1.6.1 QUEUES the command while reconnecting forever
+  rather than rejecting it. **INFERRED for this call site** (not exercised end-to-end): the
+  `catch` at `:62` that logs "failing closed" and throws the 401 cannot run while the promise is
+  pending, so the guard would not return and the request would hang — "fails closed" only holds
+  in the boot-time shape, where a never-connected client rejects immediately with
+  `ClientClosedError`. The client-level behaviour is **verified**: the outage test in
+  `redis-throttler-storage.integration.spec.ts` reproduces open-but-not-ready against real Redis
+  and shows a command staying pending for the whole outage.
+- **Why nothing caught it**: the never-connected shape rejects in about a millisecond, so a
+  reviewer testing "Redis down" with a fresh client sees exactly the intended fail-closed
+  401 — the hanging shape needs a live connection to be dropped from under the client.
+- **Fix (not applied here)**: check `isReady` before the read and race the read against a
+  deadline, as `RedisThrottlerStorage` does now, or share one bounded helper between the two.
+- **Acceptance criteria**: with Redis dropped mid-run, a request carrying a revoked token is
+  refused within the deadline and one carrying a live token is decided — never held open past it.
+- **Risks**: Medium — the blacklist is a security control; the deadline must keep the fail-closed
+  answer (401) and only change how fast it arrives.
+
 ## Hardening pass rulings (owner, 2026-10-02)
 
 Recorded verbatim. These govern the webhook hardening work — `DEF-02`, `DEF-04`, `DEF-05`,
