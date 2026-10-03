@@ -2107,13 +2107,18 @@ This document contains the implementation tasks broken down by phase, with depen
 
 ### DEF-03: `POST /v1/branches` returns 500 when `address`/`phone` are omitted
 - **Objective**: Return a 400 (validation) rather than an unhandled NOT NULL violation.
+- **Status**: **Fixed** — owner ruling (2026-10-03): both fields are REQUIRED by
+  `CreateBranchDto` (`@IsNotEmpty()`, bounds matching the columns: address 500, phone 50), so the
+  global `ValidationPipe` answers 400 and names the field. No migration, no nullable columns, no
+  empty-string defaults. Pinned by `create-branch.dto.spec.ts` and the gate's `ten-04` (400/400/201).
+  `POST /v1/organizations/:orgId/branches` shares the DTO and is fixed with it.
 - **Found during**: D15 API gate bring-up, 2026-10-01 — the gate's own fixture hit it.
 - **Dependencies**: None.
 - **Files/modules affected**: `src/tenancy/dto/create-branch.dto.ts` (`address`/`phone` are
   `@IsOptional`), `src/tenancy/entities/branch.entity.ts:15-19` (both columns NOT NULL, no
   default), `src/tenancy/services/branches.service.ts` (`create`).
-- **Database changes**: None (either make the DTO require them, or the migration nullable —
-  an owner call).
+- **Database changes**: None. The columns stay `NOT NULL`; the DTO is what changes (ruled
+  2026-10-03 — the "make the migration nullable" alternative was declined).
 - **API changes**: `POST /v1/branches` with only `name`+`organization_id` currently 500s.
 - **Reproduction**: `POST /v1/branches {organization_id, name}` → 500; adding `address` and
   `phone` → 201 (the existing frontend and `browser-verify.mjs` always send them, which is why
