@@ -5,6 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
+import { boundedCacheCall, cacheCallTimeoutFrom } from '../../shared/cache/bounded-cache-call';
 import { IdentityUser } from '../entities/identity-users.entity';
 import * as bcrypt from 'bcrypt';
 import { IdentityService } from './identity.service';
@@ -22,9 +23,25 @@ const TOKEN_TYPE_ACCESS = 'access';
 const TOKEN_TYPE_REFRESH = 'refresh';
 const TOKEN_TYPE_CHALLENGE = 'challenge';
 
+/** The node-redis subset the MFA challenge claim needs (`SET ... NX`). */
+interface RedisSetClient {
+  readonly isReady?: boolean;
+  set(
+    key: string,
+    value: string,
+    options: { PX?: number; EX?: number; NX?: boolean },
+  ): Promise<string | null>;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  /**
+   * DEF-15: every cache call below is a request-path call and runs under this
+   * deadline, so an unreachable Redis reaches the surrounding error path
+   * instead of holding the request open for the whole outage.
+   */
+  private readonly cacheTimeoutMs: number;
 
   constructor(
     private readonly configService: ConfigService,
@@ -34,7 +51,9 @@ export class AuthService {
     private readonly userRepository: Repository<IdentityUser>,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
     public readonly mfaService: MfaService,
-  ) {}
+  ) {
+    this.cacheTimeoutMs = cacheCallTimeoutFrom(this.configService);
+  }
 
   async registerUser(registerDto: RegisterDto): Promise<IdentityUser> {
     const passwordHash = await bcrypt.hash(registerDto.password, 10);
@@ -124,14 +143,24 @@ export class AuthService {
     //    check-then-set race (isTokenBlacklisted + blacklistToken) is avoided.
     const ttl = this.tokenTtlSeconds(challengePayload.exp);
     const claimKey = `blacklisted:${challengeToken}`;
-    const redisClient = (this.cacheManager.store as any)?.client;
-    if (!redisClient) {
+    // DEF-15: bounded. A claim that cannot be made must NOT be skipped — the
+    // replay guard is the whole point of this step — so every failure ends the
+    // same way the missing-client case always did: refuse the challenge.
+    let claimed: string | null;
+    try {
+      claimed = await boundedCacheCall(
+        this.cacheManager,
+        this.cacheTimeoutMs,
+        'MFA challenge claim',
+        (client: RedisSetClient) =>
+          client.set(claimKey, JSON.stringify('true'), { PX: ttl * 1000, NX: true }),
+      );
+    } catch (error) {
+      this.logger.error(
+        'MFA challenge claim failed (failing closed): ' + (error as Error).message,
+      );
       throw new UnauthorizedException('Authentication backend unavailable');
     }
-    const claimed = await redisClient.set(claimKey, JSON.stringify('true'), {
-      PX: ttl * 1000,
-      NX: true,
-    });
     if (claimed === null) {
       throw new UnauthorizedException('MFA challenge has already been used');
     }
@@ -235,7 +264,14 @@ export class AuthService {
     // Fail CLOSED: if the cache is unreachable we MUST treat the token as
     // blacklisted so revoked credentials are never accidentally accepted.
     try {
-      const result = await this.cacheManager.get(`blacklisted:${token}`);
+      // DEF-15: bounded — the deadline is what lets this catch run during an
+      // outage, instead of the read staying pending for its whole duration.
+      const result = await boundedCacheCall(
+        this.cacheManager,
+        this.cacheTimeoutMs,
+        'blacklist lookup',
+        () => this.cacheManager.get(`blacklisted:${token}`),
+      );
       return result !== undefined;
     } catch (err) {
       this.logger.error(
@@ -385,6 +421,13 @@ export class AuthService {
     }
     // cache-manager v5 (`cache-manager-redis-yet` Redis store) expresses TTLs
     // in milliseconds, so convert the seconds-based `ttl` before storing.
-    await this.cacheManager.set(`blacklisted:${token}`, 'true', ttl * 1000);
+    // DEF-15: bounded, and deliberately NOT swallowed — if the revocation did
+    // not happen, the caller (logout, refresh rotation) must not report success.
+    await boundedCacheCall(
+      this.cacheManager,
+      this.cacheTimeoutMs,
+      'blacklist write',
+      () => this.cacheManager.set(`blacklisted:${token}`, 'true', ttl * 1000),
+    );
   }
 }

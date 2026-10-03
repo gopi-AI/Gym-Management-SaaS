@@ -11,18 +11,23 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
+import { boundedCacheCall, cacheCallTimeoutFrom } from '../cache/bounded-cache-call';
 import { IS_PUBLIC_KEY } from './public.decorator';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   private readonly logger = new Logger(JwtAuthGuard.name);
+  /** DEF-15: the blacklist read is a request-path cache call, so it runs bounded. */
+  private readonly cacheTimeoutMs: number;
 
   constructor(
     private readonly reflector: Reflector,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
-  ) {}
+  ) {
+    this.cacheTimeoutMs = cacheCallTimeoutFrom(this.configService);
+  }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
@@ -55,9 +60,16 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Invalid token type for this endpoint');
     }
 
-    // Blacklist check (fail closed if Redis is unavailable for security-sensitive paths)
+    // Blacklist check (fail closed if Redis is unavailable for security-sensitive paths).
+    // DEF-15: bounded, so an unreachable Redis reaches the catch below within the
+    // deadline instead of holding the request open for the whole outage.
     try {
-      const blacklisted = await this.cacheManager.get<boolean>('blacklisted:' + token);
+      const blacklisted = await boundedCacheCall(
+        this.cacheManager,
+        this.cacheTimeoutMs,
+        'blacklist check',
+        () => this.cacheManager.get<boolean>('blacklisted:' + token),
+      );
       if (blacklisted) throw new UnauthorizedException('Token has been revoked');
     } catch (err) {
       if (err instanceof UnauthorizedException) throw err;
