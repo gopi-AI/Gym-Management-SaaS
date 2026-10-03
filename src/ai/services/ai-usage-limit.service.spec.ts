@@ -455,4 +455,51 @@ describe('AiUsageLimitService', () => {
       expect(keys.every((key) => !key.includes(ORG_A))).toBe(true);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // DEF-15: a counter call that never answers must not hold the request open
+  // ---------------------------------------------------------------------------
+  describe('DEF-15 bounded cache calls', () => {
+    const neverSettles = () => new Promise<never>(() => undefined);
+
+    /** The blackholed-socket shape: every command queued, no reply, no error. */
+    const stalledClient = (isReady = true) => ({
+      isReady,
+      get: jest.fn(neverSettles),
+      set: jest.fn(neverSettles),
+      incr: jest.fn(neverSettles),
+      incrBy: jest.fn(neverSettles),
+      incrByFloat: jest.fn(neverSettles),
+      expire: jest.fn(neverSettles),
+    });
+
+    it('answers 503 instead of hanging when the rate-limit counter never answers', async () => {
+      const service = await createService({ CACHE_CALL_TIMEOUT_MS: '30' }, stalledClient());
+      const started = Date.now();
+
+      await expect(service.assertRequestAllowed(context())).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      // Upper bound only: what is under test is that it returned at all.
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
+
+    it('keeps the best-effort usage write best-effort when the counter never answers', async () => {
+      const service = await createService({ CACHE_CALL_TIMEOUT_MS: '30' }, stalledClient());
+
+      await expect(
+        service.recordUsage({ organizationId: ORG_A, totalTokens: 42, estimatedCostUsd: null }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('fails closed without a round trip when the client is not ready', async () => {
+      const offline = stalledClient(false);
+      const service = await createService({ CACHE_CALL_TIMEOUT_MS: '30' }, offline);
+
+      await expect(service.assertRequestAllowed(context())).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      expect(offline.incr).not.toHaveBeenCalled();
+    });
+  });
 });

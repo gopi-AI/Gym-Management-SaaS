@@ -15,7 +15,13 @@ describe('AuthService', () => {
   let mockConfigService: jest.Mocked<Partial<ConfigService>>;
   let mockJwtService: jest.Mocked<Partial<JwtService>>;
   let mockUserRepository: jest.Mocked<Partial<Repository<IdentityUser>>>;
-  let mockCache: jest.Mocked<{ set: jest.Mock; get: jest.Mock }>;
+  // `store.client` is part of the shape a real cache-manager `Cache` always has,
+  // and DEF-15 reads it to check the client is ready before each bounded call.
+  let mockCache: jest.Mocked<{
+    set: jest.Mock;
+    get: jest.Mock;
+    store: { client: { isReady: boolean; set: jest.Mock } };
+  }>;
   let mockIdentityService: jest.Mocked<Partial<IdentityService>>;
   let mockMfaService: jest.Mocked<Partial<MfaService>>;
 
@@ -41,6 +47,14 @@ describe('AuthService', () => {
     mockCache = {
       set: jest.fn().mockResolvedValue(undefined),
       get: jest.fn().mockResolvedValue(undefined),
+      store: {
+        client: {
+          isReady: true,
+          // The MFA challenge claim is `SET ... NX` on the raw client; `null`
+          // is the driver's "the key already existed" answer.
+          set: jest.fn().mockResolvedValue('OK'),
+        },
+      },
     };
 
     mockIdentityService = {
@@ -166,6 +180,59 @@ describe('AuthService', () => {
       await expect(authService.isTokenBlacklisted(token)).rejects.toThrow(
         'Authentication backend unavailable',
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // DEF-15: a cache call that never answers must not hold the request open
+  // ---------------------------------------------------------------------------
+  describe('DEF-15 bounded cache calls', () => {
+    // The blackholed-socket shape: the command is queued forever with no reply
+    // and no error, which is what the real driver does while it reconnects.
+    const neverSettles = () => new Promise<never>(() => undefined);
+
+    it('refuses (401) instead of hanging when the blacklist read never answers', async () => {
+      mockCache.get.mockImplementation(neverSettles);
+      const started = Date.now();
+
+      await expect(authService.isTokenBlacklisted('tok')).rejects.toThrow(
+        'Authentication backend unavailable',
+      );
+      // Upper bound only: what is under test is that it returned at all.
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
+
+    it('does not report a completed logout when the blacklist write never answers', async () => {
+      mockCache.set.mockImplementation(neverSettles);
+      const started = Date.now();
+
+      await expect(authService.logout('user-1', 'access-token')).rejects.toThrow(/blacklist write/);
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
+
+    it('refuses the MFA challenge instead of hanging when the claim never answers', async () => {
+      (mockJwtService.verify as jest.Mock).mockReturnValue({
+        sub: 'user-1',
+        email: 'probe@example.test',
+        tokenType: 'challenge',
+        exp: Math.floor(Date.now() / 1000) + 300,
+      });
+      mockCache.store.client.set.mockImplementation(neverSettles);
+      const started = Date.now();
+
+      await expect(authService.verifyMfaAndLogin('challenge-token', '123456')).rejects.toThrow(
+        'Authentication backend unavailable',
+      );
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
+
+    it('does not reach the cache at all when the client reports it is not ready', async () => {
+      mockCache.store.client.isReady = false;
+
+      await expect(authService.isTokenBlacklisted('tok')).rejects.toThrow(
+        'Authentication backend unavailable',
+      );
+      expect(mockCache.get).not.toHaveBeenCalled();
     });
   });
 });

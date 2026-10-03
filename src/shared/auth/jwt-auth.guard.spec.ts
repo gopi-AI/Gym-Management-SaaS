@@ -35,7 +35,9 @@ describe('JwtAuthGuard — Security (H2)', () => {
   let mockReflector: jest.Mocked<Reflector>;
   let mockJwtService: jest.Mocked<JwtService>;
   let mockConfigService: jest.Mocked<ConfigService>;
-  let mockCache: { get: jest.Mock; set: jest.Mock };
+  // `store.client` is part of the shape a real cache-manager `Cache` always has,
+  // and DEF-15 reads it to check readiness before the blacklist round trip.
+  let mockCache: { get: jest.Mock; set: jest.Mock; store: { client: { isReady: boolean } } };
 
   beforeEach(async () => {
     mockReflector = new Reflector() as jest.Mocked<Reflector>;
@@ -52,6 +54,7 @@ describe('JwtAuthGuard — Security (H2)', () => {
     mockCache = {
       get: jest.fn().mockResolvedValue(undefined),
       set: jest.fn(),
+      store: { client: { isReady: true } },
     };
 
     guard = new JwtAuthGuard(

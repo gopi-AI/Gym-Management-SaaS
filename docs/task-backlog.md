@@ -2320,6 +2320,17 @@ This document contains the implementation tasks broken down by phase, with depen
   on the current fixtures.
 
 ### DEF-15: The token blacklist's fail-closed check can hang instead of refusing (Medium)
+- **Status**: **Fixed** — owner ruling (2026-10-04): "fix DEF-15". One shared bounded-call helper
+  (`src/shared/cache/bounded-cache-call.ts`) is applied at every request-path cache call, and each
+  control keeps the answer it already had rather than acquiring a new one. The alternative declined
+  was bounding only the four call sites this entry originally listed and leaving the AI usage
+  counters — the non-auth half of the same exposure — unbounded. Pinned by
+  `src/shared/cache/bounded-cache-call.spec.ts` (hermetic: resolves, propagates the call's own
+  error, times out with a labelled message, refuses without a round trip when the client is not
+  ready, refuses when the store exposes no client, swallows the promise it abandoned) and by
+  `src/shared/auth/def-15-cache-hang.integration.spec.ts` (gated real-Redis, blackholed socket:
+  before the fix every probe reports `settled: false`; after it they all return — measured
+  2026-10-04).
 - **Objective**: Give the blacklist read the same bound the throttling storage now has, so a Redis
   outage refuses a token promptly instead of holding the request open.
 - **Found during**: the `DEF-07` fail-open fix, 2026-10-03 — the blacklist was quoted as the
@@ -2329,7 +2340,11 @@ This document contains the implementation tasks broken down by phase, with depen
   route is clear: `git grep -in "cache\|redis" -- src/finance/controllers/gateway-webhook.controller.ts
   src/finance/services` returns no matches (exit 1), and the route's only Redis touch is the
   throttler storage via `@ThrottleWebhook` (`gateway-webhook.controller.ts:15`) — **INFERRED** (not
-  exercised end-to-end).
+  exercised end-to-end). The absence was re-checked on 2026-10-04 with the pattern proved against a
+  known positive first (`src/identity/services/auth.service.ts`, which it matches): it still returns
+  exit 1 for the webhook controller and all of `src/finance/services`, and exit 1 for the whole of
+  `src/finance/`. **Added 2026-10-04**: `src/ai/services/ai-usage-limit.service.ts`, a non-auth
+  control on the same client — per-site detail under "Widened 2026-10-04" below.
 - **Root cause**: the guard awaits `this.cacheManager.get('blacklisted:' + token)` (`:60`) with no
   deadline and no readiness check. The cache is the same node-redis client the throttler storage
   uses, so it has the same driver behaviour: mid-outage the client is open but not ready
@@ -2340,7 +2355,10 @@ This document contains the implementation tasks broken down by phase, with depen
   in the boot-time shape, where a never-connected client rejects immediately with
   `ClientClosedError`. The client-level behaviour is **verified**: the outage test in
   `redis-throttler-storage.integration.spec.ts` reproduces open-but-not-ready against real Redis
-  and shows a command staying pending for the whole outage.
+  and shows a command staying pending for the whole outage. **No longer INFERRED (2026-10-04)**:
+  the guard itself is now driven through a blackholed socket against real Redis in
+  `def-15-cache-hang.integration.spec.ts`, which before the fix reported the probe as never
+  settling and now reports it answering within the deadline.
 - **Same exposure at three more call sites** (`src/identity/services/auth.service.ts`; line numbers
   confirmed by `git grep -n "cacheManager\|redisClient"` on 2026-10-03, source-read only — each hang
   consequence is **INFERRED**, none exercised end-to-end):
@@ -2362,9 +2380,41 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Why nothing caught it**: the never-connected shape rejects in about a millisecond, so a
   reviewer testing "Redis down" with a fresh client sees exactly the intended fail-closed
   401 — the hanging shape needs a live connection to be dropped from under the client.
-- **Fix (not applied here)**: check `isReady` before the read and race the read against a
-  deadline, as `RedisThrottlerStorage` does now, or share one bounded helper across these call
-  sites.
+- **Fix (shipped 2026-10-04)**: one shared helper, `src/shared/cache/bounded-cache-call.ts`, doing
+  what `RedisThrottlerStorage` did alone: resolve the raw client through the cache store, refuse
+  the call outright when `isReady === false` (no round trip), then race it against
+  `CACHE_CALL_TIMEOUT_MS` (tunable, default 500 ms, documented in `.env.example`, malformed value
+  fails the boot). It throws a labelled error and leaves the outcome to the call site's EXISTING
+  error path, so nothing silently became fail-open — the blacklist read and the MFA claim still
+  answer 401, the blacklist write still propagates, and the AI limit check still answers 503.
+  `RedisThrottlerStorage` now races its `EVAL` through the same helper, so the tree holds one
+  implementation of the deadline rather than two; its own variable, default, message and fail-open
+  behaviour are untouched (DEF-07 Q11/Q12). The two deadlines are deliberately separate controls:
+  the storage fails OPEN, these calls do not.
+- **Widened 2026-10-04** (same pass as the fix; line numbers re-derived by grep in that session,
+  not carried over): the exposure is not auth-only. `src/ai/services/ai-usage-limit.service.ts` is
+  a second, non-auth control on the same client, and every one of its counter calls awaited the
+  client with no readiness check and no deadline:
+  - `recordUsage` — `incrBy` and `expire` for the daily token and monthly cost counters. Already
+    best-effort by design (its `catch` logs and the request continues), so it stays best-effort;
+    the deadline only stops it holding the response path open. Consequence if left unbounded: a
+    completed AI call whose response is never returned.
+  - `assertRequestAllowed` — `incr`/`expire` for the per-minute counter and the `get` / `set NX` /
+    `get` hydration in `readBudgetCounter`. The class documents FAIL CLOSED (503), and that is what
+    a deadline failure now reaches, one deadline sooner. Consequence if left unbounded: an AI
+    request that hangs instead of being refused.
+  - Reachability: `AiUsageLimitService` is called by `RetentionController` and
+    `PlanPerformanceController`, both authenticated routes; each call is preceded by
+    `JwtAuthGuard`, so the guard's own bounded read runs first. The client-level behaviour is
+    **measured** against real Redis in `def-15-cache-hang.integration.spec.ts`; the full request
+    path through either controller is not exercised end-to-end — **INFERRED** for the HTTP answer.
+- **Owner ruling recorded late (2026-10-04)**: the throttler's fail-open log limiter — at most one
+  "Throttling storage unavailable" line per 30 s per process, with the failures it folded in riding
+  as a count on the next line printed (`FAIL_OPEN_LOG_INTERVAL_MS`, shipped with `DEF-07` on
+  2026-10-03) — is a deliberate decision, not an artifact of that fix. **KEEP IT.** Recorded here on
+  the owner's instruction of 2026-10-04 ("The 30 s fail-open log limiter in the throttler is an
+  OWNER RULING: keep it"), the day after the behaviour shipped, so this register does not read as
+  if the decision were made when it was written down.
 - **Acceptance criteria**: with Redis dropped mid-run, a request carrying a revoked token is
   refused within the deadline and one carrying a live token is decided — never held open past it.
 - **Risks**: Medium — the blacklist is a security control; the deadline must keep the fail-closed

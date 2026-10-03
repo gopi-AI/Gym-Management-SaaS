@@ -21,6 +21,10 @@ import {
 import { AuthModule } from './shared/auth/auth.module';
 import { ThrottlingModule } from './shared/throttling/throttling.module';
 import { validateThrottleEnv } from './shared/throttling/throttle.config';
+import {
+  CACHE_CALL_TIMEOUT_MS_ENV,
+  readCacheCallTimeout,
+} from './shared/cache/bounded-cache-call';
 import { parseTrustProxy } from './shared/throttling/trust-proxy';
 import { CryptoModule } from './shared/crypto/crypto.module';
 import { HealthModule } from './shared/health/health.module';
@@ -50,6 +54,9 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   // address. Both parsers are the same ones the runtime uses.
   validateThrottleEnv(config);
   parseTrustProxy(config.TRUST_PROXY);
+  // DEF-15: same rule for the cache-call deadline — a typo must fail the boot
+  // rather than silently leaving every request-path cache call unbounded.
+  readCacheCallTimeout(config[CACHE_CALL_TIMEOUT_MS_ENV]);
 
   const isProduction = config.NODE_ENV === 'production';
   if (isProduction) {
