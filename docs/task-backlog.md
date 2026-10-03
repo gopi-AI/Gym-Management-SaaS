@@ -2171,6 +2171,18 @@ This document contains the implementation tasks broken down by phase, with depen
 ### DEF-07: No HTTP request throttling on unauthenticated endpoints
 - **Objective**: Throttle `POST /v1/webhooks/payment-gateway` and the auth routes (at minimum
   `login` and `verify-mfa`).
+- **Status**: **Fixed** — owner rulings Q1..Q11, 2026-10-03 (see "DEF-07 rulings" below).
+  `@nestjs/throttler` (the one new dependency) with a Redis `ThrottlerStorage` over the existing
+  client; per-route guards on the five unauthenticated endpoints only; 429 with `Retry-After`;
+  `TRUST_PROXY` parsed and validated at boot; throttling fails **open** with a log line when
+  Redis is unavailable. Pinned by the unit specs (`trust-proxy.spec.ts`,
+  `throttle.config.spec.ts`), the gated real-Redis spec
+  (`redis-throttler-storage.integration.spec.ts`) and the gate's `auth-04`..`auth-06`, `boot-03`
+  and `wh-08`.
+- **Accepted residual risks (owner, 2026-10-03)**: a distributed attack on one account is not
+  blocked (no email-only counter, by ruling); `TRUST_PROXY` must be set behind any reverse proxy
+  or every client shares one IP; authenticated routes stay unthrottled. All three are recorded
+  under "DEF-07 rulings" below.
 - **Found during**: D14 security review, 2026-10-01 (F6, out of D14 scope — app-wide).
 - **Files/modules affected**: `src/main.ts` / `src/app.module.ts` (a global throttler guard);
   `@nestjs/throttler` is not a dependency today.

@@ -2,13 +2,18 @@
 // This is a no-op (with a log line) when SENTRY_DSN is unset.
 import './instrument';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ConfigService } from '@nestjs/config';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { Logger as PinoLogger } from 'nestjs-pino';
+import { parseTrustProxy } from './shared/throttling/trust-proxy';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true, rawBody: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+    rawBody: true,
+  });
   app.useLogger(app.get(PinoLogger));
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
@@ -16,6 +21,18 @@ async function bootstrap() {
   }));
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT', 3000);
+
+  // DEF-07 Q5: this is what `req.ip` means for every per-IP throttle. Unset —
+  // the shipped docker-compose shape, where the API is exposed directly — trusts
+  // nothing, so an `X-Forwarded-For` header cannot reset a counter. Behind a
+  // reverse proxy it MUST be set, or every client shares the proxy's address and
+  // the per-IP limits collapse into one global limit. `validateEnv` has already
+  // rejected a malformed value at boot.
+  const trustProxy = parseTrustProxy(configService.get<string>('TRUST_PROXY'));
+  if (trustProxy !== undefined) {
+    app.set('trust proxy', trustProxy);
+    new Logger('Throttling').log(`trust proxy = ${JSON.stringify(trustProxy)}`);
+  }
 
   if (!process.env.SENTRY_DSN) {
     // Clear, explicit signal that error tracking is disabled. This is the expected
