@@ -722,6 +722,35 @@ check({
   },
 });
 
+check({
+  id: 'ten-04',
+  group: 'tenancy',
+  title: 'creating a branch without address or phone is a 400, not a 500',
+  requires: ['tokenA', 'orgA'],
+  run: async (ctx) => {
+    // DEF-03: address/phone are NOT NULL on TENANCY_BRANCHES and are now required
+    // by the DTO, so an omission must be refused by the ValidationPipe (400 naming
+    // the field) instead of reaching the database and surfacing as a 500.
+    const post = (body) =>
+      call(ctx, { method: 'POST', path: '/v1/branches', token: ctx.tokenA, org: ctx.orgA, body });
+    const base = { organization_id: ctx.orgA, name: `Gate Branch DEF-03 ${ctx.runId}` };
+    // Each request omits exactly ONE field, so the 400 can only be explained by
+    // that field being required.
+    const missingAddress = await post({ ...base, phone: '+1-555-0100' });
+    const missingPhone = await post({ ...base, address: '1 Gate Street' });
+    const complete = await post({ ...base, address: '1 Gate Street', phone: '+1-555-0100' });
+    return verdict(
+      missingAddress.status === 400 &&
+        hasFragment(missingAddress, 'address') &&
+        missingPhone.status === 400 &&
+        hasFragment(missingPhone, 'phone') &&
+        complete.status === 201,
+      `POST /v1/branches: no address -> ${missingAddress.status} "${fragment(missingAddress)}"; ` +
+        `no phone -> ${missingPhone.status} "${fragment(missingPhone)}"; complete -> ${complete.status}`,
+    );
+  },
+});
+
 // ── inventory (P3-05 / OI-1 / OI-2) ─────────────────────────────────────────
 check({
   id: 'inv-01',
