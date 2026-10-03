@@ -2171,6 +2171,18 @@ This document contains the implementation tasks broken down by phase, with depen
 ### DEF-07: No HTTP request throttling on unauthenticated endpoints
 - **Objective**: Throttle `POST /v1/webhooks/payment-gateway` and the auth routes (at minimum
   `login` and `verify-mfa`).
+- **Status**: **Fixed** — owner rulings Q1..Q12, 2026-10-03 (see "DEF-07 rulings" below).
+  `@nestjs/throttler` (the one new dependency) with a Redis `ThrottlerStorage` over the existing
+  client; per-route guards on the five unauthenticated endpoints only; 429 with `Retry-After`;
+  `TRUST_PROXY` parsed and validated at boot; throttling fails **open** with a log line when
+  Redis is unavailable. Pinned by the unit specs (`trust-proxy.spec.ts`,
+  `throttle.config.spec.ts`), the gated real-Redis spec
+  (`redis-throttler-storage.integration.spec.ts`) and the gate's `auth-04`..`auth-06`, `boot-03`
+  and `wh-08`.
+- **Accepted residual risks (owner, 2026-10-03)**: a distributed attack on one account is not
+  blocked (no email-only counter, by ruling); `TRUST_PROXY` must be set behind any reverse proxy
+  or every client shares one IP; authenticated routes stay unthrottled. All three are recorded
+  under "DEF-07 rulings" below.
 - **Found during**: D14 security review, 2026-10-01 (F6, out of D14 scope — app-wide).
 - **Files/modules affected**: `src/main.ts` / `src/app.module.ts` (a global throttler guard);
   `@nestjs/throttler` is not a dependency today.
@@ -2307,6 +2319,57 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Risks**: Low — nothing shipped is affected today; the cost lands when gateway refunds are built
   on the current fixtures.
 
+### DEF-15: The token blacklist's fail-closed check can hang instead of refusing (Medium)
+- **Objective**: Give the blacklist read the same bound the throttling storage now has, so a Redis
+  outage refuses a token promptly instead of holding the request open.
+- **Found during**: the `DEF-07` fail-open fix, 2026-10-03 — the blacklist was quoted as the
+  counter-example to the storage's fail-open ruling (`redis-throttler.storage.ts`, class comment).
+- **Files/modules affected**: `src/shared/auth/jwt-auth.guard.ts:58-68`, plus three call sites in
+  `src/identity/services/auth.service.ts` (`:131-134`, `:238`, `:388` — detailed below). The webhook
+  route is clear: `git grep -in "cache\|redis" -- src/finance/controllers/gateway-webhook.controller.ts
+  src/finance/services` returns no matches (exit 1), and the route's only Redis touch is the
+  throttler storage via `@ThrottleWebhook` (`gateway-webhook.controller.ts:15`) — **INFERRED** (not
+  exercised end-to-end).
+- **Root cause**: the guard awaits `this.cacheManager.get('blacklisted:' + token)` (`:60`) with no
+  deadline and no readiness check. The cache is the same node-redis client the throttler storage
+  uses, so it has the same driver behaviour: mid-outage the client is open but not ready
+  (`isReady === false`), and `@redis/client` 1.6.1 QUEUES the command while reconnecting forever
+  rather than rejecting it. **INFERRED for this call site** (not exercised end-to-end): the
+  `catch` at `:62` that logs "failing closed" and throws the 401 cannot run while the promise is
+  pending, so the guard would not return and the request would hang — "fails closed" only holds
+  in the boot-time shape, where a never-connected client rejects immediately with
+  `ClientClosedError`. The client-level behaviour is **verified**: the outage test in
+  `redis-throttler-storage.integration.spec.ts` reproduces open-but-not-ready against real Redis
+  and shows a command staying pending for the whole outage.
+- **Same exposure at three more call sites** (`src/identity/services/auth.service.ts`; line numbers
+  confirmed by `git grep -n "cacheManager\|redisClient"` on 2026-10-03, source-read only — each hang
+  consequence is **INFERRED**, none exercised end-to-end):
+  - `:131-134` — the verify-mfa challenge claim `redisClient.set(claimKey, JSON.stringify('true'),
+    { PX, NX })` inside `verifyMfaAndLogin` (`:103-158`): no deadline, no `isReady` check, no
+    `try/catch` (the method's only `catch` wraps the JWT verify at `:109-115`).
+  - `:238` — the revocation read for refresh-token rotation inside `isTokenBlacklisted`
+    (`:233-246`, called from `refreshToken` at `:184`): the `try/catch` only helps once the promise
+    settles; a command queued on a not-ready client never reaches the `catch`.
+  - `:388` — the blacklist write inside `blacklistToken` (`:378-389`): no `try/catch` in the method
+    and none at its callers (`refreshToken` `:198`, `logout` `:215` and `:229`), so a rejection
+    propagates to the caller and a queued command hangs.
+- **Reachability**: `JwtAuthGuard` returns early for `@Public()` (`jwt-auth.guard.ts:32`), so the
+  four public auth routes (login, register, refresh, verify-mfa) never reach its blacklist read —
+  the guard read's exposure is the **authenticated** routes. On the public paths the exposure is
+  the three `auth.service.ts` sites above. `login` (`:74-102`) and `registerUser` (`:39-49`) make
+  no cache calls beyond the throttler (**INFERRED** from the same source-read; not exercised
+  end-to-end).
+- **Why nothing caught it**: the never-connected shape rejects in about a millisecond, so a
+  reviewer testing "Redis down" with a fresh client sees exactly the intended fail-closed
+  401 — the hanging shape needs a live connection to be dropped from under the client.
+- **Fix (not applied here)**: check `isReady` before the read and race the read against a
+  deadline, as `RedisThrottlerStorage` does now, or share one bounded helper across these call
+  sites.
+- **Acceptance criteria**: with Redis dropped mid-run, a request carrying a revoked token is
+  refused within the deadline and one carrying a live token is decided — never held open past it.
+- **Risks**: Medium — the blacklist is a security control; the deadline must keep the fail-closed
+  answer (401) and only change how fast it arrives.
+
 ## Hardening pass rulings (owner, 2026-10-02)
 
 Recorded verbatim. These govern the webhook hardening work — `DEF-02`, `DEF-04`, `DEF-05`,
@@ -2346,6 +2409,50 @@ replay check (`wh-05`). A concurrent duplicate cannot be produced by that harnes
 - **`DEF-06`'s organization predicate is dropped**, because with ruling 6 withdrawn it would be
   circular: the predicate would have to be derived from the very row it is used to find. The
   independent-source work is deferred to `DEF-13`.
+
+## DEF-07 rulings (owner, 2026-10-03)
+
+Recorded verbatim. These govern the `DEF-07` throttling work, delivered on branch
+`feat/def-07-throttling`.
+
+- **Q1.** Throttle only `POST /v1/auth/register`, `/login`, `/refresh`, `/verify-mfa` and
+  `POST /v1/webhooks/payment-gateway`. Authenticated routes are out of scope.
+- **Q2.** Limits, all overridable by environment variable with documented defaults (every number is
+  a tunable default, not a measured value): `login` 30 requests/min per IP AND 10 requests per
+  15 min per (IP, email) pair; `register` 10/hour per IP; `refresh` 60/min per IP; `verify-mfa`
+  20/min per IP. No email-only counter (it would let anyone block a victim); the residual risk (a
+  distributed attack on one account) is recorded in the backlog.
+- **Q3.** Storage is Redis on the existing client, with an atomic increment+expiry. Use
+  `@nestjs/throttler` (state the version compatible with the installed `@nestjs/common`) as the
+  ONLY new dependency; implement `ThrottlerStorage` on the existing Redis client; do not add a
+  second package without asking.
+- **Q4.** The 429 body is the default shape, plus a `Retry-After` header.
+- **Q5.** `TRUST_PROXY` environment variable (unset = trust nothing; accept a hop count or a subnet
+  list; validate on startup). Document that behind any reverse proxy it MUST be set, or every
+  client shares one IP.
+- **Q6.** The webhook gets a high per-IP ceiling only (600/min default, overridable). No failure
+  counting. A validly signed event must never be rejected by anything except that ceiling.
+- **Q7.** No Stripe IP allowlisting.
+- **Q8.** No lockout and no account state; a throttled login returns 429.
+- **Q9.** Limits come from environment variables; `api:gate` sets raised per-IP limits and runs its
+  own throttle-probe checks; no code bypass.
+- **Q10.** `GET /v1/health` is exempt.
+- **Q11.** If Redis is unavailable throttling FAILS OPEN with a log line; first quote how the
+  existing token blacklist behaves on Redis errors and say whether this is consistent.
+- **Q12.** DEF-07 storage deadline: `THROTTLE_STORAGE_TIMEOUT_MS` default 500 ms. Basis: local-host
+  measurement, 4.49M evals, 0 over 250 ms, worst 200 ms under 4 CPU hogs, p99.9 up to 97 ms under
+  contention. Not measured: network RTT, HTTP path, production load. Revisit after a production
+  fail-open-by-timeout rate is available; raise if the rate on a healthy Redis is above zero.
+
+### Residual risks (owner, 2026-10-03)
+
+- **A distributed attack on one account is not blocked.** `Q2` rules out an email-only counter
+  (anyone could use it to lock a victim out), so only the (IP, email) pair and the per-IP ceilings
+  apply; an attacker spread across many IPs can still make many attempts against one account.
+- **`TRUST_PROXY` must be set behind any reverse proxy** (`Q5`). Unset, every client shares the
+  proxy's IP and the per-IP limits collapse into one global limit.
+- **Authenticated routes are unthrottled** (`Q1`). Only the five unauthenticated endpoints above
+  are covered.
 
 ## ESLINT-002 — `apps/web` lint (2026-10-03)
 

@@ -24,7 +24,14 @@ This document outlines the API design for the Gym Management SaaS platform.
 - Optimistic concurrency: `If-Match` header with entity version (ETag)
 - Error handling: RFC-7807 Problem Details for HTTP APIs
 - Correlation ID: `X-Correlation-ID` header for request tracing
-- Rate limiting: per-tenant and per-IP limits with HTTP 429 responses
+- Rate limiting (`DEF-07`, implemented 2026-10-03): the five **unauthenticated** endpoints only
+  (`POST /v1/auth/register`, `/login`, `/refresh`, `/verify-mfa`, `POST /v1/webhooks/payment-gateway`),
+  answering HTTP 429 with a `Retry-After` header. Per-IP defaults: login 30/min, register 10/hour,
+  refresh 60/min, verify-mfa 20/min, webhook 600/min — plus 10/15 min per (IP, email) on login.
+  Each is an environment variable (`THROTTLE_LOGIN_IP_LIMIT`, `THROTTLE_LOGIN_PAIR_LIMIT`,
+  `THROTTLE_REGISTER_IP_LIMIT`, `THROTTLE_REFRESH_IP_LIMIT`, `THROTTLE_VERIFY_MFA_IP_LIMIT`,
+  `THROTTLE_WEBHOOK_IP_LIMIT`, and a `_TTL_MS` window for each) with those values as tunable
+  defaults. Authenticated routes are not throttled; `GET /v1/health` is exempt.
 ## Endpoint Catalog (Representative Samples)
 
 ### Tenancy
