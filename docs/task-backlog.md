@@ -2346,3 +2346,43 @@ replay check (`wh-05`). A concurrent duplicate cannot be produced by that harnes
 - **`DEF-06`'s organization predicate is dropped**, because with ruling 6 withdrawn it would be
   circular: the predicate would have to be derived from the very row it is used to find. The
   independent-source work is deferred to `DEF-13`.
+
+## DEF-07 rulings (owner, 2026-10-03)
+
+Recorded verbatim. These govern the `DEF-07` throttling work, delivered on branch
+`feat/def-07-throttling`.
+
+- **Q1.** Throttle only `POST /v1/auth/register`, `/login`, `/refresh`, `/verify-mfa` and
+  `POST /v1/webhooks/payment-gateway`. Authenticated routes are out of scope.
+- **Q2.** Limits, all overridable by environment variable with documented defaults (every number is
+  a tunable default, not a measured value): `login` 30 requests/min per IP AND 10 requests per
+  15 min per (IP, email) pair; `register` 10/hour per IP; `refresh` 60/min per IP; `verify-mfa`
+  20/min per IP. No email-only counter (it would let anyone block a victim); the residual risk (a
+  distributed attack on one account) is recorded in the backlog.
+- **Q3.** Storage is Redis on the existing client, with an atomic increment+expiry. Use
+  `@nestjs/throttler` (state the version compatible with the installed `@nestjs/common`) as the
+  ONLY new dependency; implement `ThrottlerStorage` on the existing Redis client; do not add a
+  second package without asking.
+- **Q4.** The 429 body is the default shape, plus a `Retry-After` header.
+- **Q5.** `TRUST_PROXY` environment variable (unset = trust nothing; accept a hop count or a subnet
+  list; validate on startup). Document that behind any reverse proxy it MUST be set, or every
+  client shares one IP.
+- **Q6.** The webhook gets a high per-IP ceiling only (600/min default, overridable). No failure
+  counting. A validly signed event must never be rejected by anything except that ceiling.
+- **Q7.** No Stripe IP allowlisting.
+- **Q8.** No lockout and no account state; a throttled login returns 429.
+- **Q9.** Limits come from environment variables; `api:gate` sets raised per-IP limits and runs its
+  own throttle-probe checks; no code bypass.
+- **Q10.** `GET /v1/health` is exempt.
+- **Q11.** If Redis is unavailable throttling FAILS OPEN with a log line; first quote how the
+  existing token blacklist behaves on Redis errors and say whether this is consistent.
+
+### Residual risks (owner, 2026-10-03)
+
+- **A distributed attack on one account is not blocked.** `Q2` rules out an email-only counter
+  (anyone could use it to lock a victim out), so only the (IP, email) pair and the per-IP ceilings
+  apply; an attacker spread across many IPs can still make many attempts against one account.
+- **`TRUST_PROXY` must be set behind any reverse proxy** (`Q5`). Unset, every client shares the
+  proxy's IP and the per-IP limits collapse into one global limit.
+- **Authenticated routes are unthrottled** (`Q1`). Only the five unauthenticated endpoints above
+  are covered.
