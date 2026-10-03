@@ -2453,3 +2453,55 @@ Recorded verbatim. These govern the `DEF-07` throttling work, delivered on branc
   proxy's IP and the per-IP limits collapse into one global limit.
 - **Authenticated routes are unthrottled** (`Q1`). Only the five unauthenticated endpoints above
   are covered.
+
+## ESLINT-002 — `apps/web` lint (2026-10-03)
+
+**Status: DONE — lint green.** Branch `chore/web-eslint-flat-config`. `cd apps/web && npm run lint`
+→ `EXIT=0`. Web lint is still **not** a CI gate: `.github/workflows/ci.yml` is deliberately
+untouched here (the D16 CI slice). This is the lint half of the D16 `ESLINT-002` item; the
+web-build half was a truncated local `@next/swc-linux-x64-gnu` addon (53,261,824 B on disk, ELF
+section headers declared at 143,142,856 B), fixed the same day by `npm ci` at the workspace root —
+`next build` has run `EXIT=0` since.
+
+**Root cause (reproduced, not inferred).** `eslint-config-next@16` ships a flat-config-native
+export whose peer range is `eslint >=9`, but the installed pair was `eslint@10.10.0`. ESLint 10
+requires a scope-manager API (`addGlobals`) that the config's plugin stack does not provide, so
+every run died before linting anything:
+
+```
+TypeError: scopeManager.addGlobals is not a function
+```
+
+The old script (`next lint`) additionally passed options ESLint 10 removed (`useEslintrc`,
+`extensions`) — the `⨯ ESLint: Invalid Options` line `next build` printed. Both symptoms have one
+cause.
+
+**Fix.** One version change — `eslint` `^10.10.0` → `^9.39.5` — plus a new flat config
+`apps/web/eslint.config.mjs` (base `eslint-config-next`, native export, no compat shim) and
+`"lint": "next lint"` → `"lint": "eslint ."`. `eslint-config-next` stays at `^16.3.5`: it already
+accepted ESLint 9. Trials in a throwaway `/tmp` copy, 2026-10-03:
+
+| Trial | Combination | Result |
+|---|---|---|
+| (i) | `eslint-config-next@16` + eslint 10, native flat | CRASH — `addGlobals is not a function`, no findings |
+| (ii) | `eslint-config-next@15.5.25` + eslint 9, `core-web-vitals` + `typescript`, `FlatCompat` shim | works; 12 findings (4 error / 8 warn); needs two version changes, a shim, and an undeclared `@eslint/eslintrc` dep |
+| **(chosen)** | `eslint-config-next@16` + eslint 9, native flat, base preset | works; 21 findings (0 error / 21 warn); one version change |
+
+**Pre-existing findings — inventory (21 warnings, 0 errors; measured 2026-10-03 on this branch).**
+None were fixed in this slice and none are silenced: 10 findings were **downgraded to `warn` with a
+TODO in `eslint.config.mjs`** (the TODO's count is the 10 below), and the other 11 were already
+`warn`-level in the preset.
+
+- **10 × `react-hooks/set-state-in-effect`** — downgraded to `warn`, TODO; each needs a React
+  data-flow refactor, not a lint edit: `settings` (×2), `ai-usage`, `membership-plans/[id]`,
+  `memberships/[id]`, `plan-performance`, `retention-analysis`, `AuthGuard`, `MfaForm`, `Navbar`.
+- 4 × `@next/next/no-location-assign-relative-destination` — `ai-usage`, `plan-performance`,
+  `retention-analysis`, `settings`.
+- 4 × `@next/next/no-html-link-for-pages` — `membership-plans/[id]`, `memberships/[id]`,
+  `AuthLayout`, `Footer`.
+- 2 × `react-hooks/exhaustive-deps` — `check-in`, `payments`.
+- 1 × `@next/next/no-img-element` — `Sidebar`.
+
+**Coverage gap (follow-up, not this slice).** The base preset enables the TypeScript parser but no
+`@typescript-eslint` rules — an unused variable is not flagged. Escalating to
+`eslint-config-next/typescript` and/or `core-web-vitals` is a separate change.
