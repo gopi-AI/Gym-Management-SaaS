@@ -17,12 +17,19 @@ import { AuthService } from '../services/auth.service';
 import { CurrentUser } from '../../shared/auth/current-user.decorator';
 import { JwtAuthGuard } from '../../shared/auth/jwt-auth.guard';
 import { Public } from '../../shared/auth/public.decorator';
+import {
+  ThrottleLogin,
+  ThrottleRefresh,
+  ThrottleRegister,
+  ThrottleVerifyMfa,
+} from '../../shared/throttling/throttle.decorators';
 
 @Controller('v1/auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Public()
+  @ThrottleRegister()
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   async register(@Body() dto: RegisterDto): Promise<any> {
@@ -33,6 +40,7 @@ export class AuthController {
   }
 
   @Public()
+  @ThrottleLogin()
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(
@@ -46,6 +54,7 @@ export class AuthController {
   }
 
   @Public()
+  @ThrottleRefresh()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(@Body() dto: RefreshTokenDto): Promise<{ accessToken: string; refreshToken: string }> {
@@ -53,6 +62,7 @@ export class AuthController {
   }
 
   @Public()
+  @ThrottleVerifyMfa()
   @Post('verify-mfa')
   @HttpCode(HttpStatus.OK)
   async verifyMfa(

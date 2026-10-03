@@ -19,6 +19,9 @@ import {
   resolveAiLimit,
 } from './ai/config/ai-usage-limits';
 import { AuthModule } from './shared/auth/auth.module';
+import { ThrottlingModule } from './shared/throttling/throttling.module';
+import { validateThrottleEnv } from './shared/throttling/throttle.config';
+import { parseTrustProxy } from './shared/throttling/trust-proxy';
 import { CryptoModule } from './shared/crypto/crypto.module';
 import { HealthModule } from './shared/health/health.module';
 import { InventoryModule } from './inventory/inventory.module';
@@ -42,6 +45,12 @@ import { EventHandlerModule } from './shared/event-handler/event-handler.module'
  * consumer at runtime is `ConfigModule.forRoot({ validate })`.
  */
 export function validateEnv(config: Record<string, unknown>): Record<string, unknown> {
+  // DEF-07: a malformed throttle setting or TRUST_PROXY value must fail the boot
+  // rather than silently disable a limit or leave the app trusting the wrong
+  // address. Both parsers are the same ones the runtime uses.
+  validateThrottleEnv(config);
+  parseTrustProxy(config.TRUST_PROXY);
+
   const isProduction = config.NODE_ENV === 'production';
   if (isProduction) {
     if (!config.JWT_SECRET || config.JWT_SECRET === 'dev-secret-change-me') {
@@ -176,6 +185,7 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
       },
       inject: [ConfigService],
     }),
+    ThrottlingModule,
     AuthModule,
     IdentityModule,
     MembersModule,

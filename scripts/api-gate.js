@@ -349,7 +349,11 @@ async function call(ctx, { method, path: urlPath, token, org, body, rawBody, hea
   } catch {
     parsed = undefined;
   }
-  return { status: response.status, body: parsed, text };
+  // `headers` is additive: existing checks read status/body/text only. The
+  // throttle checks need `Retry-After`, which only exists as a header.
+  const responseHeaders = {};
+  for (const [name, value] of response.headers) responseHeaders[name.toLowerCase()] = value;
+  return { status: response.status, body: parsed, text, headers: responseHeaders };
 }
 
 // ── seed: the fixtures everything else depends on ────────────────────────────
@@ -628,6 +632,38 @@ check({
   },
 });
 
+check({
+  id: 'boot-03',
+  group: 'boot',
+  title: 'GET /v1/health is never throttled',
+  run: async (ctx) => {
+    // Self-contained: exhaust a login-pair counter (fresh email, so no fixture is
+    // touched) and require the throttle to actually bite, then show health is
+    // unaffected — the exemption is proved while the caller's IP is throttled,
+    // not merely because nobody throttled the route yet.
+    const email = `gate-health-${ctx.runId}@example.com`;
+    const loginStatuses = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const r = await call(ctx, {
+        method: 'POST',
+        path: '/v1/auth/login',
+        body: { email, password: 'definitely-wrong' },
+      });
+      loginStatuses.push(r.status);
+    }
+    const throttled = loginStatuses[3] === 429;
+    const healthStatuses = [];
+    for (let i = 0; i < 10; i += 1) {
+      const r = await call(ctx, { method: 'GET', path: '/v1/health' });
+      healthStatuses.push(r.status);
+    }
+    return verdict(
+      throttled && healthStatuses.every((status) => status === 200),
+      `login probe ${loginStatuses.join(',')}; GET /v1/health x10 -> ${healthStatuses.join(',')}`,
+    );
+  },
+});
+
 // ── auth ─────────────────────────────────────────────────────────────────────
 check({
   id: 'auth-01',
@@ -664,6 +700,72 @@ check({
       headers: { Authorization: 'Bearer not.a.jwt' },
     });
     return verdict(r.status === 401, `GET /v1/inventory/suppliers (bad token) -> ${r.status}`);
+  },
+});
+
+/**
+ * DEF-07 probes. The login pair counter is set to 3 by this harness's env, and
+ * every probe uses a fresh email, so none of them can affect the fixture logins
+ * above (`userAEmail` has two attempts of its own: seed-03 and auth-01).
+ */
+check({
+  id: 'auth-04',
+  group: 'auth',
+  title: 'repeated logins for one email are throttled (429 + Retry-After)',
+  provides: ['throttleProbeEmail'],
+  run: async (ctx) => {
+    const email = `gate-throttle-${ctx.runId}@example.com`;
+    const statuses = [];
+    let retryAfter;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const r = await call(ctx, {
+        method: 'POST',
+        path: '/v1/auth/login',
+        body: { email, password: 'definitely-wrong' },
+      });
+      statuses.push(r.status);
+      if (r.status === 429) retryAfter = r.headers['retry-after'];
+    }
+    const ok = statuses.slice(0, 3).every((s) => s === 401) && statuses[3] === 429 && Number(retryAfter) > 0;
+    return verdict(
+      ok,
+      `POST /v1/auth/login x4 (same email) -> ${statuses.join(',')}; retry-after=${retryAfter}`,
+      { throttleProbeEmail: email },
+    );
+  },
+});
+
+check({
+  id: 'auth-05',
+  group: 'auth',
+  title: 'a different email from the same IP is not throttled',
+  requires: ['throttleProbeEmail'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: '/v1/auth/login',
+      body: { email: `gate-throttle-b-${ctx.runId}@example.com`, password: 'definitely-wrong' },
+    });
+    return verdict(r.status === 401, `POST /v1/auth/login (other email, same IP) -> ${r.status}`);
+  },
+});
+
+check({
+  id: 'auth-06',
+  group: 'auth',
+  title: 'an X-Forwarded-For header does not reset the login counter (TRUST_PROXY unset)',
+  requires: ['throttleProbeEmail'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: '/v1/auth/login',
+      headers: { 'x-forwarded-for': '203.0.113.77' },
+      body: { email: ctx.throttleProbeEmail, password: 'definitely-wrong' },
+    });
+    return verdict(
+      r.status === 429,
+      `POST /v1/auth/login (spoofed X-Forwarded-For, already-throttled email) -> ${r.status}`,
+    );
   },
 });
 
@@ -1892,6 +1994,33 @@ check({
   },
 });
 
+check({
+  id: 'wh-08',
+  group: 'webhook',
+  title: 'signed webhooks are still accepted under the per-IP ceiling',
+  run: async (ctx) => {
+    // DEF-07 Q6: the webhook has a high ceiling and nothing else — no failure
+    // counting — so a validly signed event must still be accepted under normal
+    // load. Three fresh events, each with its own id.
+    const statuses = [];
+    for (let i = 0; i < 3; i += 1) {
+      const eventId = `evt_gate_load_${ctx.runId}_${i}`;
+      const payload = ctx.webhookPayload(eventId, crypto.randomUUID());
+      const r = await call(ctx, {
+        method: 'POST',
+        path: '/v1/webhooks/payment-gateway',
+        rawBody: payload,
+        headers: { 'stripe-signature': ctx.signWebhook(payload, ctx.webhookSecret) },
+      });
+      statuses.push(r.status);
+    }
+    return verdict(
+      statuses.every((status) => status === 201),
+      `POST /v1/webhooks/payment-gateway x3 (signed) -> ${statuses.join(',')}`,
+    );
+  },
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Selection
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2300,6 +2429,22 @@ async function runGuarded(opts) {
     STRIPE_WEBHOOK_SECRET: `whsec_gate_${runId}`,
     SENTRY_DSN: '',
     AI_ENABLED: 'false',
+    // DEF-07: the app under test throttles its own unauthenticated routes, and
+    // this harness makes ~70 requests from one IP, so the per-IP ceilings are
+    // raised far above that (~15x headroom). The login PAIR counter is set LOW
+    // (3) instead: the pair key includes the email, so only the probe check that
+    // deliberately reuses one address can reach it, and four requests are enough
+    // to prove the 429. No code bypass is involved — these are the documented
+    // environment variables the app reads (Q9).
+    THROTTLE_LOGIN_IP_LIMIT: '1000',
+    THROTTLE_REGISTER_IP_LIMIT: '1000',
+    THROTTLE_REFRESH_IP_LIMIT: '1000',
+    THROTTLE_VERIFY_MFA_IP_LIMIT: '1000',
+    THROTTLE_WEBHOOK_IP_LIMIT: '1000',
+    THROTTLE_LOGIN_PAIR_LIMIT: '3',
+    // Explicitly empty so the spoofed-X-Forwarded-For check is deterministic even
+    // when the developer's shell has TRUST_PROXY set: unset means "trust nothing".
+    TRUST_PROXY: '',
   };
   for (const name of WORKER_NAMES) childEnv[`WORKERS_${name}_ENABLED`] = 'false';
 
