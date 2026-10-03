@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { ThrottlerGetTrackerFunction, ThrottlerOptions } from '@nestjs/throttler';
+import { createHash } from 'crypto';
 
 /**
  * DEF-07 throttling configuration.
@@ -73,9 +74,32 @@ export function validateThrottleEnv(config: Record<string, unknown>): void {
  * part of the key so that one attacker cannot spend another account's budget
  * (email-only) and one account cannot be locked out from elsewhere (IP-only).
  */
+/** Longest IP component kept; an address is far shorter, but `req.ip` can echo a proxy-supplied value. */
+const MAX_KEY_IP_CHARS = 64;
+
+/** SHA-256 hex digest length. */
+const EMAIL_BUCKET_CHARS = 64;
+
+/**
+ * The key is bounded at 129 characters: 64 (capped IP) + `|` + 64 (hashed email).
+ * The email is HASHED rather than embedded: `req.body.email` is unauthenticated
+ * input of arbitrary length, and a raw 10,000-character address would otherwise
+ * become a 10,000-character Redis key. Hashing also removes any need to escape
+ * whatever the caller sends.
+ */
+export const MAX_LOGIN_PAIR_KEY_CHARS = MAX_KEY_IP_CHARS + 1 + EMAIL_BUCKET_CHARS;
+
 export function loginPairKey(ip: string | undefined, email: unknown): string {
+  // Anything that is not a non-empty string — missing, null, a number, an array,
+  // an object — is the SAME bucket as an empty email, so a malformed body cannot
+  // mint a fresh counter per shape.
   const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
-  return `${ip ?? 'unknown'}|${normalizedEmail}`;
+  const emailBucket =
+    normalizedEmail === ''
+      ? ''
+      : createHash('sha256').update(normalizedEmail, 'utf8').digest('hex');
+  const ipBucket = (ip ?? 'unknown').slice(0, MAX_KEY_IP_CHARS);
+  return `${ipBucket}|${emailBucket}`;
 }
 
 /** Throttler tracker for the pair counter — see `loginPairKey`. */
