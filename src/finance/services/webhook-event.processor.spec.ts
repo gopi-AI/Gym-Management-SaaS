@@ -1,10 +1,14 @@
 import { WebhookEventProcessor } from './webhook-event.processor';
 import { WebhookEvent } from '../entities/webhook-event.entity';
+import { Payment } from '../entities/payment.entity';
 
 describe('WebhookEventProcessor', () => {
   const eventId = 'event-row-1';
-  const paymentId = 'payment-1';
-  const refundId = 'refund-1';
+  // Real UUIDs: DEF-06 rejects a reference the `uuid` column could not address,
+  // so a `payment-1` placeholder is no longer a usable fixture id.
+  const paymentId = '11111111-1111-4111-8111-111111111111';
+  const refundId = '22222222-2222-4222-8222-222222222222';
+  const ORG = 'org-1';
   let event: WebhookEvent;
   let manager: Record<string, any>;
   let dataSource: Record<string, jest.Mock>;
@@ -12,6 +16,7 @@ describe('WebhookEventProcessor', () => {
   let payments: { applyGatewayOutcome: jest.Mock };
   let refunds: { applyGatewayOutcome: jest.Mock };
   let eventRepo: Record<string, jest.Mock>;
+  let paymentRepo: Record<string, jest.Mock>;
 
   beforeEach(() => {
     event = {
@@ -36,7 +41,14 @@ describe('WebhookEventProcessor', () => {
         return value;
       }),
     };
-    manager = { getRepository: jest.fn().mockReturnValue(eventRepo) };
+    // Entity-aware, because DEF-04 makes the processor read the PAYMENT row to
+    // attribute the event. A blanket `mockReturnValue(eventRepo)` would hand it
+    // the webhook row instead and the attribution assertion below would pass
+    // against the wrong object.
+    paymentRepo = { findOne: jest.fn().mockResolvedValue({ organization_id: ORG }) };
+    manager = {
+      getRepository: jest.fn((entity: unknown) => (entity === Payment ? paymentRepo : eventRepo)),
+    };
     dataSource = {
       transaction: jest.fn().mockImplementation(async (callback: Function) => callback(manager)),
     };
@@ -80,5 +92,38 @@ describe('WebhookEventProcessor', () => {
       succeeded: true,
       gatewayStatus: 'succeeded',
     });
+  });
+
+  it('attributes the event to the organization of the payment it names (DEF-04)', async () => {
+    const processor = new WebhookEventProcessor(dataSource as any, payments as any, refunds as any);
+
+    await (processor as any).processOne(eventId);
+
+    expect(paymentRepo.findOne).toHaveBeenCalled();
+    expect(event.organization_id).toBe(ORG);
+  });
+
+  it('applies nothing for an event type outside the allowlist (DEF-06)', async () => {
+    event.event_type = 'customer.created';
+    (event.payload as any).type = 'customer.created';
+    const processor = new WebhookEventProcessor(dataSource as any, payments as any, refunds as any);
+
+    await (processor as any).processOne(eventId);
+
+    expect(payments.applyGatewayOutcome).not.toHaveBeenCalled();
+    expect(refunds.applyGatewayOutcome).not.toHaveBeenCalled();
+    expect(event.status).toBe('processed');
+    expect(event.organization_id).toBeUndefined();
+  });
+
+  it('treats a reference that is not a UUID as unreferenced (DEF-06)', async () => {
+    (event.payload.data as any).object.metadata = { paymentId: 'not-a-uuid' };
+    const processor = new WebhookEventProcessor(dataSource as any, payments as any, refunds as any);
+
+    await (processor as any).processOne(eventId);
+
+    expect(payments.applyGatewayOutcome).not.toHaveBeenCalled();
+    expect(paymentRepo.findOne).not.toHaveBeenCalled();
+    expect(event.status).toBe('processed');
   });
 });

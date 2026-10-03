@@ -44,6 +44,17 @@ export const WORKER_BATCH_SIZES: Record<string, number> = {
 /** Outbox lease duration: comfortably longer than a normal batch's runtime. */
 export const OUTBOX_LOCK_DURATION_MS = 30_000;
 
+/**
+ * Webhook-event lease duration (DEF-05): comfortably longer than a normal batch's
+ * runtime, so a live claimant is never raced, while a claimant that dies is
+ * recovered once the lease lapses.
+ *
+ * Owner ruling #9 (2026-10-02) sets this to 60 s. It deliberately does NOT mirror
+ * the outbox's `OUTBOX_LOCK_DURATION_MS` (30 s / 10 attempts) — webhook delivery
+ * gets a longer lease and a lower ceiling.
+ */
+export const WEBHOOK_LOCK_DURATION_MS = 60_000;
+
 /** Refuse absurd intervals (e.g. `WORKERS_OUTBOX_INTERVAL_MS=1`). */
 export const MIN_WORKER_INTERVAL_MS = 1_000;
 

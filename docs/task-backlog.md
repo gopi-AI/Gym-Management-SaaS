@@ -2206,3 +2206,138 @@ This document contains the implementation tasks broken down by phase, with depen
   consecutive full runs, or the specific handle is identified and recorded here with a one-line
   rationale for leaving it open.
 - **Risks**: Low — test-only; affects neither shipped behaviour nor the exit code.
+
+### DEF-10: Extract `isUniqueViolation` into a shared util (Low)
+- **Objective**: one shared implementation of the `23505` detector, replacing the private copies.
+- **Found during**: the `DEF-02` hardening work, 2026-10-02.
+- **Files/modules affected**: six private copies — `payments.service:90`, `refunds.service:83`,
+  `inventory.service:221`, `attendance:666`, `pt/commission-payouts:173`, `memberships:973`.
+- **Why not done inside `DEF-02`**: it is a cross-module refactor, so it is out of scope for a fix
+  that only needs the detector in one more place (ruling 4).
+- **Acceptance criteria**: one shared implementation, all callers switched, each caller's existing
+  unique-violation test still green.
+- **Risks**: Low — no behaviour change intended.
+
+### DEF-11: `processBatch` iterated the `[rows, count]` tuple and never processed an event (High)
+- **Objective**: Record that webhook events were claimed and never processed, and that the
+  defect is fixed.
+- **Found during**: DEF-05 hardening, 2026-10-02 — the first real-database test of
+  `processBatch`, in `src/finance/services/webhook-event-lease.integration.spec.ts`.
+- **Files/modules affected**: `src/finance/services/webhook-event.processor.ts` (`processBatch`).
+- **Root cause**: TypeORM's `manager.query()` returns `[rows, affectedCount]` for an
+  `UPDATE … RETURNING`, not the rows alone. The claim returned a two-element tuple, the loop
+  iterated the tuple, and `event.id` was `undefined` on both elements — `processOne(undefined)`
+  threw and the failure path hit `TypeORMError: Empty criteria(s) are not allowed for the
+  update method`. Rows the claim moved to `'processing'` stayed there forever.
+- **Why nothing caught it**: the mocked unit spec calls `processOne` directly and never exercises
+  the claim; the `WEBHOOK` worker is OFF by default, so the D15 API gate — which drives the
+  webhook over HTTP and asserts only that the row was persisted — never ran `processBatch` either.
+- **Status**: **Fixed** — `processBatch` destructures the rows out of the tuple, and
+  `src/finance/services/webhook-event-lease.integration.spec.ts` is the regression guard: reverting
+  the destructure fails 10 of the 16 lease tests (the number at the time of measurement,
+  2026-10-02).
+- **Acceptance criteria**: `processBatch` processes a claimed row end to end; the real-DB spec
+  above is the regression guard, and moving the increment or the destructure fails it.
+- **Risks**: High before the fix — a delivery was accepted (201), persisted, and then never
+  applied, so gateway-driven payment and refund state transitions did not happen. The event rows
+  accumulated in `'processing'`, which is the symptom `DEF-05` was filed to explain.
+
+### DEF-12: A worker running longer than the lease can be reclaimed mid-processing (Medium)
+- **Objective**: Record the residual race the DEF-05 lease introduces, and the assumption it rests
+  on, rather than leave it implicit.
+- **Found during**: DEF-05 hardening, 2026-10-02.
+- **Files/modules affected**: `src/finance/services/webhook-event.processor.ts` (`processBatch`,
+  `processOne`); `src/shared/workers/worker-config.ts` (`WEBHOOK_LOCK_DURATION_MS`).
+- **Mechanism**: the claim sets `locked_at = now()` and takes the row. If the batch's work for a
+  row runs longer than `WEBHOOK_LOCK_DURATION_MS` (60 s per ruling #9) — a slow gateway call, a
+  stalled database, a suspended host — the next poll's claim can take the same row while the first
+  claimant is still working. Both then run `processOne` concurrently.
+- **Why it is Medium and not High**: the second application is a no-op **only because**
+  `PaymentsService.applyGatewayOutcome` returns early when the payment is no longer `PENDING`
+  (`payments.service.ts`). That guard is the entire mitigation, and it covers payments; the refund
+  path (`RefundsService.applyGatewayOutcome`) and any future side effect of the same shape rely on
+  their own guards, which are not asserted here.
+- **Not fixed here**: the lease is a timeout, not a fencing token — a reclaimable row has no
+  monotonic claim id for the writer to check. Fencing (or extending the lease while work is in
+  flight) is the structural fix and is out of scope for this pass.
+- **Acceptance criteria**: either the mitigation is stated at the guard that provides it and
+  covered by a test per side-effect path, or fencing is implemented.
+- **Risks**: Medium — silent duplicate application if a future consumer path is not idempotent.
+  The lease duration is the tunable that trades this against recovery latency.
+
+### DEF-13: Add `organizationId` to PaymentIntent and refund metadata (Low)
+- **Objective**: Add `organizationId` to PaymentIntent and refund metadata at creation, and
+  cross-check it in the processor.
+- **Blocked on**: confirming whether payment retries reuse `payment.idempotency_key`, since Stripe
+  rejects a key reused with different parameters.
+- **Rationale**: defence in depth against our own cross-tenant bugs; signed payloads cannot be
+  forged without our Stripe secret key.
+- **Risks**: Low.
+
+### DEF-14: The webhook refund path (`refundId` in event metadata) is unreachable today (Low)
+- **Objective**: Record that the processor's refund branch cannot be reached by any event Stripe
+  sends today, and what must change before gateway-created refunds are scheduled.
+- **Found during**: the `DEF-02`/`DEF-04`/`DEF-05`/`DEF-06` hardening pass, 2026-10-02.
+- **Files/modules affected**: `src/finance/services/stripe-payment-gateway.adapter.ts` (`refund()`),
+  `src/finance/services/refunds.service.ts`, `src/finance/finance.module.ts`, the processor's
+  refund fixtures; Stripe SDK 18.5.0 type files `types/EventTypes.d.ts` (`ChargeRefundedEvent`),
+  `Charges.d.ts`, `Refunds.d.ts`.
+- **Root cause**: two independent gaps. (a) `StripePaymentGatewayAdapter.refund()` has no caller:
+  `RefundsService` records staff-initiated refunds directly as `succeeded` and does not use
+  `PAYMENT_GATEWAY` (`refunds.service.ts`, `finance.module.ts`), so no refund is created through
+  the gateway for a webhook to report. (b) Even when one is, a `charge.refunded` event carries a
+  `Charge`, whose own metadata is not the Refund's — the refund's metadata is under
+  `object.refunds.data[n].metadata` (stripe SDK 18.5.0, `types/EventTypes.d.ts`
+  `ChargeRefundedEvent`, `Charges.d.ts`, `Refunds.d.ts`). The `DEF-04` and `DEF-06` refund
+  fixtures encode a shape Stripe does not send.
+- **Why nothing caught it**: the path has no caller and the webhook worker is OFF by default, so
+  nothing exercises it; the fixtures are hand-written, and no real test-mode refund event has been
+  observed to contradict them.
+- **Owner ruling (2026-10-02)**: the refund webhook path is documented, not changed.
+- **When scheduled**: key on `refund.created` / `refund.updated` (object = `Refund`,
+  `metadata.refundId`) and update the allowlist and fixtures. Needs an owner ruling when that work
+  is scheduled.
+- **Acceptance criteria**: the processor keys on the event types whose object actually carries the
+  refund's metadata, and the refund fixtures match an event Stripe sends.
+- **Risks**: Low — nothing shipped is affected today; the cost lands when gateway refunds are built
+  on the current fixtures.
+
+## Hardening pass rulings (owner, 2026-10-02)
+
+Recorded verbatim. These govern the webhook hardening work — `DEF-02`, `DEF-04`, `DEF-05`,
+`DEF-06` — delivered on branch `hardening/webhook-def-02-06`.
+
+1. `DEF-04` populates `FINANCE_WEBHOOK_EVENTS.organization_id`; column stays nullable.
+2. Events with no payment/refund reference may keep a NULL org.
+3. `DEF-02`: a duplicate delivery returns `{received:true}` / 201 as now.
+4. `DEF-02`: local private 23505 helper; extracting the shared `isUniqueViolation` is filed as `DEF-10`.
+5. `DEF-06`: explicit allowlist of event types that change state; every other type is recorded as processed with no state change, logged; no new status value.
+6. `DEF-06`: `applyGatewayOutcome` takes an explicit `organizationId`; update all callers including `payment-retry.service.ts`.
+7. `DEF-06`: independent org source via PaymentIntent metadata if it exists today (check first); if not, STOP and ask for a ruling.
+8. `DEF-05`: migration authorized (claimed_at, attempt counter, dead/parked status).
+9. `DEF-05`: lease 60 s, 5 attempts, in a named config constant. These are tunable defaults, not measured values.
+10. Unhandled event types are not failures and never count toward `DEF-05`'s attempt ceiling.
+11. `processBatch` gets a real-DB test as part of `DEF-05`.
+12. No concurrency case in `api:gate` for the `DEF-02` race; record the residual risk.
+13. Hardening work goes on branch `hardening/webhook-def-02-06`, delivered by PR. No push to main.
+
+**Note on ruling 8.** The implemented columns are named `attempts` and `locked_at`, and the
+parked state is `status = 'dead_lettered'` — the owner chose the fifth status value over a
+boolean, 2026-10-02. The migration is `1788965263272-AddWebhookEventLease`.
+
+**Note on ruling 12.** The residual risk, recorded here as the ruling asks: `scripts/api-gate.js`
+has no concurrency case, so the `DEF-02` duplicate-delivery race is covered only by the sequential
+replay check (`wh-05`). A concurrent duplicate cannot be produced by that harness as it stands.
+
+### Amendments (owner, 2026-10-02)
+
+- **Ruling 6 is WITHDRAWN.** `applyGatewayOutcome` keeps its current signature; no `organizationId`
+  parameter is added and no callers are updated.
+- **Ruling 7 is resolved as option (b).** The organization is derived from the payment or refund
+  row inside the processor's transaction — which is what `DEF-04` was implemented as. There is no
+  independent source available today: the check ruling 7 asked for found that the PaymentIntent
+  metadata carries only `paymentId` (`src/finance/services/stripe-payment-gateway.adapter.ts`, the
+  `paymentIntents.create` call), so metadata alone cannot name a tenant.
+- **`DEF-06`'s organization predicate is dropped**, because with ruling 6 withdrawn it would be
+  circular: the predicate would have to be derived from the very row it is used to find. The
+  independent-source work is deferred to `DEF-13`.
