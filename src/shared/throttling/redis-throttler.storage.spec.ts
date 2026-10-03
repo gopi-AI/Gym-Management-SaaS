@@ -20,6 +20,22 @@ const cacheWith = (client: unknown) => ({ store: { client } }) as unknown as Cac
 const timeoutConfig = (ms: number) =>
   new ConfigService({ THROTTLE_STORAGE_TIMEOUT_MS: String(ms) });
 
+/**
+ * Wall-clock slack for every LOWER bound on an elapsed measurement in this file.
+ *
+ * Such a bound flakes on its own, because the value it measures is produced by a
+ * `setTimeout`: a timer-driven duration read with `Date.now()` can come back one
+ * millisecond SHORT of the delay it was given — the clock is truncated to the
+ * millisecond, and libuv ends the timer on its own cached clock. Measured on
+ * node v24.20.0, idle: 300 x `setTimeout(40)` read 39 ms in 5 runs (min 39), and
+ * 2000 x `setTimeout(10)` read 9 ms in 23. That is exactly the shape CI failed
+ * on (run 37138374395: `Expected: >= 40, Received: 39`).
+ *
+ * The slack is deliberately small: an assertion must still fail when the storage
+ * abandons far earlier than its deadline, and an immediate return reads 0-1 ms.
+ */
+const TIMER_JITTER_MS = 10;
+
 describe('RedisThrottlerStorage (fail-open paths)', () => {
   let logSpy: jest.SpyInstance;
 
@@ -69,7 +85,7 @@ describe('RedisThrottlerStorage (fail-open paths)', () => {
     const elapsed = Date.now() - started;
 
     expect(record.isBlocked).toBe(false);
-    expect(elapsed).toBeGreaterThanOrEqual(40);
+    expect(elapsed).toBeGreaterThanOrEqual(40 - TIMER_JITTER_MS);
     expect(elapsed).toBeLessThan(1_000);
     expect(failOpenLines()).toHaveLength(1);
     expect(String(failOpenLines()[0][0])).toContain('storage timeout');
@@ -83,7 +99,9 @@ describe('RedisThrottlerStorage (fail-open paths)', () => {
     await storage.increment('k', 60_000, 1, 0, 'probe');
     const elapsed = Date.now() - started;
 
-    expect(elapsed).toBeGreaterThanOrEqual(THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT);
+    expect(elapsed).toBeGreaterThanOrEqual(
+      THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT - TIMER_JITTER_MS,
+    );
     expect(elapsed).toBeLessThan(THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT + 1_000);
   });
 

@@ -41,6 +41,18 @@ import { THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT } from './throttle.config';
 const RUN = process.env.RUN_DB_INTEGRATION === '1';
 const describeIntegration = RUN ? describe : describe.skip;
 
+/**
+ * Wall-clock slack for the LOWER bound on the elapsed measurement below.
+ *
+ * The measured value comes from a `setTimeout`, and a timer-driven duration read
+ * with `Date.now()` can come back one millisecond SHORT of the delay it was
+ * given — the clock is truncated to the millisecond, and libuv ends the timer on
+ * its own cached clock. Measured on node v24.20.0, idle: 300 x `setTimeout(40)`
+ * read 39 ms in 5 runs. The slack is deliberately small: the assertion must
+ * still fail if the storage abandons far earlier than its deadline.
+ */
+const TIMER_JITTER_MS = 10;
+
 const redisTarget = () => ({
   host: process.env.REDIS_HOST || '127.0.0.1',
   port: Number(process.env.REDIS_PORT || '6379'),
@@ -367,7 +379,9 @@ describeIntegration('RedisThrottlerStorage + DefThrottlerGuard (real Redis)', ()
       expect(record.totalHits).toBe(1);
       // It waited for the deadline — that is the path under test, not an
       // instant failure for some other reason.
-      expect(elapsed).toBeGreaterThanOrEqual(THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT);
+      expect(elapsed).toBeGreaterThanOrEqual(
+        THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT - TIMER_JITTER_MS,
+      );
       expect(failOpenLines(spy)).toHaveLength(1);
     } finally {
       spy.mockRestore();
