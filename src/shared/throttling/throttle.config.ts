@@ -48,11 +48,13 @@ export const throttleEnvNames = (key: ThrottleKey) => ({
  * `EVAL` may take before `RedisThrottlerStorage` abandons it and fails open.
  * Milliseconds, parsed with the same positive-integer rule as every other
  * `THROTTLE_*` number, so a malformed value fails the boot instead of silently
- * leaving requests unbounded. A healthy round trip is sub-millisecond; this is
- * a failure bound, not a latency budget.
+ * leaving requests unbounded. This is a failure bound, not a latency budget:
+ * healthy replies on a local Redis were measured at ~0.2 ms idle and up to
+ * tens of ms under load; production network RTT is not measured. 500 ms is
+ * the owner's ruling (DEF-07 Q12, 2026-10-03), sized from that measurement.
  */
 export const THROTTLE_STORAGE_TIMEOUT_MS_ENV = 'THROTTLE_STORAGE_TIMEOUT_MS';
-export const THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT = 250;
+export const THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT = 500;
 
 /**
  * Read one positive-integer setting, falling back to the documented default.

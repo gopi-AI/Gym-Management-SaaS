@@ -158,10 +158,11 @@ describeIntegration('RedisThrottlerStorage + DefThrottlerGuard (real Redis)', ()
     // The happy-path tests are about the Lua script's counters, not about the
     // fail-open deadline, so this storage takes a deadline far above any
     // scheduling delay. Under a full parallel Jest run the worker's event loop
-    // can stall past the 250 ms default and turn a HEALTHY Redis into a
-    // fail-open (observed: one full-suite run failed the atomicity test below
-    // with "no reply within 250 ms (storage timeout)" while Redis was fine).
-    // The default is exercised deliberately by the deadline test at the end.
+    // can stall past the 500 ms default and turn a HEALTHY Redis into a
+    // fail-open (observed: one full-suite run, under the then-250 ms default,
+    // failed the atomicity test below with "no reply within 250 ms (storage
+    // timeout)" while Redis was fine). The default is exercised deliberately by
+    // the deadline test at the end.
     storage = new RedisThrottlerStorage(
       { store: { client } } as unknown as Cache,
       new ConfigService({ THROTTLE_STORAGE_TIMEOUT_MS: '10000' }),

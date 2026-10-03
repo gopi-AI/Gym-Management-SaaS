@@ -114,7 +114,7 @@ interface RedisEvalClient {
  *  - the driver rejects the `EVAL` (a real error reply, a closed socket): the
  *    catch below turns it into a fail-open line.
  *  - the driver never answers within `THROTTLE_STORAGE_TIMEOUT_MS` (default
- *    250 ms): a socket that is still `isReady` but blackholed, or a wedged
+ *    500 ms): a socket that is still `isReady` but blackholed, or a wedged
  *    server, leaves the command queued with no reply and no error, so the call
  *    is raced against a deadline.
  *
