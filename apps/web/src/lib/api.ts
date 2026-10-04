@@ -35,12 +35,19 @@ export function setOrganizationId(orgId: string | null): void {
 export class ApiError extends Error {
   readonly status: number;
   readonly details?: unknown;
+  /**
+   * Seconds to wait before retrying, read from the response's `Retry-After`
+   * header when the server sent it in delta-seconds form. The throttler sets it
+   * on a 429, and a degraded auth backend sets it on the 503 it answers with.
+   */
+  readonly retryAfter?: number;
 
-  constructor(status: number, message: string, details?: unknown) {
+  constructor(status: number, message: string, details?: unknown, retryAfter?: number) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.details = details;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -68,6 +75,17 @@ function buildUrl(path: string, query?: RequestOptions['query']): string {
   return qs ? `${url}?${qs}` : url;
 }
 
+/**
+ * Reads `Retry-After` in its delta-seconds form. The HTTP-date form is not
+ * parsed, so callers see `undefined` when the server uses it.
+ */
+function parseRetryAfter(res: Response): number | undefined {
+  const raw = res.headers.get('retry-after');
+  if (raw === null) return undefined;
+  const seconds = Number.parseInt(raw, 10);
+  return Number.isNaN(seconds) || seconds < 0 ? undefined : seconds;
+}
+
 async function parseError(res: Response): Promise<ApiError> {
   let details: unknown;
   let message = `Request failed with status ${res.status}`;
@@ -86,7 +104,7 @@ async function parseError(res: Response): Promise<ApiError> {
     // Non-JSON error body — keep the generic message.
   }
 
-  return new ApiError(res.status, message, details);
+  return new ApiError(res.status, message, details, parseRetryAfter(res));
 }
 
 async function performRequest(path: string, options: RequestOptions): Promise<Response> {
@@ -113,32 +131,77 @@ async function performRequest(path: string, options: RequestOptions): Promise<Re
   });
 }
 
-let refreshPromise: Promise<boolean> | null = null;
+let refreshPromise: Promise<RefreshResult> | null = null;
+
+/**
+ * Outcome of an attempt to rotate the access token.
+ *
+ * - `refreshed` — the backend issued a new pair; the caller retries.
+ * - `rejected` — the backend answered 401, i.e. this refresh token is invalid,
+ *   expired, revoked or belongs to a gone account. The session is over.
+ * - `unavailable` — the backend could not answer at all (5xx, 429, any other
+ *   non-OK status, or no response). It never declared the session invalid, so
+ *   the tokens are kept and the refresh failure is surfaced instead.
+ */
+export type RefreshResult =
+  | { outcome: 'refreshed' }
+  | { outcome: 'rejected' }
+  | { outcome: 'unavailable'; error: ApiError };
 
 /** Attempt to rotate the access token using the stored refresh token. */
-async function refreshAccessToken(): Promise<boolean> {
+async function refreshAccessToken(): Promise<RefreshResult> {
   const refreshToken = getRefreshToken();
-  if (!refreshToken) return false;
+  if (!refreshToken) {
+    // Nothing to rotate with, and nothing to clear — the original 401 stands.
+    return { outcome: 'rejected' };
+  }
 
+  let res: Response;
   try {
-    const res = await fetch(buildUrl('/v1/auth/refresh'), {
+    res = await fetch(buildUrl('/v1/auth/refresh'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ refreshToken }),
     });
-
-    if (!res.ok) {
-      clearTokens();
-      return false;
-    }
-
-    const tokens = (await res.json()) as AuthTokens;
-    setTokens(tokens);
-    return true;
   } catch {
-    clearTokens();
-    return false;
+    // No HTTP response at all (offline, DNS, connection reset). The server
+    // never rejected the token, so the session does not end over this.
+    return {
+      outcome: 'unavailable',
+      error: new ApiError(0, 'Could not reach the server to refresh the session'),
+    };
   }
+
+  // 401 is the only status that means "this refresh token is rejected":
+  // invalid, expired, revoked, wrong token type, or the account is gone
+  // (see AuthService.refreshToken).
+  if (res.status === 401) {
+    clearTokens();
+    return { outcome: 'rejected' };
+  }
+
+  // Every other non-OK status means the backend could not answer the question
+  // rather than that it answered "no". An outage is not an invalid session:
+  // keep the tokens and report the failure that actually happened.
+  if (!res.ok) {
+    return { outcome: 'unavailable', error: await parseError(res) };
+  }
+
+  const malformed = (): RefreshResult => ({
+    outcome: 'unavailable',
+    error: new ApiError(res.status, 'Malformed response from the refresh endpoint'),
+  });
+
+  let tokens: AuthTokens | undefined;
+  try {
+    tokens = (await res.json()) as AuthTokens;
+  } catch {
+    return malformed();
+  }
+  if (!tokens?.accessToken || !tokens?.refreshToken) return malformed();
+
+  setTokens(tokens);
+  return { outcome: 'refreshed' };
 }
 
 /**
@@ -152,10 +215,17 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     refreshPromise = refreshPromise ?? refreshAccessToken().finally(() => {
       refreshPromise = null;
     });
-    const refreshed = await refreshPromise;
-    if (refreshed) {
+    const refresh = await refreshPromise;
+    if (refresh.outcome === 'refreshed') {
       res = await performRequest(path, options);
+    } else if (refresh.outcome === 'unavailable') {
+      // The backend never declared the session invalid, so do not report it as
+      // one: surface the refresh failure itself rather than the stale 401 that
+      // triggered the refresh. The tokens are still in place, so a later retry
+      // can still succeed once the backend recovers.
+      throw refresh.error;
     }
+    // `rejected` falls through and reports the original 401 below.
   }
 
   if (!res.ok) {
