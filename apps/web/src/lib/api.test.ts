@@ -148,14 +148,21 @@ describe('refresh rejected (401 — the token itself is refused)', () => {
     expect(callsTo(MEMBERS_URL)).toBe(1);
   });
 
-  it('reports the original 401 without attempting a refresh when no refresh token is stored', async () => {
+  it('clears the leftover session and reports the original 401 when no refresh token is stored', async () => {
+    // An access token whose companion is gone: nothing to rotate with, and the
+    // route already said 401. Keeping the access token would leave the user
+    // "signed in" to a session that 401s on every request.
     setTokens({ accessToken: 'expired-access' });
     scriptFetch(reply({ status: 401, body: { message: 'Invalid or expired token' } }));
 
     const err = await failureOf(apiRequest('/v1/members'));
 
+    expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(401);
+    expect(err.message).toBe('Invalid or expired token');
     expect(callsTo('/v1/auth/refresh')).toBe(0);
+    expect(callsTo(MEMBERS_URL)).toBe(1);
+    expect(tokens()).toEqual({ access: null, refresh: null, authenticated: false });
   });
 });
 

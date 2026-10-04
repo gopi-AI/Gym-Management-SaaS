@@ -32,6 +32,18 @@ export function setOrganizationId(orgId: string | null): void {
   }
 }
 
+/**
+ * A failed API call.
+ *
+ * `status` is not a range that can be used to detect failure:
+ * - `0` means the request produced no HTTP response at all — the fetch itself
+ *   failed (offline, DNS, connection reset).
+ * - A 2xx status can appear here as well, from a refresh response that carried
+ *   no usable token pair: the call succeeded, but it could not do its job.
+ *
+ * Callers must therefore not use range checks such as `status >= 400` to decide
+ * whether a call failed — every `ApiError` is a failure whatever its status.
+ */
 export class ApiError extends Error {
   readonly status: number;
   readonly details?: unknown;
@@ -152,7 +164,11 @@ export type RefreshResult =
 async function refreshAccessToken(): Promise<RefreshResult> {
   const refreshToken = getRefreshToken();
   if (!refreshToken) {
-    // Nothing to rotate with, and nothing to clear — the original 401 stands.
+    // Nothing to rotate with, and this 401 came from a route that needs a live
+    // session — so there is no way back. Clear what is left and let the caller
+    // report the original 401: the user is signed out rather than left holding
+    // a session that will 401 on every request.
+    clearTokens();
     return { outcome: 'rejected' };
   }
 
