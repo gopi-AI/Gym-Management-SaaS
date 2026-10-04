@@ -2213,9 +2213,9 @@ This document contains the implementation tasks broken down by phase, with depen
 ### DEF-09: Jest teardown leak — `A worker process has failed to exit gracefully`
 - **Status**: **OPEN — unattributed, low priority.** Owner ruling (owner, 2026-10-05, IST), recorded
   verbatim: "DEF-09: record as open and unattributed with the trigger." The same ruling's companion
-  answer on cancel-in-progress, verbatim: "yes" (its CI context is recorded under `D16`). The
-  CI-log measurement is no longer pending (below). Local evidence added 2026-10-04 (below); no fix
-  attempted.
+  answer, to whether `cancel-in-progress` on `main` should be dropped, verbatim: **"yes"** (applied
+  and recorded under `D16`). The CI-log measurement is done (below). Local evidence added
+  2026-10-04 (below); no fix attempted.
 - **Objective**: Find and fix the root cause of the Jest teardown warning. A worker process
   keeps a handle open after the suite completes, so Jest prints
   `A worker process has failed to exit gracefully` and still exits 0. It is a leak, not a test
@@ -2234,10 +2234,12 @@ This document contains the implementation tasks broken down by phase, with depen
     source: **1** warning across **22** subset runs;
   - seen again on this branch (2026-10-04) during local jest runs in which every test passed.
 - **CI evidence (2026-10-05, read-only measurement of the 60 most recent `CI` runs — 68 jest-job
-  logs, 0 excluded)** — the counts below are of RUNS and LOGS, not of suites or tests: the warning
+  logs, **0 excluded**; a log carrying no jest `Test Suites:` line would have been excluded, and
+  none did)** — the counts below are of RUNS and LOGS, not of suites or tests: the warning
   appeared in **1 of 68** logs — run `37191702360`, `pull_request`, branch
   `fix/web-503-session-handling`, head `392f3fcb`, job `ci (24)`, at 2026-10-04T09:19:48Z. That run
-  was **green**. Exact 95% interval for the rate: **0.037%–7.92%**. Pushes to `main`: **0 of 38**.
+  was **green**. Exact 95% interval for the rate (Clopper–Pearson): **0.037%–7.92%**. Pushes to
+  `main`: **0 of 38**.
   The post-`D16` layout has **12** jest-job logs and **0** events. The warned run's jest `Time` was
   **53.981 s**, the 9th slowest of the 60 `ci (24)` logs (8 slower), so the local "the runs that
   printed it were the slowest of the set" finding **did not replicate** in CI.
@@ -2253,7 +2255,9 @@ This document contains the implementation tasks broken down by phase, with depen
   this entry stays open and unattributed at low priority.
 - **Acceptance criteria**: either the leak is fixed and the warning stops appearing across N
   consecutive full runs, or the specific handle is identified and recorded here with a one-line
-  rationale for leaving it open.
+  rationale for leaving it open. **The second branch is superseded by the 2026-10-05 owner ruling
+  recorded above**: this entry's current state is *recorded, unattributed, with a reopen trigger*,
+  and the trigger — not a handle identification — is what reopens it.
 - **Risks**: Low — test-only; affects neither shipped behaviour nor the exit code.
 
 ### DEF-10: Extract `isUniqueViolation` into a shared util (Low)
@@ -3014,8 +3018,9 @@ entry below.
 
 **Status: Partially fixed** — owner instruction (owner, 2026-10-04), recorded verbatim: "DEF-17: fix the one
 line typo and bundle it with D16's web-test script." Filed on 2026-10-04 as a RECOMMENDATION out of
-the `DEF-16` follow-up work; the fix ships on `chore/ci-slice-d16` (the D16 PR). The two automatic
-session-rejection paths (`api.ts:171`, `api.ts:195`) still leave `gym.organizationId` in place.
+the `DEF-16` follow-up work; the fix shipped on `chore/ci-slice-d16` (the D16 PR, merged as
+`3f9869f7`). The two automatic session-rejection paths (`api.ts:171`, `api.ts:195`) still leave
+`gym.organizationId` in place.
 
 - **Objective**: record that the web client's sign-out does not clear the organization id it sends
   as `X-Organization-Id`, and that the two sign-out paths disagree about it.
@@ -3094,12 +3099,16 @@ session-rejection paths (`api.ts:171`, `api.ts:195`) still leave `gym.organizati
   frontend typecheck step moved into the new `web` job — that split is the ruling's first line.
 - `pull_request` now has **no** `branches` filter, so a PR whose base is another branch gets CI.
   Whether a real stacked PR then receives a run is **UNKNOWN** until one exists.
-- `concurrency: ${{ github.workflow }}-${{ github.ref }}` with
-  `cancel-in-progress: ${{ github.event_name == 'pull_request' }}` — **changed 2026-10-05** from the
-  plain `true` this entry originally shipped, on the owner's verbatim answer **"yes"** to the
-  question of whether cancel-in-progress on `main` should be dropped. A superseded run on a pull
-  request is cancelled; a superseded **push to `main` is left to finish**. This is a change to
-  observable CI behaviour.
+- `concurrency: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}`
+  with `cancel-in-progress: true`. The `group` key is the mechanism: a pull request keeps its
+  ref-based group, while **each push to `main` gets a group of its own**, so a superseded main push
+  is never replaced — running or queued. The key **landed on `main` directly** in `a4957762` (owner,
+  2026-10-05T01:24:39+05:30), the owner's verbatim **"yes"** to whether `cancel-in-progress` on
+  `main` should be dropped. This entry briefly narrowed the expression to
+  `${{ github.event_name == 'pull_request' }}` instead; that is **reverted here**, because with a
+  per-push group the expression is inert on a push, and the narrower form conflicted with `main` for
+  no behavioural gain. The observable behaviour is nonetheless changed: a superseded push to `main`
+  is no longer cancelled.
 - **The integration job's environment file** is generated per run from `.env.example` plus the
   service values, with throwaway secrets (`openssl rand`), written to `$RUNNER_TEMP` outside the
   checkout. Two of its values are deliberately NOT the job's: `DB_DATABASE=gym_ci_dev` (a name that
