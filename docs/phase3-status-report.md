@@ -212,6 +212,8 @@ Artifacts untracked as of 2026-09-25 — **all of them now committed** (P3-03 la
 | Failed payments retry appropriately | 🚧 retry path rewired; tests green |
 | Refunds processed via gateway | 🚧 *(2026-09-25)* `RefundsService.applyGatewayOutcome()` + processor wiring present; **unreachable** (same boot blocker — fixed in `b4b6464d`) |
 
+*(2026-10-05 annotation, not a rewrite of the dated row above: `DEF-14` — PR #12 — deleted the gateway refund wiring this row describes: the `charge.refunded` allowlist entry, the refund arm of `processOne`, and `RefundsService.applyGatewayOutcome()`. The row is kept as the 2026-09-25 reading. See `docs/task-backlog.md` §DEF-14.)*
+
 ✅ **`PAYMENT_GATEWAY` binding is correct** — the diff replaces the old static `useExisting: UnavailablePaymentGateway` with a `useFactory` that returns `stripe.isConfigured ? stripe : new UnavailablePaymentGateway()`, which is the right shape.
 
 ⚠️ **By default this still yields the unavailable gateway, for two compounding reasons.** First, with no `STRIPE_SECRET_KEY` the adapter reports `isConfigured === false`, so the factory falls back to `UnavailablePaymentGateway` — stripe never actually processes payments out of the box. Second, the two keys the code reads are documented **nowhere**: `.env.example`, `docs/` and `.github/` all have **0** matches for `STRIPE`. An operator following the repo's own instructions cannot configure a gateway, and cannot even discover that the integration exists.
