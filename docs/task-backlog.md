@@ -2211,6 +2211,8 @@ This document contains the implementation tasks broken down by phase, with depen
   already fixed, and the acceptance criterion covers it.
 
 ### DEF-09: Jest teardown leak — `A worker process has failed to exit gracefully`
+- **Status**: **OPEN** — **CI-log measurement pending, owner decision on continuing the hunt
+  pending.** Local evidence added 2026-10-04 (below); no fix attempted.
 - **Objective**: Find and fix the root cause of the Jest teardown warning. A worker process
   keeps a handle open after the suite completes, so Jest prints
   `A worker process has failed to exit gracefully` and still exits 0. It is a leak, not a test
@@ -2219,6 +2221,18 @@ This document contains the implementation tasks broken down by phase, with depen
   so reproducing it reliably is the first task, and the handle that survives teardown the second.
 - **Found during**: Phase 3 sign-off, 2026-10-02 (re-measuring the runtime recorded in
   `CLAUDE.md`; the warning did not appear in that run).
+- **Local evidence (2026-10-04, the owner's 4-thread machine, load average 2–10)** — measured in
+  local runs; the counts below are of RUNS, not of suites or tests:
+  - full `npx jest` runs printed the warning in **3 of 6** runs — **2 of 5** once a cold-cache first
+    run is excluded;
+  - the runs that printed it were the slowest of the set;
+  - `--detectOpenHandles`, run in-band, reported **zero** open handles;
+  - subset bisection (`src/finance`; `src/shared` + `src/ai`; everything else) did not localise a
+    source: **1** warning across **22** subset runs;
+  - seen again on this branch (2026-10-04) during local jest runs in which every test passed.
+- **What is still unmeasured**: whether CI (`.github/workflows/ci.yml`) prints the warning at all —
+  its logs have not been read for it. That measurement, and whether to keep hunting, are the two
+  open items.
 - **Acceptance criteria**: either the leak is fixed and the warning stops appearing across N
   consecutive full runs, or the specific handle is identified and recorded here with a one-line
   rationale for leaving it open.
@@ -2280,6 +2294,11 @@ This document contains the implementation tasks broken down by phase, with depen
   accumulated in `'processing'`, which is the symptom `DEF-05` was filed to explain.
 
 ### DEF-12: A worker running longer than the lease can be reclaimed mid-processing (Medium)
+- **Status**: **Mitigation asserted and pinned; the race remains; fencing filed as `DEF-18`** (owner
+  ruling 2026-10-04, verbatim below). The mitigation is stated at the code that provides it and
+  covered by tests; the structural fix is filed, with the trigger that unparks it.
+- **Owner ruling (2026-10-04, verbatim)**: "DEF-12: retain the existing guards per path and file
+  fencing-token work for when the webhook worker is enabled."
 - **Objective**: Record the residual race the DEF-05 lease introduces, and the assumption it rests
   on, rather than leave it implicit.
 - **Found during**: DEF-05 hardening, 2026-10-02.
@@ -2289,28 +2308,36 @@ This document contains the implementation tasks broken down by phase, with depen
   row runs longer than `WEBHOOK_LOCK_DURATION_MS` (60 s per ruling #9) — a slow gateway call, a
   stalled database, a suspended host — the next poll's claim can take the same row while the first
   claimant is still working. Both then run `processOne` concurrently.
-- **Why it is Medium and not High**: the second application is a no-op **only because**
-  `PaymentsService.applyGatewayOutcome` returns early when the payment is no longer `PENDING`
-  (`payments.service.ts`). That guard is the entire mitigation, and it covers payments; the refund
-  path (`RefundsService.applyGatewayOutcome`) and any future side effect of the same shape rely on
-  their own guards, which are not asserted here.
+- **Why it is Medium and not High**: the second application is a no-op because the guards below the
+  claim hold. **Corrected 2026-10-04:** this bullet originally called
+  `PaymentsService.applyGatewayOutcome`'s `PENDING` early return "the entire mitigation". Measured by
+  code read, that guard is a SECOND line, behind the row lock and the `processed` early return in
+  `processOne`; which line actually carries the race is now measured too (see the design note). The
+  refund path this bullet named was deleted with the branch that called it (`DEF-14`, 2026-10-04), so
+  payments is the only side-effect path that still needs a guard — and the only one with one.
 - **Not fixed here**: the lease is a timeout, not a fencing token — a reclaimable row has no
   monotonic claim id for the writer to check. Fencing (or extending the lease while work is in
   flight) is the structural fix and is out of scope for this pass.
 - **Acceptance criteria**: either the mitigation is stated at the guard that provides it and
-  covered by a test per side-effect path, or fencing is implemented.
+  covered by a test per side-effect path, or fencing is implemented. **Satisfied 2026-10-04 by the
+  first branch** for the one side-effect path that remains (payments, after `DEF-14`); fencing is
+  filed as `DEF-18`.
 - **Risks**: Medium — silent duplicate application if a future consumer path is not idempotent.
   The lease duration is the tunable that trades this against recovery latency.
-- **Design note (2026-10-04) — AWAITING OWNER RULING, no code changed**:
+- **Design note (2026-10-04) — RULED the same day: option (3) is implemented, option (1) is filed as
+  `DEF-18`.** The paragraphs below are kept as the record of what was weighed; the two line numbers
+  inside them that had drifted are corrected in place, dated.
   - **Current behaviour, with file:line**: `processBatch` claims with
     `SET status='processing', locked_at=now(), attempts=attempts+1 … WHERE (locked_at IS NULL OR
     locked_at < now() - ($3 ms))` (`webhook-event.processor.ts:85-103`), `$3` being
     `WEBHOOK_LOCK_DURATION_MS = 60_000` (`worker-config.ts:56`). Each claimed row then runs
     `processOne` (`:104-107`, `:127-172`) in ONE transaction holding a `pessimistic_write` lock on
     the event row (`:129`). Two guards sit below that lock: `processOne` returns early when the row
-    is already `processed` (`:130`), and each side-effect path carries its own state guard —
-    `payments.service.ts:448` (`status !== PENDING` → return) and `refunds.service.ts:234`
-    (`!refund || !succeeded || status !== PENDING` → return).
+    is already `processed` (`:131` — the note as first written said `:130`; re-derived by grep
+    2026-10-04), and each side-effect path carries its own state guard — `payments.service.ts:436`
+    (`status !== PENDING` → return; the note as first written said `:448`) and, until `DEF-14`
+    deleted it on 2026-10-04, `refunds.service.ts:230` (`!refund || !succeeded || status !==
+    PENDING` → return; the note as first written said `:234`).
   - **Failure scenario, concretely**: (1) the claim moves event E to `processing` with a fresh
     `locked_at`; (2) the batch's work for E stalls past 60 s — a slow gateway call, a stalled
     database, a suspended host; (3) the next poll's claim matches E again, its lease having lapsed
@@ -2319,13 +2346,35 @@ This document contains the implementation tasks broken down by phase, with depen
     (`WORKERS_ENABLED`, `worker-config.ts`), so in every shipped configuration nothing claims a row
     at all. Reachability begins when the worker is enabled, which the standing ruling already gates
     on one real test-mode payment through the gateway adapter.
-  - **How far the two claimants actually collide** — the guards are MEASURED by code read, the
-    residual timing is **INFERRED**: the second claimant blocks on the row's `pessimistic_write`
-    lock until the first commits, then reads `status='processed'` at `:130` and returns, so the
-    `applyGatewayOutcome` state guards are a SECOND line behind that lock rather than — as this
-    entry's original wording has it — "the entire mitigation". Which line the real race exercises
-    has not been measured; the lock serialisation further assumes both claimants run against the
-    same database under READ COMMITTED.
+  - **How far the two claimants actually collide** — **MEASURED 2026-10-04** by the tests added for
+    this entry, not inferred: with a claimant holding the row inside its transaction and the lease
+    already past, a second claimant's real `processBatch` does not claim the row at all — the claim's
+    `FOR UPDATE SKIP LOCKED` passes over it — and a second `processOne` blocks on the row lock until
+    the first commits, then returns at the `processed` early return (`:131`; the note as first
+    written said `:130`). The `applyGatewayOutcome` state guard is therefore a SECOND line behind
+    both, rather than — as this entry's original wording has it — "the entire mitigation". The lock
+    serialisation assumes both claimants run against the same database under READ COMMITTED (the only
+    configuration tested).
+  - **Mutation matrix (2026-10-04)** — each mutant typechecked (root `npm run typecheck`, EXIT=0) and
+    was run against the real-DB spec with `RUN_DB_INTEGRATION=1` on a migrated throwaway database,
+    plus its hermetic sibling. Every kill was by ASSERTION, none by timeout:
+
+    | mutant | real-DB spec (`RUN_DB_INTEGRATION=1`) | hermetic sibling |
+    |---|---|---|
+    | `payments.service.ts:436` — remove the `PENDING` early return | **2 failed, 18 passed**: "does not double-apply a payment that is already succeeded" + "leaves a payment untouched when the same gateway outcome is applied a second time (DEF-12)" | `payments.service.spec.ts`: 13 passed — a mocked repository cannot see the guard |
+    | `webhook-event.processor.ts:131` — remove the `processed` early return | **1 failed, 19 passed**: "applies a payment exactly once when two claimants run processOne concurrently (DEF-12)" | `webhook-event.processor.spec.ts`: 1 failed, 5 passed — the duplicate-delivery test |
+    | `webhook-event.processor.ts:130` — remove the row lock | **2 failed, 18 passed**: both DEF-12 claimant tests | 6 passed — invisible to mocks |
+
+    Which guard is individually load-bearing: the row lock and the `processed` early return each
+    independently stop the concurrent duplicate (removing either fails the two-claimant test), and
+    the `PENDING` guard independently stops a second application on a settled payment. No mutant
+    survived.
+
+    **Note (2026-10-04):** the row-lock mutant's first run failed one DEF-12 test by per-test TIMEOUT
+    rather than by assertion — the second claimant blocked on the payment stub the test uses to hold
+    the first claimant open, a deadlock the assertion could not report. The test was reworked to
+    release and join both claimants before asserting; the numbers above are from the re-run, in which
+    both failures are assertions.
   - **Options**:
     1. **Fencing token** — a monotonic claim id on the row that the writer re-checks before it
        commits. **This needs a migration**: `FINANCE_WEBHOOK_EVENTS` has no such column
@@ -2338,28 +2387,88 @@ This document contains the implementation tasks broken down by phase, with depen
     3. **Assert the existing guards** — the entry's own first acceptance branch: state the
        mitigation at each guard that provides it and add one test per side-effect path. Cost: low,
        no migration, behaviour-preserving; does not remove the race.
-  - **RECOMMENDATION**: **(3) now, (1) when the webhook worker is next scheduled to be enabled.**
-    (3) is the entry's own acceptance criterion and pins the property that actually protects the
-    money path today. (1) is the structural fix, and it should ride with the change that turns the
-    worker on, where its migration cost is paid once.
+  - **RECOMMENDATION (adopted by the 2026-10-04 ruling)**: **(3) now, (1) when the webhook worker is
+    next scheduled to be enabled.** (3) is the entry's own acceptance criterion and pins the property
+    that actually protects the money path today. (1) is the structural fix, and it should ride with
+    the change that turns the worker on, where its migration cost is paid once. **(3) is implemented
+    (tests below); (1) is filed as `DEF-18`.**
 
 ### DEF-13: Add `organizationId` to PaymentIntent and refund metadata (Low)
+- **Status**: **Fixed** (owner ruling 2026-10-04, verbatim below). **Scope:** PaymentIntent metadata
+  only. Refund metadata is deliberately left out, and the refund path that would have read it was
+  deleted under `DEF-14` the same day.
+- **Owner ruling (2026-10-04, verbatim)**: "DEF-13: park and log organization mismatches, tolerate
+  missing metadata permanently, and leave refunds out."
+- **Owner statement recorded with the ruling (2026-10-04, verbatim)**: "No real payment data or
+  pending payment is in flight anywhere."
 - **Objective**: Add `organizationId` to PaymentIntent and refund metadata at creation, and
-  cross-check it in the processor.
-- **Blocked on**: confirming whether payment retries reuse `payment.idempotency_key`, since Stripe
-  rejects a key reused with different parameters.
+  cross-check it in the processor. (Refund metadata is out of scope per the ruling above.)
+- **Blocked on** (was): confirming whether payment retries reuse `payment.idempotency_key`, since
+  Stripe rejects a key reused with different parameters. **Answered 2026-10-04 by code read: yes** —
+  a retry reaches `StripePaymentGatewayAdapter.charge()`'s `{ idempotencyKey: payment.idempotency_key }`
+  with the key unchanged (`payment-retry.service.ts` → `payments.service.ts`
+  `applyRetryOutcome`/`applyGatewayOutcome`; that line was `:41` before this change added the metadata
+  field and its comment, `:49` after).
+  Moot in any case given the owner statement above, and the hazard it implies is recorded below.
+- **Shipped behaviour** — `stripe-payment-gateway.adapter.ts` writes
+  `metadata: { paymentId, organizationId }`; the processor cross-checks it in `processOne`'s payment
+  branch before applying anything: equal → applied; **absent → applied with a warn-level log**
+  (tolerated permanently: pre-DEF-13 payments carry none, and a non-string or empty value reads as
+  absent); **present and different → the event is parked `dead_lettered`** with an `error_message`
+  naming both organization ids, logged at error level with the event and payment ids, and the payment
+  is left untouched. The idempotency key is unchanged.
+- **Implementation choice, not a ruling (RECOMMENDATION)**: the park is written directly by
+  `processOne` — the same `dead_lettered` state and `error_message` column the claim's own `parked`
+  sweep writes — rather than by failing the event and letting it retry to the ceiling. A mismatch is
+  not transient: retrying would not change the outcome and would re-attempt nothing five times over.
+  The claim's sweep remains the only writer for abandoned rows.
+- **Ship hazard (recorded with the ruling).** Retries reuse `payment.idempotency_key` and Stripe
+  refuses a reused key whose body differs, so **any environment holding PENDING payments created
+  before this change must drain them before deploying it** — a retry of such a payment would send
+  `{ paymentId, organizationId }` where the original request sent `{ paymentId }`. The owner states
+  no such payment is in flight anywhere, so no drain is expected; this is a precondition to check,
+  not a defect.
+- **UNKNOWN**: whether Stripe accepts and echoes the added metadata. Nothing in the repository can
+  observe that; it is settled by the owner's own real test-mode payment.
+- **Mutation matrix (2026-10-04)** — each mutant typechecked (root `npm run typecheck`, EXIT=0) and
+  every kill was by ASSERTION:
+
+  | mutant | hermetic `webhook-event.processor.spec.ts` | real-DB spec (`RUN_DB_INTEGRATION=1`) |
+  |---|---|---|
+  | skip the cross-check (delete the mismatch block) | **1 failed, 8 passed** — the mismatch test | **1 failed, 20 passed** — the mismatch test |
+  | compare against the wrong field (`!== paymentId`) | **1 failed, 8 passed** — the EQUAL test | 21 passed — does not discriminate this mutant |
+  | park but still apply (drop the `return`) | **1 failed, 8 passed** — the mismatch test | **1 failed, 20 passed** — the mismatch test |
+
+  No mutant survived. The wrong-field mutant is killed only by the hermetic equal-metadata test: the
+  real-DB spec carries no fixture whose metadata matches the row, which is the gap that test covers.
 - **Rationale**: defence in depth against our own cross-tenant bugs; signed payloads cannot be
   forged without our Stripe secret key.
 - **Risks**: Low.
 
 ### DEF-14: The webhook refund path (`refundId` in event metadata) is unreachable today (Low)
+- **Status**: **Fixed — the branch and its fixtures are deleted** (owner ruling 2026-10-04, recorded
+  verbatim below; it supersedes the 2026-10-02 ruling this entry carried until then). The declined
+  alternatives were the design note's own recommended option 3 — re-key the branch on
+  `refund.created` / `refund.updated` and leave it unreachable — and option 2, wiring refunds through
+  the gateway adapter, which cannot be completed without a real test-mode Stripe call. Pinned by
+  `webhook-event.processor.spec.ts` and `webhook-event-lease.integration.spec.ts`: both assert a
+  `charge.refunded` event is recorded `processed` with no state change, and re-adding the allowlist
+  entry fails both (mutation run, 2026-10-04).
+- **Owner ruling (2026-10-04, verbatim)**: "DEF-14: delete the unreachable refund branch and its
+  fixtures."
 - **Objective**: Record that the processor's refund branch cannot be reached by any event Stripe
   sends today, and what must change before gateway-created refunds are scheduled.
 - **Found during**: the `DEF-02`/`DEF-04`/`DEF-05`/`DEF-06` hardening pass, 2026-10-02.
 - **Files/modules affected**: `src/finance/services/stripe-payment-gateway.adapter.ts` (`refund()`),
   `src/finance/services/refunds.service.ts`, `src/finance/finance.module.ts`, the processor's
   refund fixtures; Stripe SDK 18.5.0 type files `types/EventTypes.d.ts` (`ChargeRefundedEvent`),
-  `Charges.d.ts`, `Refunds.d.ts`.
+  `Charges.d.ts`, `Refunds.d.ts`. **Deletion sites, as implemented 2026-10-04** (line numbers as of
+  `76e25ece`, all MEASURED by code read): `webhook-event.processor.ts:23-30` (the `charge.refunded`
+  allowlist entry and the `kind` discriminator), `:134` (the `refundId` read), `:156-162` (the refund
+  arm), `:7`, `:11`, `:50` (the `Refund` import, the `RefundsService` import, the constructor
+  dependency); `refunds.service.ts:216-258` (`applyGatewayOutcome()`, no other production caller);
+  `webhook-event.processor.spec.ts:83-95` and `webhook-event-lease.integration.spec.ts:428-451`
+  (the two fixtures).
 - **Root cause**: two independent gaps. (a) `StripePaymentGatewayAdapter.refund()` has no caller:
   `RefundsService` records staff-initiated refunds directly as `succeeded` and does not use
   `PAYMENT_GATEWAY` (`refunds.service.ts`, `finance.module.ts`), so no refund is created through
@@ -2372,6 +2481,8 @@ This document contains the implementation tasks broken down by phase, with depen
   nothing exercises it; the fixtures are hand-written, and no real test-mode refund event has been
   observed to contradict them.
 - **Owner ruling (2026-10-02)**: the refund webhook path is documented, not changed.
+  **Superseded 2026-10-04** — the ruling above deletes the branch instead, so this line is kept only
+  as the record of why the deletion had not been done before that date.
 - **When scheduled**: key on `refund.created` / `refund.updated` (object = `Refund`,
   `metadata.refundId`) and update the allowlist and fixtures. Needs an owner ruling when that work
   is scheduled.
@@ -2379,7 +2490,18 @@ This document contains the implementation tasks broken down by phase, with depen
   refund's metadata, and the refund fixtures match an event Stripe sends.
 - **Risks**: Low — nothing shipped is affected today; the cost lands when gateway refunds are built
   on the current fixtures.
-- **Design note (2026-10-04) — AWAITING OWNER RULING, no code changed**:
+- **Design note (2026-10-04) — RULED; option 1 has since landed.** The paragraphs below were written
+  while this entry awaited a ruling and are kept as the record of what was weighed, not as open
+  questions. **What the ruling changed, measured by code read at `76e25ece`:** `'charge.refunded'` is
+  gone from `HANDLED_EVENT_TYPES`; the refund arm of `processOne` is gone; the `kind` discriminator
+  went with it, since after the deletion it had exactly one value; and
+  `RefundsService.applyGatewayOutcome()` — the arm's only production caller, with no spec of its own —
+  is gone too, together with the processor's `Refund` import and its `RefundsService` dependency. A
+  `charge.refunded` event now takes the non-allowlisted path: logged as not handled, recorded
+  `processed`, no attribution, no outbox write. **Kept:** `StripePaymentGatewayAdapter.refund()` and
+  the `refund` member of `PaymentGatewayPort` — they are the gateway seam, not the unreachable branch.
+  `refund()` still has **no caller** anywhere in production, and this entry is the record of that.
+  The deleted transition's shape is recoverable from this entry's closing commit.
   - **Current behaviour, with file:line**: `'charge.refunded'` is an allowlisted handled type
     (`webhook-event.processor.ts:29`); `processOne` reads
     `const refundId = referenceId(object.metadata?.refundId)` from the event's `data.object`
@@ -2414,10 +2536,11 @@ This document contains the implementation tasks broken down by phase, with depen
        `refund.created` / `refund.updated` (object = `Refund`, `metadata.refundId`) and rewrite the
        fixtures to that shape. Cost: low-medium. Consequence: correct but still dead, and the
        allowlist would accept an event only a rewritten fixture produces.
-  - **RECOMMENDATION**: **(1), subject to a fresh owner ruling.** The entry's own "when scheduled"
-    line already records the correct keying, so the knowledge survives deleting the code. If the
-    2026-10-02 ruling is meant to stand unchanged, **(3)** is the smallest change that stops two
-    fixtures asserting a shape Stripe never sends.
+  - **RECOMMENDATION (as written then)**: **(1), subject to a fresh owner ruling.** The entry's own
+    "when scheduled" line already records the correct keying, so the knowledge survives deleting the
+    code. If the 2026-10-02 ruling is meant to stand unchanged, **(3)** is the smallest change that
+    stops two fixtures asserting a shape Stripe never sends. **The owner ruled (1) on 2026-10-04** —
+    see the ruling at the top of this entry — and it is implemented.
 
 ### DEF-15: The token blacklist's fail-closed check can hang instead of refusing (Medium)
 - **Status**: **Fixed** — owner ruling (2026-10-04): "fix DEF-15". One shared bounded-call helper
@@ -3013,3 +3136,40 @@ check names available to require are, in the order this entry suggests:
 
 Required checks should be turned on **last**, after the new jobs have run several times and their
 durations are known.
+
+## DEF-18 — Webhook lease fencing token (2026-10-04)
+
+**Status: OPEN — filed, not scheduled.** Filed out of the `DEF-12` work under the owner ruling of
+2026-10-04: "DEF-12: retain the existing guards per path and file fencing-token work for when the
+webhook worker is enabled." Nothing was changed.
+
+- **Objective**: replace the webhook event lease's timeout-only reclaim with a monotonic fencing
+  token, so a claimant whose lease has lapsed cannot write after a later claimant has taken the row.
+- **Why it exists**: `DEF-12` — the lease is a timeout, not a fence. The guards asserted under
+  `DEF-12` make a duplicate application a no-op **today**, but they are per-path state checks, not a
+  structural exclusion; a new side-effect path that is not idempotent reintroduces the silent
+  duplicate `DEF-12` describes.
+- **Needs a migration.** `FINANCE_WEBHOOK_EVENTS` has no monotonic claim column
+  (`src/finance/entities/webhook-event.entity.ts`), and `synchronize` is hard-disabled in both
+  `src/app.module.ts` and `src/data-source.ts`, so the column can only arrive through a migration.
+  A migration file must also satisfy the TypeORM loader contract pinned by
+  `src/migrations/__specs__/migration-loader.contract.spec.ts` (one exported class, no `export
+  function` in the glob, 13-digit timestamp suffix).
+- **Scope if taken**: a monotonic claim column incremented in the claim SQL
+  (`WebhookEventProcessor.processBatch`), carried into `processOne` and re-checked before the
+  transaction commits — plus the entity, the migration, and the read-back tests.
+- **Trigger that unparks it**: the next time the `WEBHOOK` worker is scheduled to be enabled
+  (`WORKERS_WEBHOOK_ENABLED` / `WORKERS_ENABLED`), where the migration cost is paid once. The worker
+  is OFF in every shipped configuration (`src/shared/workers/worker-config.ts`), so nothing is
+  exposed while this waits.
+- **Alternative considered and not chosen**: a lease heartbeat — extending `locked_at` while work is
+  in flight. No migration, but a hard-stalled host still loses its lease, so it narrows the window
+  rather than closing it (`DEF-12`'s option 2).
+- **Files/modules affected (if taken)**: `src/finance/services/webhook-event.processor.ts`,
+  `src/finance/entities/webhook-event.entity.ts`, `src/migrations/`, and the real-DB spec
+  `src/finance/services/webhook-event-lease.integration.spec.ts`.
+- **Acceptance criteria**: a claimant that has lost its lease to a later claimant cannot commit a
+  side-effect write; a real-Postgres test shows the second claimant's token wins and the first's
+  write is refused, with no second outbox event.
+- **Risks**: Low while the worker is off. The migration would be additive (a nullable or defaulted
+  column), so it does not rewrite existing rows.

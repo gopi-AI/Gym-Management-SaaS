@@ -15,8 +15,8 @@
  * — not for the `DataSource`, not for an `EntityManager`, not for a repository.
  * The lease, the claim and the counter are
  * precisely the things a mock would replace with the answer the test is trying to
- * prove. `payments` and `refunds` are plain objects with switchable functions,
- * not mocks: they sit downstream of the behaviour under test.
+ * prove. `payments` is a plain object with switchable functions, not a mock: it
+ * sits downstream of the behaviour under test.
  *
  * RUNNING IT
  *   RUN_DB_INTEGRATION=1 \
@@ -52,11 +52,9 @@ import { InvoiceNumberCounter } from '../entities/invoice-number-counter.entity'
 import { TaxRate } from '../entities/tax-rate.entity';
 import { OutboxEntity } from '../../shared/outbox/outbox.entity';
 import { OutboxService } from '../../shared/outbox/outbox.service';
-import { Refund } from '../entities/refund.entity';
 import { Organization } from '../../tenancy/entities/organization.entity';
 import { Branch } from '../../tenancy/entities/branch.entity';
 import { Member } from '../../members/entities/member.entity';
-import type { RefundsService } from './refunds.service';
 import type { PaymentMethodsService } from './payment-methods.service';
 import type { TenantContextService } from '../../shared/tenant/tenant-context.service';
 
@@ -85,7 +83,6 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
   let applyCalls: string[];
   let failNext: boolean;
   let payments: Pick<PaymentsService, 'applyGatewayOutcome'>;
-  let refunds: Pick<RefundsService, 'applyGatewayOutcome'>;
   const seededIds: string[] = [];
 
   beforeAll(async () => {
@@ -121,16 +118,12 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
         applyCalls.push(paymentId);
       },
     } as unknown as Pick<PaymentsService, 'applyGatewayOutcome'>;
-    refunds = {
-      applyGatewayOutcome: async () => undefined,
-    } as unknown as Pick<RefundsService, 'applyGatewayOutcome'>;
   });
 
   function makeProcessor(): WebhookEventProcessor {
     return new WebhookEventProcessor(
       dataSource,
       payments as unknown as PaymentsService,
-      refunds as unknown as RefundsService,
     );
   }
 
@@ -145,7 +138,7 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       attempts?: number;
       lockedAgoMs?: number;
       paymentId?: string | null;
-      refundId?: string | null;
+      metadataOrganizationId?: string | null;
       eventType?: string;
     } = {},
   ): Promise<Seeded> {
@@ -156,10 +149,11 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
     // adapter writes `payment.id` here (`stripe-payment-gateway.adapter.ts`), so a
     // UUID is also what Stripe actually delivers.
     const paymentId = options.paymentId === undefined ? randomUUID() : options.paymentId;
-    const refundId = options.refundId ?? null;
     const metadata: Record<string, string> = {};
     if (paymentId !== null) metadata.paymentId = paymentId;
-    if (refundId !== null) metadata.refundId = refundId;
+    // DEF-13: the adapter writes `payment.organization_id` into the metadata, so a
+    // fixture that omits it is the pre-DEF-13 shape rather than an impossible one.
+    if (options.metadataOrganizationId) metadata.organizationId = options.metadataOrganizationId;
     const repository = dataSource.getRepository(WebhookEvent);
 
     await repository.save({
@@ -187,6 +181,56 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
   /** Read the row back — the assertion target, not a return value. */
   async function read(id: string): Promise<WebhookEvent> {
     return dataSource.getRepository(WebhookEvent).findOneOrFail({ where: { id } });
+  }
+
+  /**
+   * Bounded poll used to synchronize with a claimant that is deliberately held
+   * open. It is a synchronization device, never an assertion about timing: the
+   * outcome is always asserted on the database state after both claimants finish.
+   */
+  async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    return predicate();
+  }
+
+  /**
+   * The REAL `PaymentsService`, wired to the real `DataSource`. Used where the
+   * property under test is one of its own guards — the `PENDING` early return in
+   * `applyGatewayOutcome` — rather than the processor's, so a stub would assert
+   * the stub instead of the guard.
+   */
+  function makeRealPayments(orgId: string): PaymentsService {
+    const tenant = {
+      getCurrentOrganizationId: async () => orgId,
+      getRequestedOrganizationId: async () => orgId,
+      requireOrganizationAccess: async () => orgId,
+    } as unknown as TenantContextService;
+    const outboxService = new OutboxService(dataSource.getRepository(OutboxEntity));
+    return new PaymentsService(
+      dataSource.getRepository(Payment),
+      dataSource.getRepository(Invoice),
+      dataSource,
+      tenant,
+      outboxService,
+      new InvoicesService(
+        dataSource.getRepository(Invoice),
+        dataSource.getRepository(InvoiceItem),
+        dataSource.getRepository(Payment),
+        dataSource.getRepository(TaxLine),
+        dataSource.getRepository(CreditNote),
+        dataSource,
+        tenant,
+        outboxService,
+        new InvoiceNumberService(dataSource.getRepository(InvoiceNumberCounter), dataSource),
+        new TaxRatesService(dataSource.getRepository(TaxRate), tenant),
+      ),
+      undefined as unknown as PaymentMethodsService,
+      undefined as unknown as never,
+    );
   }
 
   it('recovers a row whose claimant died: an expired lease is reclaimed and the event is processed', async () => {
@@ -425,28 +469,72 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
     });
   });
 
-  it('attributes a refund event to the organization of the refund it names (DEF-04)', async () => {
-    const { orgId, paymentId } = await seedPaymentGraph();
-    const refundId = randomUUID();
-    await dataSource.getRepository(Refund).save({
-      id: refundId, organization_id: orgId, payment_id: paymentId,
-      idempotency_key: `idem-${refundId}`, reason: 'customer request',
-      amount: '10.00', refund_date: new Date(), status: 'pending',
-    });
-    // A refund is applied only by a refund TYPE carrying a refund reference
-    // (DEF-06): both have to line up, so this fixture varies both.
-    const { id: eventId } = await seed({
-      paymentId: null,
-      refundId,
-      eventType: 'charge.refunded',
-    });
+  it('records a charge.refunded event with no state change (DEF-14)', async () => {
+    // The shape Stripe actually sends: a Charge whose metadata is the
+    // `{ paymentId }` the adapter set on the PaymentIntent-created charge — never a
+    // `refundId`. With the refund branch and its allowlist entry deleted (owner
+    // ruling, 2026-10-04) this event changes nothing; re-adding the entry would
+    // route it down the PAYMENT path and settle the payment below.
+    const { paymentId, invoiceId } = await seedPaymentGraph();
+    const { id: eventId } = await seed({ paymentId, eventType: 'charge.refunded' });
 
+    // Scoped to this event's own aggregate — its invoice is the `correlationId`
+    // its payment outcome would carry. A global outbox count races the other
+    // integration suites.
+    const outboxBefore = await dataSource.getRepository(OutboxEntity).count({
+      where: { correlationId: invoiceId },
+    });
     await makeProcessor().processBatch(50);
 
     const row = await read(eventId);
-    expect({ status: row.status, org: row.organization_id }).toEqual({
+    expect({ status: row.status, org: row.organization_id, attempts: row.attempts }).toEqual({
       status: 'processed',
-      org: orgId,
+      org: null,
+      attempts: 1,
+    });
+    // Scoped to the seeded payment: a batch claim may also pick up a row an
+    // earlier test left claimable, and only THIS payment may not be touched.
+    expect(applyCalls.filter((appliedTo) => appliedTo === paymentId)).toHaveLength(0);
+    expect(
+      await dataSource.getRepository(OutboxEntity).count({ where: { correlationId: invoiceId } }),
+    ).toBe(outboxBefore);
+    const payment = await dataSource.getRepository(Payment).findOneOrFail({ where: { id: paymentId } });
+    expect(payment.status).toBe('pending');
+  });
+
+  it('parks an event whose metadata organization disagrees with the payment row (DEF-13)', async () => {
+    const { orgId, paymentId, invoiceId } = await seedPaymentGraph();
+    const mismatchOrgId = randomUUID();
+    const { id: eventId } = await seed({ paymentId, metadataOrganizationId: mismatchOrgId });
+
+    // Scoped to this event's own aggregate — its invoice is the `correlationId`
+    // its payment outcome would carry.
+    const outboxBefore = await dataSource.getRepository(OutboxEntity).count({
+      where: { correlationId: invoiceId },
+    });
+    await makeProcessor().processBatch(50);
+
+    const row = await read(eventId);
+    expect({ status: row.status, attempts: row.attempts, org: row.organization_id }).toEqual({
+      status: 'dead_lettered',
+      attempts: 1,
+      org: null,
+    });
+    expect(row.error_message).toContain(mismatchOrgId);
+    expect(row.error_message).toContain(orgId);
+    expect(applyCalls.filter((appliedTo) => appliedTo === paymentId)).toHaveLength(0);
+    expect(
+      await dataSource.getRepository(OutboxEntity).count({ where: { correlationId: invoiceId } }),
+    ).toBe(outboxBefore);
+    const payment = await dataSource.getRepository(Payment).findOneOrFail({ where: { id: paymentId } });
+    expect(payment.status).toBe('pending');
+
+    // Parked is terminal: neither the next claim nor the parked sweep touches it.
+    await makeProcessor().processBatch(50);
+    const after = await read(eventId);
+    expect({ status: after.status, attempts: after.attempts }).toEqual({
+      status: 'dead_lettered',
+      attempts: 1,
     });
   });
 
@@ -573,33 +661,7 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
 
     const { id: eventId } = await seed({ paymentId: gatewayPaymentId });
 
-    const tenant = {
-      getCurrentOrganizationId: async () => orgId,
-      getRequestedOrganizationId: async () => orgId,
-      requireOrganizationAccess: async () => orgId,
-    } as unknown as TenantContextService;
-    const outboxService = new OutboxService(dataSource.getRepository(OutboxEntity));
-    const realPayments = new PaymentsService(
-      dataSource.getRepository(Payment),
-      dataSource.getRepository(Invoice),
-      dataSource,
-      tenant,
-      outboxService,
-      new InvoicesService(
-        dataSource.getRepository(Invoice),
-        dataSource.getRepository(InvoiceItem),
-        dataSource.getRepository(Payment),
-        dataSource.getRepository(TaxLine),
-        dataSource.getRepository(CreditNote),
-        dataSource,
-        tenant,
-        outboxService,
-        new InvoiceNumberService(dataSource.getRepository(InvoiceNumberCounter), dataSource),
-        new TaxRatesService(dataSource.getRepository(TaxRate), tenant),
-      ),
-      undefined as unknown as PaymentMethodsService,
-      undefined as unknown as never,
-    );
+    const realPayments = makeRealPayments(orgId);
 
     const paymentRepository = dataSource.getRepository(Payment);
     const outboxRepository = dataSource.getRepository(OutboxEntity);
@@ -609,11 +671,7 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
     // its outcomes carry. A global count races the other integration suites.
     const outboxBefore = await outboxRepository.count({ where: { correlationId: invoiceId } });
 
-    const replay = new WebhookEventProcessor(
-      dataSource,
-      realPayments,
-      refunds as unknown as RefundsService,
-    );
+    const replay = new WebhookEventProcessor(dataSource, realPayments);
     await replay.processBatch(50);
 
     const after = await paymentRepository.findOneOrFail({ where: { id: gatewayPaymentId } });
@@ -658,5 +716,154 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
     for (const { paymentId } of seeded) {
       expect(applyCalls.filter((applied) => applied === paymentId)).toHaveLength(1);
     }
+  });
+
+  /**
+   * DEF-12: the guards behind the lease, driven through the REAL processor.
+   *
+   * The lease is a timeout, not a fencing token, so a row whose work outlives
+   * `WEBHOOK_LOCK_DURATION_MS` can in principle be reclaimed by a later poll while
+   * the first claimant is still running. These tests assert the property that
+   * protects the money path — the outcome is applied exactly once — rather than
+   * reading the guards; the backlog entry records which guard carries it, measured
+   * by mutation.
+   */
+  it('applies a payment exactly once when two claimants run processOne concurrently (DEF-12)', async () => {
+    const paymentId = randomUUID();
+    // Already past its lease: this is the reclaim window DEF-12 describes.
+    const { id } = await seed({ status: 'processing', attempts: 1, lockedAgoMs: STALE_MS, paymentId });
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const applied: string[] = [];
+    payments = {
+      applyGatewayOutcome: async (_manager: unknown, appliedTo: string) => {
+        applied.push(appliedTo);
+        if (appliedTo === paymentId) await gate; // the first claimant stays inside its transaction
+      },
+    } as unknown as Pick<PaymentsService, 'applyGatewayOutcome'>;
+
+    const processor = makeProcessor();
+    const first = (processor as any).processOne(id) as Promise<void>;
+    expect(await waitFor(() => applied.includes(paymentId))).toBe(true);
+
+    // The second claimant reaches the row while the first is still working. Only
+    // the row lock and the `processed` early return stand between it and a second
+    // application.
+    const second = (processor as any).processOne(id) as Promise<void>;
+    await waitFor(() => applied.filter((appliedTo) => appliedTo === paymentId).length >= 2);
+    release();
+    await Promise.all([first, second]);
+
+    expect(applied.filter((appliedTo) => appliedTo === paymentId)).toHaveLength(1);
+    expect((await read(id)).status).toBe('processed');
+  });
+
+  it('does not reclaim a row an active claimant still holds, even with the lease lapsed (DEF-12)', async () => {
+    const paymentId = randomUUID();
+    const { id } = await seed({ status: 'processing', attempts: 1, lockedAgoMs: STALE_MS, paymentId });
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const applied: string[] = [];
+    payments = {
+      applyGatewayOutcome: async (_manager: unknown, appliedTo: string) => {
+        applied.push(appliedTo);
+        if (appliedTo === paymentId) await gate;
+      },
+    } as unknown as Pick<PaymentsService, 'applyGatewayOutcome'>;
+
+    const processor = makeProcessor();
+    const first = (processor as any).processOne(id) as Promise<void>;
+    expect(await waitFor(() => applied.includes(paymentId))).toBe(true);
+
+    // The second claimant runs the REAL claim while the first is mid-transaction:
+    // the row is claimable by every predicate except that it is locked, and
+    // `FOR UPDATE SKIP LOCKED` passes over it. It is started without awaiting,
+    // because without that lock the claimant reaches the payment stub and blocks
+    // there — a deadlock the assertions below would otherwise report as a timeout.
+    const claimer = processor.processBatch(50);
+    await waitFor(() => applied.filter((appliedTo) => appliedTo === paymentId).length >= 2);
+
+    const during = await read(id);
+    const observed = { status: during.status, attempts: during.attempts };
+
+    release();
+    await Promise.all([claimer, first]);
+
+    // Everything is asserted after both claimants have finished, so the failure
+    // is the state they produced rather than a hung test.
+    expect(observed).toEqual({ status: 'processing', attempts: 1 });
+    const after = await read(id);
+    expect({ status: after.status, attempts: after.attempts }).toEqual({
+      status: 'processed',
+      attempts: 1,
+    });
+    expect(applied.filter((appliedTo) => appliedTo === paymentId)).toHaveLength(1);
+  });
+
+  it('leaves an already-processed event alone on the next poll (DEF-12)', async () => {
+    const { paymentId } = await seedPaymentGraph();
+    const { id } = await seed({ paymentId });
+
+    const processor = makeProcessor();
+    await processor.processBatch(50);
+    const first = await read(id);
+
+    await processor.processBatch(50);
+
+    const second = await read(id);
+    expect({
+      status: second.status,
+      attempts: second.attempts,
+      processedAt: second.processed_at?.toISOString(),
+    }).toEqual({
+      status: 'processed',
+      attempts: first.attempts,
+      processedAt: first.processed_at?.toISOString(),
+    });
+    expect(applyCalls.filter((appliedTo) => appliedTo === paymentId)).toHaveLength(1);
+  });
+
+  it('leaves a payment untouched when the same gateway outcome is applied a second time (DEF-12)', async () => {
+    // The property under test is `applyGatewayOutcome`'s own guard — the early
+    // return once the payment is no longer `pending` — so this drives the REAL
+    // service, in two separate transactions, rather than the counting stub.
+    const { orgId, paymentId, invoiceId } = await seedPaymentGraph();
+    const realPayments = makeRealPayments(orgId);
+    const paymentRepository = dataSource.getRepository(Payment);
+    const outboxRepository = dataSource.getRepository(OutboxEntity);
+    const outcome = {
+      succeeded: true,
+      transactionId: `pi_${paymentId}`,
+      gatewayReference: `pi_${paymentId}`,
+      gatewayStatus: 'succeeded',
+      gatewayResponse: '{}',
+    };
+
+    await dataSource.transaction((manager) => realPayments.applyGatewayOutcome(manager, paymentId, outcome));
+    const afterFirst = await paymentRepository.findOneOrFail({ where: { id: paymentId } });
+    // Scoped to this payment's own aggregate — its invoice is the `correlationId`
+    // its outcome carries. A global count races the other integration suites.
+    const outboxAfterFirst = await outboxRepository.count({ where: { correlationId: invoiceId } });
+    expect(afterFirst.status).toBe('succeeded');
+
+    await dataSource.transaction((manager) => realPayments.applyGatewayOutcome(manager, paymentId, outcome));
+    const afterSecond = await paymentRepository.findOneOrFail({ where: { id: paymentId } });
+
+    expect({
+      status: afterSecond.status,
+      retryCount: afterSecond.retry_count,
+      transactionId: afterSecond.transaction_id,
+      gatewayStatus: afterSecond.gateway_status,
+      gatewayResponse: afterSecond.gateway_response,
+    }).toEqual({
+      status: afterFirst.status,
+      retryCount: afterFirst.retry_count,
+      transactionId: afterFirst.transaction_id,
+      gatewayStatus: afterFirst.gateway_status,
+      gatewayResponse: afterFirst.gateway_response,
+    });
+    expect(await outboxRepository.count({ where: { correlationId: invoiceId } })).toBe(outboxAfterFirst);
   });
 });
