@@ -2225,6 +2225,26 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Risks**: Low — test-only; affects neither shipped behaviour nor the exit code.
 
 ### DEF-10: Extract `isUniqueViolation` into a shared util (Low)
+- **Status**: **Fixed** — the census found **seven** copies, not the six this entry listed.
+  `gateway-webhook.service.ts` was added by the `DEF-02` fix itself (the "one more place" that the
+  ruling below deferred this refactor out of), and its own comment still called the pre-existing set
+  "the six existing copies". All seven were semantically identical —
+  `(driverError.code ?? code) === '23505'`, two of them spelling the same test across more lines —
+  so all seven were replaced by one helper, `src/shared/utils/unique-violation.ts`.
+- **What moved**: the test itself, and each copy's private `UNIQUE_VIOLATION_CODE` constant (six
+  copies declared one; `refunds.service.ts` inlined the literal). Grep confirmed the helper was each
+  constant's only reader and that no spec imported one, so the constants went with the copies
+  rather than being left as dead code.
+- **What did NOT move**: every call site kept its own outcome — a module's own 409 (`inventory`,
+  `memberships`, `attendance`, `pt`) or an idempotent replay of the row the winner wrote
+  (`payments`, `refunds`, `gateway-webhook`). The helper answers "was this a `23505`"; what a
+  `23505` MEANS stays with the caller that knows which index its statement can collide on.
+- **Evidence**: root `npm run typecheck` and `npm run lint` clean; the host modules' specs
+  unchanged and green beside the new helper spec. Three mutants of the helper each typechecked and
+  failed by ASSERTION, none by timeout: dropping the `driverError` candidate, changing the
+  SQLSTATE, and **swapping the two candidate codes**. The swap fails ONLY the new precedence test,
+  which is the point — no host spec exercised an error carrying both codes, so the shared ordering
+  was unpinned until this extraction pinned it.
 - **Objective**: one shared implementation of the `23505` detector, replacing the private copies.
 - **Found during**: the `DEF-02` hardening work, 2026-10-02.
 - **Files/modules affected**: six private copies — `payments.service:90`, `refunds.service:83`,
@@ -2281,6 +2301,47 @@ This document contains the implementation tasks broken down by phase, with depen
   covered by a test per side-effect path, or fencing is implemented.
 - **Risks**: Medium — silent duplicate application if a future consumer path is not idempotent.
   The lease duration is the tunable that trades this against recovery latency.
+- **Design note (2026-10-04) — AWAITING OWNER RULING, no code changed**:
+  - **Current behaviour, with file:line**: `processBatch` claims with
+    `SET status='processing', locked_at=now(), attempts=attempts+1 … WHERE (locked_at IS NULL OR
+    locked_at < now() - ($3 ms))` (`webhook-event.processor.ts:85-103`), `$3` being
+    `WEBHOOK_LOCK_DURATION_MS = 60_000` (`worker-config.ts:56`). Each claimed row then runs
+    `processOne` (`:104-107`, `:127-172`) in ONE transaction holding a `pessimistic_write` lock on
+    the event row (`:129`). Two guards sit below that lock: `processOne` returns early when the row
+    is already `processed` (`:130`), and each side-effect path carries its own state guard —
+    `payments.service.ts:448` (`status !== PENDING` → return) and `refunds.service.ts:234`
+    (`!refund || !succeeded || status !== PENDING` → return).
+  - **Failure scenario, concretely**: (1) the claim moves event E to `processing` with a fresh
+    `locked_at`; (2) the batch's work for E stalls past 60 s — a slow gateway call, a stalled
+    database, a suspended host; (3) the next poll's claim matches E again, its lease having lapsed
+    and `attempts < MAX_ATTEMPTS`, and takes it; (4) both claimants now run `processOne` for E.
+  - **Is it reachable today? NO** — MEASURED by code read: the `WEBHOOK` worker is OFF by default
+    (`WORKERS_ENABLED`, `worker-config.ts`), so in every shipped configuration nothing claims a row
+    at all. Reachability begins when the worker is enabled, which the standing ruling already gates
+    on one real test-mode payment through the gateway adapter.
+  - **How far the two claimants actually collide** — the guards are MEASURED by code read, the
+    residual timing is **INFERRED**: the second claimant blocks on the row's `pessimistic_write`
+    lock until the first commits, then reads `status='processed'` at `:130` and returns, so the
+    `applyGatewayOutcome` state guards are a SECOND line behind that lock rather than — as this
+    entry's original wording has it — "the entire mitigation". Which line the real race exercises
+    has not been measured; the lock serialisation further assumes both claimants run against the
+    same database under READ COMMITTED.
+  - **Options**:
+    1. **Fencing token** — a monotonic claim id on the row that the writer re-checks before it
+       commits. **This needs a migration**: `FINANCE_WEBHOOK_EVENTS` has no such column
+       (`webhook-event.entity.ts:1-44`) and `synchronize` is hard-disabled in both `app.module.ts`
+       and `data-source.ts`, so schema changes are migration-only. Cost: medium — the claim SQL, the
+       entity, a migration, and a token check on each side-effect path.
+    2. **Lease heartbeat** — extend `locked_at` while work is in flight. No migration. Cost:
+       low-medium; a hard-stalled host still loses its lease, so it narrows the window rather than
+       closing it.
+    3. **Assert the existing guards** — the entry's own first acceptance branch: state the
+       mitigation at each guard that provides it and add one test per side-effect path. Cost: low,
+       no migration, behaviour-preserving; does not remove the race.
+  - **RECOMMENDATION**: **(3) now, (1) when the webhook worker is next scheduled to be enabled.**
+    (3) is the entry's own acceptance criterion and pins the property that actually protects the
+    money path today. (1) is the structural fix, and it should ride with the change that turns the
+    worker on, where its migration cost is paid once.
 
 ### DEF-13: Add `organizationId` to PaymentIntent and refund metadata (Low)
 - **Objective**: Add `organizationId` to PaymentIntent and refund metadata at creation, and
@@ -2318,6 +2379,45 @@ This document contains the implementation tasks broken down by phase, with depen
   refund's metadata, and the refund fixtures match an event Stripe sends.
 - **Risks**: Low — nothing shipped is affected today; the cost lands when gateway refunds are built
   on the current fixtures.
+- **Design note (2026-10-04) — AWAITING OWNER RULING, no code changed**:
+  - **Current behaviour, with file:line**: `'charge.refunded'` is an allowlisted handled type
+    (`webhook-event.processor.ts:29`); `processOne` reads
+    `const refundId = referenceId(object.metadata?.refundId)` from the event's `data.object`
+    (`:134`), and when `handler.kind === 'refund' && refundId` calls
+    `refunds.applyGatewayOutcome(...)` (`:156-162`). The object Stripe puts in a `charge.refunded`
+    event is a **Charge**, so `object.metadata` is the Charge's metadata — for a
+    PaymentIntent-created charge, the `{ paymentId }` the adapter set, never `{ refundId }`.
+  - **Why the branch cannot fire** — two independent gaps, both MEASURED by code read:
+    (a) `StripePaymentGatewayAdapter.refund()` (`stripe-payment-gateway.adapter.ts:53-68`) has no
+    caller: `RefundsService` records staff-initiated refunds directly as `succeeded` and does not
+    inject `PAYMENT_GATEWAY` (`refunds.service.ts:55`, `finance.module.ts:50`), so no refund is
+    created at Stripe for a webhook to report; (b) even when one is, the reference this branch reads
+    is not on the object Stripe sends. The `WEBHOOK` worker is additionally OFF by default.
+  - **Fixtures encoding a shape Stripe never sends**: the hermetic `webhook-event.processor.spec.ts`
+    refund test sets `event_type = 'charge.refunded'` and then **overwrites the Charge's metadata**
+    with `{ refundId }` (`:83-95`); the real-DB `webhook-event-lease.integration.spec.ts` does the
+    same through its payload builder (`:148-162`) and its refund fixture (`:430-441`). Both assert
+    the processor routes a shape the provider does not produce.
+  - **Options**:
+    1. **Delete the unreachable branch and its fixtures** — drop `'charge.refunded'` from the
+       allowlist, remove the refund arm of `processOne`, and delete or rewrite both fixtures. Cost:
+       low. Consequence: removes dead code and a false assertion; the branch has to be re-added
+       correctly when gateway refunds are built. **A standing owner ruling covers this entry** —
+       "the refund webhook path is documented, not changed" (2026-10-02) — and deleting it IS a
+       change, so this option needs a fresh ruling rather than being available by default.
+    2. **Wire refunds through the gateway adapter** — `RefundsService.create` calls
+       `PAYMENT_GATEWAY.refund()`, records the refund non-terminal, and lets the webhook confirm it.
+       Cost: high. It changes the refund write path and its status semantics (a staff-recorded
+       refund is `succeeded` immediately today), requires the allowlist and fixtures to be re-keyed,
+       and cannot be completed without a real test-mode Stripe call — the owner's own task.
+    3. **Re-key the branch correctly and leave it unreachable** — key on
+       `refund.created` / `refund.updated` (object = `Refund`, `metadata.refundId`) and rewrite the
+       fixtures to that shape. Cost: low-medium. Consequence: correct but still dead, and the
+       allowlist would accept an event only a rewritten fixture produces.
+  - **RECOMMENDATION**: **(1), subject to a fresh owner ruling.** The entry's own "when scheduled"
+    line already records the correct keying, so the knowledge survives deleting the code. If the
+    2026-10-02 ruling is meant to stand unchanged, **(3)** is the smallest change that stops two
+    fixtures asserting a shape Stripe never sends.
 
 ### DEF-15: The token blacklist's fail-closed check can hang instead of refusing (Medium)
 - **Status**: **Fixed** — owner ruling (2026-10-04): "fix DEF-15". One shared bounded-call helper
@@ -2759,3 +2859,42 @@ entry below.
   `auth-api.ts` `logout` and every logout UI stay exactly as they are.
 - **Note**: DEF-16 is the automatic refresh on an expired access token; R8 is the explicit sign-out.
   They share only the shape "a non-OK response is treated as proof the session is dead".
+
+## DEF-17 — `clearTokens()` leaves `gym.organizationId` behind (2026-10-04)
+
+**Status: OPEN — unruled, no code change.** Filed as a RECOMMENDATION out of the `DEF-16`
+follow-up work; nothing was changed.
+
+- **Objective**: record that the web client's sign-out does not clear the organization id it sends
+  as `X-Organization-Id`, and that the two sign-out paths disagree about it.
+- **Files/modules affected**: `apps/web/src/lib/token-store.ts` (`clearTokens`), whose key set is
+  `gym.accessToken` + `gym.refreshToken` only; `apps/web/src/components/layout/Sidebar.tsx`, which
+  clears the organization id explicitly on sign-out, and `apps/web/src/components/layout/Navbar.tsx`,
+  which does not. The organization id is a separate key with its own accessors
+  (`getOrganizationId` / `setOrganizationId`), so it is not covered by `clearTokens()`.
+- **Why it matters**: on a shared device a stale organization id can outlive the session that set
+  it, so the next account to sign in on that browser keeps sending the previous account's
+  `X-Organization-Id` until something overwrites it.
+- **Effect on the server of a mismatched `X-Organization-Id` — MEASURED by code read**: the header
+  is only ever a *request*. `TenantContextInterceptor` records it as `requestedOrganizationId` and
+  documents in its own header comment that it is "NOT treated as proof of authorization"
+  (`src/shared/tenant/tenant-context.interceptor.ts:14-19`, `:40-45`). Every org-scoped operation
+  then calls `requireOrganizationAccess`, which checks an ACTIVE membership of the **JWT's** user
+  (`src/shared/tenant/tenant-context.service.ts:114-123`); a mismatch throws
+  `ForbiddenException('Access to this organization is not allowed')` → **403**. A stale header is
+  therefore refused rather than honoured, and is not a cross-tenant read. `AiUsageService`
+  documents that it never reads the header at all (`ai-usage.service.ts:39-41`), and
+  `InventoryService` documents the same require-then-use shape (`inventory.service.ts:34-40`).
+- **What is UNKNOWN**: whether every org-scoped path in every module routes through
+  `requireOrganizationAccess` before it uses the requested organization. That check is a convention,
+  not a database-enforced backstop (RLS is deferred permanently), and this entry did not audit all
+  call sites. What the user actually sees when a stale header produces the 403 was not measured
+  either.
+- **Risks**: Low for confidentiality — the server refuses. Low-Medium for usability: a signed-in
+  session that 403s until the id is replaced is indistinguishable, to the user, from a broken
+  account.
+- **RECOMMENDATION (not ruled)**: have `clearTokens()` clear `gym.organizationId` as well, or route
+  every sign-out through one path that does. Not done here: it changes sign-out behaviour, which
+  the `DEF-16` ruling `F1` deliberately left alone, so it waits for a ruling.
+- **Acceptance criteria**: either the organization id is cleared with the tokens on every sign-out
+  path, or the decision to keep it is recorded here with its rationale.

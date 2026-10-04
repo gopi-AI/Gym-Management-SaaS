@@ -9,9 +9,7 @@ import { CommissionPayoutRun } from '../entities/commission-payout-run.entity';
 import { CommissionPayoutItem } from '../entities/commission-payout-item.entity';
 import { CreateCommissionPayoutDto } from '../dto/create-commission-payout.dto';
 import { PT_EVENT_TYPES, PT_EVENT_VERSION } from '../pt.constants';
-
-/** PostgreSQL SQLSTATE for a unique-constraint violation. */
-const UNIQUE_VIOLATION_CODE = '23505';
+import { isUniqueViolation } from '../../shared/utils/unique-violation';
 
 @Injectable()
 export class CommissionPayoutsService {
@@ -106,7 +104,7 @@ export class CommissionPayoutsService {
         // transaction, run row included, rolls back. 409 tells the operator this
         // was a race on the window, not a bad request. The transaction is already
         // aborted at this point, so nothing may be queried inside it.
-        if (CommissionPayoutsService.isUniqueViolation(error)) {
+        if (isUniqueViolation(error)) {
           throw new ConflictException(
             'One or more commissions in this period were already reserved by a concurrent payout run — retry the run',
           );
@@ -170,8 +168,4 @@ export class CommissionPayoutsService {
     return Object.assign(run, { items });
   }
 
-  private static isUniqueViolation(error: unknown): boolean {
-    const candidate = error as { code?: string; driverError?: { code?: string } };
-    return (candidate?.driverError?.code ?? candidate?.code) === UNIQUE_VIOLATION_CODE;
-  }
 }

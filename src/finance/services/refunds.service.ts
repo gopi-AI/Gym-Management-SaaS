@@ -13,6 +13,7 @@ import { CreateRefundDto } from '../dto/create-refund.dto';
 import { QueryRefundDto } from '../dto/query-refund.dto';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
+import { isUniqueViolation } from '../../shared/utils/unique-violation';
 import {
   FINANCE_EVENT_TYPES,
   FINANCE_EVENT_VERSION,
@@ -79,11 +80,6 @@ export class RefundsService {
     private readonly tenantContextService: TenantContextService,
     private readonly outboxService: OutboxService,
   ) {}
-
-  private static isUniqueViolation(error: unknown): boolean {
-    const candidate = error as { code?: string; driverError?: { code?: string } };
-    return (candidate?.driverError?.code ?? candidate?.code) === '23505';
-  }
 
   /** Authorized organization, mirroring PaymentsService.resolveAuthorizedOrg. */
   private async resolveAuthorizedOrg(): Promise<string> {
@@ -185,7 +181,7 @@ export class RefundsService {
           }),
         );
       } catch (error) {
-        if (!RefundsService.isUniqueViolation(error)) throw error;
+        if (!isUniqueViolation(error)) throw error;
         const replay = await repository.findOne({ where: { organization_id: organizationId, idempotency_key: idempotencyKey } });
         if (replay) return replay;
         throw error;
