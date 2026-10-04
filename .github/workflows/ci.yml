@@ -16,6 +16,9 @@ permissions:
 # request cancels the run it replaces, and each push to main gets a group of its
 # own so it is never replaced.
 concurrency:
+  # PRs: one group per PR ref; a newer commit cancels the older run.
+  # main pushes: each commit gets its own group, so one push cannot replace
+  # another push's run.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
   cancel-in-progress: true
 
