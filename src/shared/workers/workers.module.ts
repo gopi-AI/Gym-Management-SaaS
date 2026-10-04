@@ -3,6 +3,7 @@ import { OutboxModule } from '../outbox/outbox.module';
 import { MembershipsModule } from '../../memberships/memberships.module';
 import { FinanceModule } from '../../finance/finance.module';
 import { CrmModule } from '../../crm/crm.module';
+import { ReportsModule } from '../../reports/reports.module';
 import { OutboxWorker } from './outbox.worker';
 import { MembershipExpiryWorker } from './membership-expiry.worker';
 import { PaymentRetryWorker } from './payment-retry.worker';
@@ -10,6 +11,8 @@ import { WebhookEventWorker } from './webhook-event.worker';
 import { CrmFollowUpsWorker } from './crm-follow-ups.worker';
 import { CrmSlaMonitorWorker } from './crm-sla-monitor.worker';
 import { DunningWorker } from './dunning.worker';
+import { ReportJobWorker } from '../../reports/workers/report-job.worker';
+import { MaterializedViewRefreshWorker } from '../../reports/workers/materialized-view-refresh.worker';
 
 /**
  * Background workers.
@@ -24,7 +27,7 @@ import { DunningWorker } from './dunning.worker';
  * `SchedulerRegistry`.
  */
 @Module({
-  imports: [OutboxModule, MembershipsModule, FinanceModule, CrmModule],
+  imports: [OutboxModule, MembershipsModule, FinanceModule, CrmModule, ReportsModule],
   providers: [
     OutboxWorker,
     MembershipExpiryWorker,
@@ -33,6 +36,8 @@ import { DunningWorker } from './dunning.worker';
     CrmFollowUpsWorker,
     CrmSlaMonitorWorker,
     DunningWorker,
+    ReportJobWorker,
+    MaterializedViewRefreshWorker,
   ],
   exports: [
     OutboxWorker,
@@ -42,6 +47,8 @@ import { DunningWorker } from './dunning.worker';
     CrmFollowUpsWorker,
     CrmSlaMonitorWorker,
     DunningWorker,
+    ReportJobWorker,
+    MaterializedViewRefreshWorker,
   ],
 })
 export class WorkersModule {}

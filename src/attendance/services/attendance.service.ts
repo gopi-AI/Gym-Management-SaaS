@@ -89,6 +89,48 @@ interface AttendanceEventInput {
 /** PostgreSQL SQLSTATE for a unique-constraint violation. */
 const UNIQUE_VIOLATION_CODE = '23505';
 
+/**
+ * Rounds `value` to the nearest integer with an exact half going **away from
+ * zero** — the rule PostgreSQL's `ROUND(numeric)` applies, and therefore the rule
+ * the backfill in `1788965263409-AddAttendanceDurationMinutes` applies.
+ *
+ * `Math.round` cannot express it: it resolves ties toward `+Infinity`
+ * (`Math.round(-0.5)` is `-0`, `Math.round(-1.5)` is `-1`), so on the same
+ * reversed session the application and the backfill would land a minute apart.
+ * Mirroring the input, rounding, and mirroring back is that same rule stated
+ * directly, and it leaves every non-tie value bit-identical to `Math.round`
+ * (P6-38).
+ */
+function roundHalfAwayFromZero(value: number): number {
+  return value < 0 ? -Math.round(-value) : Math.round(value);
+}
+
+/**
+ * Whole minutes between check-in and check-out, rounded half away from zero
+ * (P6-38) — PostgreSQL's `ROUND(numeric)` rule, via `roundHalfAwayFromZero`.
+ *
+ * Deliberately the same arithmetic as the backfill in
+ * `1788965263409-AddAttendanceDurationMinutes` and as §7.2's
+ * `reports_mv_daily_attendance`
+ * (`AVG(EXTRACT(EPOCH FROM (check_out_time - check_in_time)) / 60)`), so the
+ * stored value, the backfilled value and the materialized view's own figure agree
+ * on the same session rather than differing by a rounding rule. That agreement
+ * holds across the whole domain, negative differences included: on a reversed
+ * session the backfill writes −1 for −0.5 minutes and −2 for −1.5 minutes, and so
+ * does this function. (How a *group* of sessions is aggregated is a separate,
+ * pre-existing question — the view's `AVG(...)::int` versus the report's
+ * `AVG(duration_minutes)` — filed as **P6-53** and not changed here.)
+ *
+ * A clock skew that puts the check-out before the check-in (a mis-stamped device
+ * event, or an operator correcting a timestamp) yields a negative duration rather
+ * than an exception: the column records what the two timestamps say, and clamping
+ * it to 0 here would silently hide a data problem the report should surface. The
+ * value is never used as a constraint or a multiplier.
+ */
+function elapsedMinutes(checkIn: Date, checkOut: Date): number {
+  return roundHalfAwayFromZero((checkOut.getTime() - checkIn.getTime()) / 60_000);
+}
+
 /** `YYYY-MM-DD` label of `date`'s UTC calendar day. */
 function utcDayKey(date: Date): string {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(
@@ -645,6 +687,16 @@ export class AttendanceService {
         const recordRepository = manager.getRepository(AttendanceRecord);
         openRecord.check_out_time = input.eventTime;
         openRecord.check_out_method = ATTENDANCE_METHODS.MANUAL;
+        // P6-38: persist the visit's length as an ordinary column, so §6.3's
+        // "Avg Session Duration" report can declare `AVG(duration_minutes)` — one of
+        // the three shapes the report contract admits — instead of the aggregate
+        // over a two-column difference that no `QueryDefinition` can express.
+        // Computed from the same two timestamps the row already holds, in the same
+        // transaction that stamps `check_out_time`, so the pair cannot drift.
+        openRecord.duration_minutes = elapsedMinutes(
+          openRecord.check_in_time,
+          input.eventTime,
+        );
         const record = await recordRepository.save(openRecord);
 
         const decision = await this.saveDecision(manager, event.id, true, null);

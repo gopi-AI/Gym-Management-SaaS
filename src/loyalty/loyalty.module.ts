@@ -11,6 +11,10 @@ import { LoyaltyReward } from './entities/loyalty-reward.entity';
 import { Organization } from '../tenancy/entities/organization.entity';
 import { LoyaltyAccrualService } from './services/loyalty-accrual.service';
 import { LoyaltyExpiryService } from './services/loyalty-expiry.service';
+import { LoyaltyReadService } from './services/loyalty-read.service';
+import { LoyaltyController } from './controllers/loyalty.controller';
+import { LoyaltyDashboardController } from './controllers/loyalty-dashboard.controller';
+import { MembersModule } from '../members/members.module';
 import { LoyaltyExpiryWorker } from './workers/loyalty-expiry.worker';
 import {
   ATTENDANCE_EVENT_TYPE,
@@ -55,15 +59,22 @@ import {
     OutboxModule,
     TenancyModule,
     WorkersModule,
+    // P6-28: the read service resolves the member through `MembersService.findOne()`
+    // so a cross-tenant member id is rejected rather than answered with zeros.
+    // Cycle-free: only AppModule imports LoyaltyModule.
+    MembersModule,
   ],
+  controllers: [LoyaltyController, LoyaltyDashboardController],
   providers: [
     LoyaltyAccrualService,
     LoyaltyExpiryService,
+    LoyaltyReadService,
     LoyaltyExpiryWorker,
   ],
   exports: [
     LoyaltyAccrualService,
     LoyaltyExpiryService,
+    LoyaltyReadService,
     TypeOrmModule,
   ],
 })

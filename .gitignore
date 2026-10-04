@@ -16,6 +16,7 @@ npm-debug.log*
 
 # OS / editor
 .DS_Store
+*.code-workspace
 
 # Runtime artifacts
 *.pid

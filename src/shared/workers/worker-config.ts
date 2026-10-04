@@ -28,6 +28,14 @@ export const WORKER_INTERVALS: Record<string, number> = {
   // breach detected late is an escalation raised late.
   CRM_FOLLOW_UPS: 30 * 60 * 1000,
   CRM_SLA_MONITOR: 15 * 60 * 1000,
+  // Report jobs execute real queries, so the cadence is short enough to feel
+  // synchronous but not so short that a batch queues behind itself.
+  REPORT_JOBS: 15_000,
+  // Materialized-view refresh (§7.3). This is the sweep interval, not a view's
+  // own cadence: each view's hourly / 6-hourly / daily frequency is applied by
+  // MaterializedViewRefreshService against `last_refreshed`, so a short sweep
+  // only makes a due view refresh promptly — it cannot make one refresh early.
+  MATERIALIZED_VIEW_REFRESH: 5 * 60 * 1000,
 };
 
 /** Default batch size per worker. */
@@ -39,6 +47,8 @@ export const WORKER_BATCH_SIZES: Record<string, number> = {
   WEBHOOK: 50,
   CRM_FOLLOW_UPS: 100,
   CRM_SLA_MONITOR: 100,
+  // §5.1 serializes execution to one job globally; the batch is the queue-drain unit.
+  REPORT_JOBS: 5,
 };
 
 /** Outbox lease duration: comfortably longer than a normal batch's runtime. */
