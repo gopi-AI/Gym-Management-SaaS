@@ -4,11 +4,9 @@ import Stripe from 'stripe';
 import { DataSource } from 'typeorm';
 import { WebhookEvent } from '../entities/webhook-event.entity';
 import { Payment } from '../entities/payment.entity';
-import { Refund } from '../entities/refund.entity';
 import { PAYMENT_STATUS } from '../finance.constants';
 import { WEBHOOK_LOCK_DURATION_MS } from '../../shared/workers/worker-config';
 import { PaymentsService } from './payments.service';
-import { RefundsService } from './refunds.service';
 import { PaymentAttemptOutcome } from './payment-gateway.port';
 
 /**
@@ -17,16 +15,20 @@ import { PaymentAttemptOutcome } from './payment-gateway.port';
  * This replaces a `type.includes('succeeded')` substring test. That test was
  * broader than the processor's intent — it also matched `charge.succeeded` and
  * `invoice.payment_succeeded`, neither of which this processor should act on, and
- * it would have matched any future type with the word in it. Only these three
+ * it would have matched any future type with the word in it. Only these two
  * types change state today; everything else is recorded and left alone.
+ *
+ * DEF-14 (owner ruling, 2026-10-04): `charge.refunded` is NOT here. A
+ * `charge.refunded` event carries a `Charge`, so the `refundId` the refund branch
+ * read could never arrive on it, and nothing creates a refund at the provider for
+ * a webhook to report — the branch had no caller. The event is now recorded as
+ * processed with no state change. When the gateway-refund flow is built it keys on
+ * `refund.created` / `refund.updated` (object = `Refund`, `metadata.refundId`), and
+ * the entry plus the branch that reads the reference have to be added together.
  */
-const HANDLED_EVENT_TYPES: Record<string, { kind: 'payment' | 'refund'; succeeded: boolean }> = {
-  'payment_intent.succeeded': { kind: 'payment', succeeded: true },
-  'payment_intent.payment_failed': { kind: 'payment', succeeded: false },
-  // DEF-14: kept for the future gateway-refund flow. It cannot currently receive a
-  // `refundId` — a `charge.refunded` event carries a `Charge`, whose metadata is not
-  // the `Refund`'s — so this entry is unreachable today.
-  'charge.refunded': { kind: 'refund', succeeded: true },
+const HANDLED_EVENT_TYPES: Record<string, { succeeded: boolean }> = {
+  'payment_intent.succeeded': { succeeded: true },
+  'payment_intent.payment_failed': { succeeded: false },
 };
 
 /**
@@ -47,7 +49,6 @@ export class WebhookEventProcessor {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly payments: PaymentsService,
-    private readonly refunds: RefundsService,
   ) {}
 
   /**
@@ -131,13 +132,12 @@ export class WebhookEventProcessor {
       const stripeEvent = event.payload as unknown as Stripe.Event;
       const object = stripeEvent.data?.object as unknown as { id?: string; status?: string; metadata?: Record<string, unknown> };
       const paymentId = referenceId(object.metadata?.paymentId);
-      const refundId = referenceId(object.metadata?.refundId);
       const handler = HANDLED_EVENT_TYPES[stripeEvent.type];
       const who = `Webhook event ${event.provider_event_id} (${stripeEvent.type})`;
 
       if (!handler) {
         this.logger.log(`${who} is not a handled event type — recorded with no state change`);
-      } else if (handler.kind === 'payment' && paymentId) {
+      } else if (paymentId) {
         const outcome: PaymentAttemptOutcome = {
           succeeded: handler.succeeded,
           transactionId: object.id,
@@ -146,25 +146,46 @@ export class WebhookEventProcessor {
           gatewayResponse: JSON.stringify(object),
           failureReason: object.status,
         };
-        await this.payments.applyGatewayOutcome(manager, paymentId, outcome);
         // DEF-04: attribute the row to a tenant. The receive path has no
         // authorized tenant context by design (it is `@Public()`, authenticated by
         // signature alone), so the org has to come from the row this event refers
         // to, read here where the transaction already holds it.
+        //
+        // DEF-13: that same read is the independent source the PaymentIntent's
+        // `metadata.organizationId` is cross-checked against before anything is
+        // applied. A mismatch means our own create path wrote one of the two wrong
+        // — the event names a payment that belongs to another organization — so the
+        // event is PARKED (the existing `dead_lettered` state and `error_message`
+        // column) instead of applied, and the payment is left untouched. Absent
+        // metadata is tolerated permanently: payments created before DEF-13 carry
+        // none. A non-string or empty value reads as absent, because Stripe's
+        // metadata is a string map and the adapter only ever writes a UUID.
         const payment = await manager.getRepository(Payment).findOne({ where: { id: paymentId } });
+        const metadataOrganizationId = object.metadata?.organizationId;
+        const hasMetadataOrganizationId =
+          typeof metadataOrganizationId === 'string' && metadataOrganizationId.length > 0;
+        if (hasMetadataOrganizationId && payment && metadataOrganizationId !== payment.organization_id) {
+          const reason =
+            `organization mismatch: event metadata ${metadataOrganizationId}, payment row ${payment.organization_id}`;
+          this.logger.error(`${who} PARKED: ${reason} (event ${event.id}, payment ${paymentId})`);
+          event.status = 'dead_lettered';
+          event.error_message = reason;
+          event.locked_at = null;
+          await manager.getRepository(WebhookEvent).save(event);
+          return;
+        }
+        if (!hasMetadataOrganizationId) {
+          this.logger.warn(
+            `${who} carries no metadata.organizationId — applied against the payment row alone (payment ${paymentId})`,
+          );
+        }
+        await this.payments.applyGatewayOutcome(manager, paymentId, outcome);
         if (payment) event.organization_id = payment.organization_id;
-      } else if (handler.kind === 'refund' && refundId) {
-        await this.refunds.applyGatewayOutcome(manager, refundId, {
-          succeeded: handler.succeeded,
-          gatewayStatus: object.status,
-        });
-        const refund = await manager.getRepository(Refund).findOne({ where: { id: refundId } });
-        if (refund) event.organization_id = refund.organization_id;
       } else {
         // A handled type that cannot be applied: no reference at all, or a
         // reference that is not a UUID (see `referenceId`). Neither is a failure —
         // the event is recorded, consumes no retry, and stays unattributed.
-        this.logger.log(`${who} names no usable ${handler.kind} reference (absent or not a UUID) — recorded with no state change`);
+        this.logger.log(`${who} names no usable payment reference (absent or not a UUID) — recorded with no state change`);
       }
 
       event.status = 'processed'; event.processed_at = new Date(); event.locked_at = null; await manager.getRepository(WebhookEvent).save(event);

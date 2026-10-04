@@ -36,7 +36,15 @@ export class StripePaymentGatewayAdapter implements PaymentGatewayPort {
                 off_session: true,
               }
             : {}),
-          metadata: { paymentId: payment.id },
+          // DEF-13: `organizationId` rides along so the webhook processor has an
+          // independent source to cross-check the payment row's organization
+          // against. `payment.organization_id` is NOT NULL, so it is always
+          // written. Changing this body changes what Stripe has already accepted
+          // under `payment.idempotency_key`: a retry of a payment created before
+          // this landed reuses the key with a different body, which Stripe
+          // rejects — such payments have to be drained before deploy (owner
+          // statement, 2026-10-04: none is in flight).
+          metadata: { paymentId: payment.id, organizationId: payment.organization_id },
         },
         { idempotencyKey: payment.idempotency_key },
       );

@@ -1,7 +1,12 @@
 import { StripePaymentGatewayAdapter } from './stripe-payment-gateway.adapter';
 
 describe('StripePaymentGatewayAdapter', () => {
-  const payment = { id: 'payment-1', amount: '12.34', idempotency_key: 'payment-key' } as any;
+  const payment = {
+    id: 'payment-1',
+    amount: '12.34',
+    idempotency_key: 'payment-key',
+    organization_id: 'org-1',
+  } as any;
   const refund = { id: 'refund-1', payment_id: 'payment-1', amount: '3.00', idempotency_key: 'refund-key' } as any;
 
   function adapter() {
@@ -14,11 +19,20 @@ describe('StripePaymentGatewayAdapter', () => {
     return { instance, stripe };
   }
 
-  it('charges through Stripe with its idempotency key', async () => {
+  it('charges through Stripe with its idempotency key and the exact request body', async () => {
     const { instance, stripe } = adapter();
     await expect(instance.charge(payment)).resolves.toMatchObject({ succeeded: true, transactionId: 'pi_1' });
+    // The whole body, not a subset: this metadata is the independent source the
+    // webhook processor cross-checks its payment row against (DEF-13), and any
+    // change to the body changes what a retry under the same idempotency key may
+    // legally send. The key itself is unchanged (asserted separately, below).
     expect(stripe.paymentIntents.create).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 1234, metadata: { paymentId: 'payment-1' } }),
+      {
+        amount: 1234,
+        currency: 'usd',
+        confirm: true,
+        metadata: { paymentId: 'payment-1', organizationId: 'org-1' },
+      },
       { idempotencyKey: 'payment-key' },
     );
   });

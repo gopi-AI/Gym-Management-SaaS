@@ -152,6 +152,56 @@ describe('RefundsService', () => {
       expect(mockRefundRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
     });
 
+    it('replays the winner when the insert hits a unique violation (23505)', async () => {
+      // The pre-check misses — the winner committed after this transaction read —
+      // so the row is only discovered when the INSERT collides on
+      // `(organization_id, idempotency_key)`. The catch has to treat that as the
+      // same event arriving twice, not as a failure, or a duplicate submission
+      // surfaces as a 500 while the winner's refund stays recorded.
+      const key = 'refund-race-1';
+      const winner = {
+        id: 'refund-winner',
+        organization_id: orgId,
+        payment_id: paymentId,
+        idempotency_key: key,
+        amount: '40.00',
+        reason: 'race',
+        status: REFUND_STATUS.SUCCEEDED,
+        refund_date: new Date(),
+      } as Refund;
+      mockRefundRepo.findOne.mockResolvedValueOnce(null).mockResolvedValueOnce(winner);
+      mockRefundRepo.save.mockRejectedValue(
+        Object.assign(new Error('duplicate key value violates unique constraint'), {
+          driverError: { code: '23505' },
+        }),
+      );
+
+      const refund = await service.create(paymentId, { ...dto, idempotency_key: key });
+
+      expect(refund).toBe(winner);
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('propagates a write failure that is not a unique violation', async () => {
+      mockRefundRepo.save.mockRejectedValue(new Error('connection reset by peer'));
+
+      await expect(service.create(paymentId, dto)).rejects.toThrow('connection reset by peer');
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('never turns a non-unique failure into a replay, even when a row with that key exists', async () => {
+      // The detector gates the replay lookup. Without it, any failed insert would
+      // return whatever row happens to carry the key — a write that never
+      // happened reported as the one that did.
+      const existing = { id: 'refund-someone-else', idempotency_key: 'refund-key-x' } as Refund;
+      mockRefundRepo.findOne.mockResolvedValueOnce(null).mockResolvedValue(existing);
+      mockRefundRepo.save.mockRejectedValue(new Error('connection reset by peer'));
+
+      await expect(
+        service.create(paymentId, { ...dto, idempotency_key: 'refund-key-x' }),
+      ).rejects.toThrow('connection reset by peer');
+    });
+
     it('normalises the amount to a 2-decimal money string', async () => {
       const refund = await service.create(paymentId, { amount: 33.335, reason: 'rounding' });
 

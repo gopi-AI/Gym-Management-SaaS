@@ -60,6 +60,17 @@ interface RefundIssuedPayloadShape extends Record<string, unknown> {
  * gateway-initiated path through the same columns (`pending` already exists in
  * both the value set and the schema) as an addition, not a redesign.
  *
+ * ## The gateway-apply transition was removed (DEF-14, 2026-10-04)
+ *
+ * `applyGatewayOutcome()` — the `pending -> succeeded` transition the webhook
+ * processor ran when a gateway refund was confirmed — was deleted with the
+ * processor's refund branch, under the owner ruling "delete the unreachable refund
+ * branch and its fixtures". It was unreachable: no event type the processor
+ * handled could carry the `refundId` it read (a `charge.refunded` event carries a
+ * `Charge`, not the `Refund`), and nothing creates a refund at the provider for a
+ * webhook to report. P3-03's gateway-initiated path adds the transition back;
+ * `pending` remains in the value set and the schema for it.
+ *
  * ## Known gap: no idempotency key
  *
  * A refund carries no idempotency key, unlike `Payment`. The invariant above is
@@ -211,50 +222,6 @@ export class RefundsService {
 
       return refund;
     });
-  }
-
-  /**
-   * Apply a gateway refund confirmation inside the caller's transaction.
-   * The refund row is locked here so duplicate deliveries and races with a
-   * synchronous refund path can only produce one transition and one event.
-   */
-  async applyGatewayOutcome(
-    manager: EntityManager,
-    refundId: string,
-    outcome: { succeeded: boolean; gatewayStatus?: string },
-  ): Promise<Refund | null> {
-    const refund = await manager.getRepository(Refund).findOne({
-      where: { id: refundId },
-      lock: { mode: 'pessimistic_write' },
-    });
-    if (!refund || !outcome.succeeded || refund.status !== REFUND_STATUS.PENDING) return refund;
-
-    refund.status = REFUND_STATUS.SUCCEEDED;
-    const saved = await manager.getRepository(Refund).save(refund);
-    const payment = await manager.getRepository(Payment).findOne({
-      where: { id: refund.payment_id, organization_id: refund.organization_id },
-      lock: { mode: 'pessimistic_write' },
-    });
-    if (!payment) throw new NotFoundException('Payment not found');
-
-    await this.outboxService.saveEventEnvelope(
-      FINANCE_EVENT_TYPES.REFUND_ISSUED,
-      FINANCE_EVENT_VERSION,
-      refund.organization_id,
-      {
-        refundId: refund.id,
-        paymentId: payment.id,
-        invoiceId: payment.invoice_id,
-        amount: refund.amount,
-        reason: refund.reason,
-        refundDate: refund.refund_date.toISOString(),
-        status: refund.status,
-      } satisfies RefundIssuedPayloadShape,
-      payment.invoice_id,
-      undefined,
-      manager,
-    );
-    return saved;
   }
 
   /** Paginated, tenant-scoped refund list (newest first). */
