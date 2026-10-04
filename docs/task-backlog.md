@@ -2280,6 +2280,11 @@ This document contains the implementation tasks broken down by phase, with depen
   accumulated in `'processing'`, which is the symptom `DEF-05` was filed to explain.
 
 ### DEF-12: A worker running longer than the lease can be reclaimed mid-processing (Medium)
+- **Status**: **Mitigation asserted and pinned; the race remains; fencing filed as `DEF-18`** (owner
+  ruling 2026-10-04, verbatim below). The mitigation is stated at the code that provides it and
+  covered by tests; the structural fix is filed, with the trigger that unparks it.
+- **Owner ruling (2026-10-04, verbatim)**: "DEF-12: retain the existing guards per path and file
+  fencing-token work for when the webhook worker is enabled."
 - **Objective**: Record the residual race the DEF-05 lease introduces, and the assumption it rests
   on, rather than leave it implicit.
 - **Found during**: DEF-05 hardening, 2026-10-02.
@@ -2289,28 +2294,36 @@ This document contains the implementation tasks broken down by phase, with depen
   row runs longer than `WEBHOOK_LOCK_DURATION_MS` (60 s per ruling #9) — a slow gateway call, a
   stalled database, a suspended host — the next poll's claim can take the same row while the first
   claimant is still working. Both then run `processOne` concurrently.
-- **Why it is Medium and not High**: the second application is a no-op **only because**
-  `PaymentsService.applyGatewayOutcome` returns early when the payment is no longer `PENDING`
-  (`payments.service.ts`). That guard is the entire mitigation, and it covers payments; the refund
-  path (`RefundsService.applyGatewayOutcome`) and any future side effect of the same shape rely on
-  their own guards, which are not asserted here.
+- **Why it is Medium and not High**: the second application is a no-op because the guards below the
+  claim hold. **Corrected 2026-10-04:** this bullet originally called
+  `PaymentsService.applyGatewayOutcome`'s `PENDING` early return "the entire mitigation". Measured by
+  code read, that guard is a SECOND line, behind the row lock and the `processed` early return in
+  `processOne`; which line actually carries the race is now measured too (see the design note). The
+  refund path this bullet named was deleted with the branch that called it (`DEF-14`, 2026-10-04), so
+  payments is the only side-effect path that still needs a guard — and the only one with one.
 - **Not fixed here**: the lease is a timeout, not a fencing token — a reclaimable row has no
   monotonic claim id for the writer to check. Fencing (or extending the lease while work is in
   flight) is the structural fix and is out of scope for this pass.
 - **Acceptance criteria**: either the mitigation is stated at the guard that provides it and
-  covered by a test per side-effect path, or fencing is implemented.
+  covered by a test per side-effect path, or fencing is implemented. **Satisfied 2026-10-04 by the
+  first branch** for the one side-effect path that remains (payments, after `DEF-14`); fencing is
+  filed as `DEF-18`.
 - **Risks**: Medium — silent duplicate application if a future consumer path is not idempotent.
   The lease duration is the tunable that trades this against recovery latency.
-- **Design note (2026-10-04) — AWAITING OWNER RULING, no code changed**:
+- **Design note (2026-10-04) — RULED the same day: option (3) is implemented, option (1) is filed as
+  `DEF-18`.** The paragraphs below are kept as the record of what was weighed; the two line numbers
+  inside them that had drifted are corrected in place, dated.
   - **Current behaviour, with file:line**: `processBatch` claims with
     `SET status='processing', locked_at=now(), attempts=attempts+1 … WHERE (locked_at IS NULL OR
     locked_at < now() - ($3 ms))` (`webhook-event.processor.ts:85-103`), `$3` being
     `WEBHOOK_LOCK_DURATION_MS = 60_000` (`worker-config.ts:56`). Each claimed row then runs
     `processOne` (`:104-107`, `:127-172`) in ONE transaction holding a `pessimistic_write` lock on
     the event row (`:129`). Two guards sit below that lock: `processOne` returns early when the row
-    is already `processed` (`:130`), and each side-effect path carries its own state guard —
-    `payments.service.ts:448` (`status !== PENDING` → return) and `refunds.service.ts:234`
-    (`!refund || !succeeded || status !== PENDING` → return).
+    is already `processed` (`:131` — the note as first written said `:130`; re-derived by grep
+    2026-10-04), and each side-effect path carries its own state guard — `payments.service.ts:436`
+    (`status !== PENDING` → return; the note as first written said `:448`) and, until `DEF-14`
+    deleted it on 2026-10-04, `refunds.service.ts:230` (`!refund || !succeeded || status !==
+    PENDING` → return; the note as first written said `:234`).
   - **Failure scenario, concretely**: (1) the claim moves event E to `processing` with a fresh
     `locked_at`; (2) the batch's work for E stalls past 60 s — a slow gateway call, a stalled
     database, a suspended host; (3) the next poll's claim matches E again, its lease having lapsed
@@ -2319,13 +2332,35 @@ This document contains the implementation tasks broken down by phase, with depen
     (`WORKERS_ENABLED`, `worker-config.ts`), so in every shipped configuration nothing claims a row
     at all. Reachability begins when the worker is enabled, which the standing ruling already gates
     on one real test-mode payment through the gateway adapter.
-  - **How far the two claimants actually collide** — the guards are MEASURED by code read, the
-    residual timing is **INFERRED**: the second claimant blocks on the row's `pessimistic_write`
-    lock until the first commits, then reads `status='processed'` at `:130` and returns, so the
-    `applyGatewayOutcome` state guards are a SECOND line behind that lock rather than — as this
-    entry's original wording has it — "the entire mitigation". Which line the real race exercises
-    has not been measured; the lock serialisation further assumes both claimants run against the
-    same database under READ COMMITTED.
+  - **How far the two claimants actually collide** — **MEASURED 2026-10-04** by the tests added for
+    this entry, not inferred: with a claimant holding the row inside its transaction and the lease
+    already past, a second claimant's real `processBatch` does not claim the row at all — the claim's
+    `FOR UPDATE SKIP LOCKED` passes over it — and a second `processOne` blocks on the row lock until
+    the first commits, then returns at the `processed` early return (`:131`; the note as first
+    written said `:130`). The `applyGatewayOutcome` state guard is therefore a SECOND line behind
+    both, rather than — as this entry's original wording has it — "the entire mitigation". The lock
+    serialisation assumes both claimants run against the same database under READ COMMITTED (the only
+    configuration tested).
+  - **Mutation matrix (2026-10-04)** — each mutant typechecked (root `npm run typecheck`, EXIT=0) and
+    was run against the real-DB spec with `RUN_DB_INTEGRATION=1` on a migrated throwaway database,
+    plus its hermetic sibling. Every kill was by ASSERTION, none by timeout:
+
+    | mutant | real-DB spec (`RUN_DB_INTEGRATION=1`) | hermetic sibling |
+    |---|---|---|
+    | `payments.service.ts:436` — remove the `PENDING` early return | **2 failed, 18 passed**: "does not double-apply a payment that is already succeeded" + "leaves a payment untouched when the same gateway outcome is applied a second time (DEF-12)" | `payments.service.spec.ts`: 13 passed — a mocked repository cannot see the guard |
+    | `webhook-event.processor.ts:131` — remove the `processed` early return | **1 failed, 19 passed**: "applies a payment exactly once when two claimants run processOne concurrently (DEF-12)" | `webhook-event.processor.spec.ts`: 1 failed, 5 passed — the duplicate-delivery test |
+    | `webhook-event.processor.ts:130` — remove the row lock | **2 failed, 18 passed**: both DEF-12 claimant tests | 6 passed — invisible to mocks |
+
+    Which guard is individually load-bearing: the row lock and the `processed` early return each
+    independently stop the concurrent duplicate (removing either fails the two-claimant test), and
+    the `PENDING` guard independently stops a second application on a settled payment. No mutant
+    survived.
+
+    **Note (2026-10-04):** the row-lock mutant's first run failed one DEF-12 test by per-test TIMEOUT
+    rather than by assertion — the second claimant blocked on the payment stub the test uses to hold
+    the first claimant open, a deadlock the assertion could not report. The test was reworked to
+    release and join both claimants before asserting; the numbers above are from the re-run, in which
+    both failures are assertions.
   - **Options**:
     1. **Fencing token** — a monotonic claim id on the row that the writer re-checks before it
        commits. **This needs a migration**: `FINANCE_WEBHOOK_EVENTS` has no such column
@@ -2338,10 +2373,11 @@ This document contains the implementation tasks broken down by phase, with depen
     3. **Assert the existing guards** — the entry's own first acceptance branch: state the
        mitigation at each guard that provides it and add one test per side-effect path. Cost: low,
        no migration, behaviour-preserving; does not remove the race.
-  - **RECOMMENDATION**: **(3) now, (1) when the webhook worker is next scheduled to be enabled.**
-    (3) is the entry's own acceptance criterion and pins the property that actually protects the
-    money path today. (1) is the structural fix, and it should ride with the change that turns the
-    worker on, where its migration cost is paid once.
+  - **RECOMMENDATION (adopted by the 2026-10-04 ruling)**: **(3) now, (1) when the webhook worker is
+    next scheduled to be enabled.** (3) is the entry's own acceptance criterion and pins the property
+    that actually protects the money path today. (1) is the structural fix, and it should ride with
+    the change that turns the worker on, where its migration cost is paid once. **(3) is implemented
+    (tests below); (1) is filed as `DEF-18`.**
 
 ### DEF-13: Add `organizationId` to PaymentIntent and refund metadata (Low)
 - **Objective**: Add `organizationId` to PaymentIntent and refund metadata at creation, and
@@ -2928,3 +2964,40 @@ follow-up work; nothing was changed.
   the `DEF-16` ruling `F1` deliberately left alone, so it waits for a ruling.
 - **Acceptance criteria**: either the organization id is cleared with the tokens on every sign-out
   path, or the decision to keep it is recorded here with its rationale.
+
+## DEF-18 — Webhook lease fencing token (2026-10-04)
+
+**Status: OPEN — filed, not scheduled.** Filed out of the `DEF-12` work under the owner ruling of
+2026-10-04: "DEF-12: retain the existing guards per path and file fencing-token work for when the
+webhook worker is enabled." Nothing was changed.
+
+- **Objective**: replace the webhook event lease's timeout-only reclaim with a monotonic fencing
+  token, so a claimant whose lease has lapsed cannot write after a later claimant has taken the row.
+- **Why it exists**: `DEF-12` — the lease is a timeout, not a fence. The guards asserted under
+  `DEF-12` make a duplicate application a no-op **today**, but they are per-path state checks, not a
+  structural exclusion; a new side-effect path that is not idempotent reintroduces the silent
+  duplicate `DEF-12` describes.
+- **Needs a migration.** `FINANCE_WEBHOOK_EVENTS` has no monotonic claim column
+  (`src/finance/entities/webhook-event.entity.ts`), and `synchronize` is hard-disabled in both
+  `src/app.module.ts` and `src/data-source.ts`, so the column can only arrive through a migration.
+  A migration file must also satisfy the TypeORM loader contract pinned by
+  `src/migrations/__specs__/migration-loader.contract.spec.ts` (one exported class, no `export
+  function` in the glob, 13-digit timestamp suffix).
+- **Scope if taken**: a monotonic claim column incremented in the claim SQL
+  (`WebhookEventProcessor.processBatch`), carried into `processOne` and re-checked before the
+  transaction commits — plus the entity, the migration, and the read-back tests.
+- **Trigger that unparks it**: the next time the `WEBHOOK` worker is scheduled to be enabled
+  (`WORKERS_WEBHOOK_ENABLED` / `WORKERS_ENABLED`), where the migration cost is paid once. The worker
+  is OFF in every shipped configuration (`src/shared/workers/worker-config.ts`), so nothing is
+  exposed while this waits.
+- **Alternative considered and not chosen**: a lease heartbeat — extending `locked_at` while work is
+  in flight. No migration, but a hard-stalled host still loses its lease, so it narrows the window
+  rather than closing it (`DEF-12`'s option 2).
+- **Files/modules affected (if taken)**: `src/finance/services/webhook-event.processor.ts`,
+  `src/finance/entities/webhook-event.entity.ts`, `src/migrations/`, and the real-DB spec
+  `src/finance/services/webhook-event-lease.integration.spec.ts`.
+- **Acceptance criteria**: a claimant that has lost its lease to a later claimant cannot commit a
+  side-effect write; a real-Postgres test shows the second claimant's token wins and the first's
+  write is refused, with no second outbox event.
+- **Risks**: Low while the worker is off. The migration would be additive (a nullable or defaulted
+  column), so it does not rewrite existing rows.
