@@ -138,7 +138,7 @@ describe('validateEnv — production configuration guard', () => {
     });
   });
 
-  describe('non-production environments are not blocked', () => {
+  describe('development JWT fallback scope (owner ruling 2026-10-05)', () => {
     it('passes for development with no secrets', () => {
       const result = validateEnv({
         NODE_ENV: 'development',
@@ -151,6 +151,73 @@ describe('validateEnv — production configuration guard', () => {
         NODE_ENV: 'test',
       });
       expect(result.NODE_ENV).toBe('test');
+    });
+
+    it('accepts the development literal in development and test', () => {
+      expect(
+        validateEnv({ NODE_ENV: 'development', JWT_SECRET: 'dev-secret-change-me' })
+          .NODE_ENV,
+      ).toBe('development');
+      expect(
+        validateEnv({ NODE_ENV: 'test', JWT_SECRET: 'dev-secret-change-me' })
+          .NODE_ENV,
+      ).toBe('test');
+    });
+
+    it('refuses the development literal under staging', () => {
+      expect(() =>
+        validateEnv({ NODE_ENV: 'staging', JWT_SECRET: 'dev-secret-change-me' }),
+      ).toThrow(/JWT_SECRET must be set/);
+    });
+
+    it('refuses a missing JWT_SECRET under staging', () => {
+      expect(() => validateEnv({ NODE_ENV: 'staging' })).toThrow(
+        /JWT_SECRET must be set/,
+      );
+    });
+
+    it('refuses the development literal when NODE_ENV is unset', () => {
+      expect(() =>
+        validateEnv({ JWT_SECRET: 'dev-secret-change-me' }),
+      ).toThrow(/JWT_SECRET must be set/);
+    });
+
+    it('refuses the development literal when NODE_ENV is an empty string', () => {
+      expect(() =>
+        validateEnv({ NODE_ENV: '', JWT_SECRET: 'dev-secret-change-me' }),
+      ).toThrow(/JWT_SECRET must be set/);
+    });
+
+    it('refuses the development literal for a case variant ("Production")', () => {
+      // The allowance is an exact match: 'Production' must not earn it (and
+      // must not be treated as production either — it is simply not allowed).
+      expect(() =>
+        validateEnv({ NODE_ENV: 'Production', JWT_SECRET: 'dev-secret-change-me' }),
+      ).toThrow(/JWT_SECRET must be set/);
+    });
+
+    it('refuses the development literal for case variants of the allowed values', () => {
+      // 'Development'/'TEST' must NOT earn the allowance: a case-insensitive
+      // implementation would wrongly accept these.
+      expect(() =>
+        validateEnv({ NODE_ENV: 'Development', JWT_SECRET: 'dev-secret-change-me' }),
+      ).toThrow(/JWT_SECRET must be set/);
+      expect(() =>
+        validateEnv({ NODE_ENV: 'TEST', JWT_SECRET: 'dev-secret-change-me' }),
+      ).toThrow(/JWT_SECRET must be set/);
+    });
+
+    it('accepts a real secret under staging', () => {
+      const result = validateEnv({
+        NODE_ENV: 'staging',
+        JWT_SECRET: 'real-secret-value',
+      });
+      expect(result.NODE_ENV).toBe('staging');
+    });
+
+    it('accepts a real secret when NODE_ENV is unset', () => {
+      const result = validateEnv({ JWT_SECRET: 'real-secret-value' });
+      expect(result.JWT_SECRET).toBe('real-secret-value');
     });
   });
 });
