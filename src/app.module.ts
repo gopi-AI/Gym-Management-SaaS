@@ -19,6 +19,7 @@ import {
   resolveAiLimit,
 } from './ai/config/ai-usage-limits';
 import { AuthModule } from './shared/auth/auth.module';
+import { resolveJwtSecret } from './shared/auth/jwt-secret';
 import { ThrottlingModule } from './shared/throttling/throttling.module';
 import { validateThrottleEnv } from './shared/throttling/throttle.config';
 import {
@@ -44,7 +45,10 @@ import { EventHandlerModule } from './shared/event-handler/event-handler.module'
  * Production environment validation.
  *
  * Fails fast at startup when critical secrets are missing or set to known
- * development defaults.  Development/test environments are not blocked.
+ * development defaults. The development JWT-secret fallback is usable only when
+ * `NODE_ENV` is `development` or `test` (owner ruling 2026-10-05; the rule lives
+ * in `src/shared/auth/jwt-secret.ts` and is shared with the `JwtModule` factory
+ * and `AuthService.getAccessSecret()`).
  *
  * Exported purely for unit testing (see `app.module.spec.ts`); the only
  * consumer at runtime is `ConfigModule.forRoot({ validate })`.
@@ -59,14 +63,13 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   // rather than silently leaving every request-path cache call unbounded.
   readCacheCallTimeout(config[CACHE_CALL_TIMEOUT_MS_ENV]);
 
+  // JWT_SECRET: the development fallback is usable ONLY in development/test, and
+  // this runs in every environment — not just production. Throws (naming the
+  // rule and the accepted NODE_ENV values, never the secret) otherwise.
+  resolveJwtSecret(config.JWT_SECRET, config.NODE_ENV);
+
   const isProduction = config.NODE_ENV === 'production';
   if (isProduction) {
-    if (!config.JWT_SECRET || config.JWT_SECRET === 'dev-secret-change-me') {
-      throw new Error(
-        'JWT_SECRET must be set to a secure value in production. ' +
-          'Generate one with: openssl rand -base64 32',
-      );
-    }
     if (!config.JWT_REFRESH_SECRET) {
       throw new Error(
         'JWT_REFRESH_SECRET must be set in production. ' +

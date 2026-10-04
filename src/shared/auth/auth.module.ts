@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { PermissionsGuard } from './permissions.guard';
+import { buildJwtSecretOptions } from './jwt-secret';
 import { IdentityModule } from '../../identity/identity.module';
 
 @Global()
@@ -13,20 +14,9 @@ import { IdentityModule } from '../../identity/identity.module';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => {
-        const secret = config.get<string>('JWT_SECRET');
-        if (!secret || secret === 'dev-secret-change-me') {
-          if (config.get<string>('NODE_ENV') === 'production') {
-            throw new Error('JWT_SECRET must be set in production');
-          }
-        }
-        return {
-          secret: secret || 'dev-secret-change-me',
-          signOptions: {
-            expiresIn: config.get<string>('JWT_EXPIRATION', '3600s'),
-          },
-        };
-      },
+      // The secret rule (development fallback only in development/test) is the
+      // shared `jwt-secret.ts` one; this factory is a thin adapter over it.
+      useFactory: (config: ConfigService) => buildJwtSecretOptions(config),
     }),
   ],
   providers: [

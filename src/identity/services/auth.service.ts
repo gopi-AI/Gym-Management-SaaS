@@ -16,6 +16,7 @@ import * as bcrypt from 'bcrypt';
 import { IdentityService } from './identity.service';
 import { RegisterDto } from '../dto/register.dto';
 import { MfaService } from './mfa.service';
+import { resolveJwtSecret } from '../../shared/auth/jwt-secret';
 
 /**
  * Token purpose claims.
@@ -301,7 +302,15 @@ export class AuthService {
   // ---------------------------------------------------------------------------
 
   private getAccessSecret(): string {
-    return (this.configService.get<string>('JWT_SECRET') || 'dev-secret-change-me') as string;
+    // Same shared rule as `validateEnv` and the `JwtModule` factory: the
+    // development fallback is usable only in development/test. The boot
+    // validation already refuses the other environments; repeating the rule here
+    // means a bypassed (or runtime-changed) config can never silently sign with
+    // the default — the same fail-closed shape `getRefreshSecret()` uses.
+    return resolveJwtSecret(
+      this.configService.get<string>('JWT_SECRET'),
+      this.configService.get<string>('NODE_ENV'),
+    );
   }
 
   private getRefreshSecret(): string {

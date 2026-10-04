@@ -17,6 +17,10 @@ import {
 describe('AuthService', () => {
   let authService: AuthService;
   let mockConfigService: jest.Mocked<Partial<ConfigService>>;
+  // Mutable so a single test can describe a different environment; the shared
+  // mock below reads these, and `beforeEach` resets them.
+  let mockNodeEnv: string | undefined;
+  let mockJwtSecret: string | undefined;
   let mockJwtService: jest.Mocked<Partial<JwtService>>;
   let mockUserRepository: jest.Mocked<Partial<Repository<IdentityUser>>>;
   // `store.client` is part of the shape a real cache-manager `Cache` always has,
@@ -30,10 +34,17 @@ describe('AuthService', () => {
   let mockMfaService: jest.Mocked<Partial<MfaService>>;
 
   beforeEach(async () => {
+    // `test` is the NODE_ENV jest itself pins (jest-cli/bin/jest.js), so the
+    // suite runs the same allowed environment a CI/spec boot does.
+    mockNodeEnv = 'test';
+    mockJwtSecret = 'unit-test-secret';
+
     mockConfigService = {
       get: jest.fn((key: string, defaultValue?: any) => {
         if (key === 'JWT_EXPIRATION') return '3600';
         if (key === 'JWT_REFRESH_SECRET') return 'refresh-secret';
+        if (key === 'JWT_SECRET') return mockJwtSecret;
+        if (key === 'NODE_ENV') return mockNodeEnv;
         return defaultValue;
       }),
     } as jest.Mocked<Partial<ConfigService>>;
@@ -92,6 +103,40 @@ describe('AuthService', () => {
 
   it('should be defined', () => {
     expect(authService).toBeDefined();
+  });
+
+  describe('development JWT fallback scope (owner ruling 2026-10-05)', () => {
+    const user = { id: 'user-1', email: 'user@example.com' } as IdentityUser;
+
+    it('signs access and challenge tokens with the fallback in test, where it is allowed', async () => {
+      mockJwtSecret = undefined; // no real secret; `test` still allows the fallback
+
+      const result = await authService.login(user);
+
+      expect(result.accessToken).toBe('signed-token');
+      expect(mockJwtService.sign).toHaveBeenCalledWith(
+        expect.objectContaining({ tokenType: 'access' }),
+        expect.objectContaining({ secret: 'dev-secret-change-me' }),
+      );
+    });
+
+    it('refuses to mint a token when NODE_ENV forbids the development fallback', async () => {
+      mockNodeEnv = 'staging';
+      mockJwtSecret = undefined;
+
+      await expect(authService.login(user)).rejects.toThrow(
+        /JWT_SECRET must be set/,
+      );
+    });
+
+    it('refuses to mint a token when NODE_ENV is unset and the secret is missing', async () => {
+      mockNodeEnv = undefined;
+      mockJwtSecret = undefined;
+
+      await expect(authService.login(user)).rejects.toThrow(
+        /JWT_SECRET must be set/,
+      );
+    });
   });
 
   describe('logout', () => {

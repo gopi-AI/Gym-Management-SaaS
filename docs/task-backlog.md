@@ -3206,3 +3206,50 @@ webhook worker is enabled." Nothing was changed.
   write is refused, with no second outbox event.
 - **Risks**: Low while the worker is off. The migration would be additive (a nullable or defaulted
   column), so it does not rewrite existing rows.
+
+## DEF-19 — The development JWT default was usable in any non-`production` environment (2026-10-05)
+
+**Status: FIXED** — owner ruling (2026-10-05), recorded verbatim: "JWT: YES: reject the default
+unless NODE_ENV is development or test."
+
+- **Objective**: the literal `dev-secret-change-me` could be used — and a missing `JWT_SECRET`
+  tolerated — whenever `NODE_ENV` was anything other than the exact string `production`: **unset**,
+  `staging`, and case variants such as `Production` all received the allowance. The ruling narrows
+  it to exactly `development` and `test`.
+- **What changed**: the rule now lives in one place — `src/shared/auth/jwt-secret.ts`
+  (`mayUseDevJwtSecret` / `resolveJwtSecret`) — and all three former copies call it: `validateEnv`
+  (`src/app.module.ts`), the `JwtModule` factory (`src/shared/auth/auth.module.ts`, via
+  `buildJwtSecretOptions`), and `AuthService.getAccessSecret()`
+  (`src/identity/services/auth.service.ts`). A real (non-empty, non-default) secret is accepted in
+  every environment and returned unchanged; a missing/empty secret, or the literal, is accepted only
+  in development/test. The boot error names the rule and the accepted `NODE_ENV` values and never
+  prints the secret. No real-secret handling changed.
+- **Consumer evidence** (enumerated by command, 2026-10-05) — every place that boots the app or
+  signs tokens, its `NODE_ENV`, its `JWT_SECRET`, and the outcome under the new rule:
+
+  | Consumer | NODE_ENV | JWT_SECRET | Under the rule |
+  |---|---|---|---|
+  | Docker image (`Dockerfile:49` `ENV NODE_ENV=production`) | production | must be real | refused without a real secret — unchanged |
+  | `docker compose` `api` (`env_file: .env`; compose itself sets no `NODE_ENV`) | from `.env` (else the image's `production`) | from `.env` | unchanged — `.env.example` ships `NODE_ENV=development` and a non-default secret |
+  | CI `ci` job (typecheck/lint/jest) | jest pins `test` (`node_modules/jest-cli/bin/jest.js:12-13`) | unset | allowed |
+  | CI `integration` job | `.env.example` copy → `development`, plus `JWT_SECRET=$(openssl rand -hex 32)` (`ci.yml:198`) | real | allowed |
+  | `scripts/api-gate.js` | `'test'` (`:2417`) | `random(24)` (`:2425`) | allowed |
+  | `src/app.boot.spec.ts` | sets `'test'` (`:75`) | unset | allowed |
+  | bare `node dist/main` outside the image | unset | unset | **refused** (new — the deployment-precondition case) |
+  | `bootstrap:dev` (`src/scripts/bootstrap-dev.ts`) | reads no `NODE_ENV` | — | n/a — it never boots the app |
+
+- **`bootstrap:dev` production guard: NONE.** `grep -n "NODE_ENV\|production"
+  src/scripts/bootstrap-dev.ts` → no match. It is not claimed as a production onboarding path: it
+  *requires* the user to exist rather than creating one — "Development user (must already exist; do
+  NOT create a new privileged account with a hardcoded password)" — and throws "user
+  test2@example.com not found. Register it first via POST /v1/auth/register."
+- **DEPLOYMENT PRECONDITION**: a real `JWT_SECRET` is required wherever `NODE_ENV` is not exactly
+  `development` or `test` — including an unset `NODE_ENV`. Onboarding beyond this precondition is
+  **deferred**; nothing about onboarding is ruled here.
+- **Tests**: a `NODE_ENV` × secret matrix and the error-message contract in
+  `src/shared/auth/jwt-secret.spec.ts`; boot-level cases through the real `validateEnv` in
+  `src/app.module.spec.ts`; the `AuthService` signing path in
+  `src/identity/services/auth.service.spec.ts`.
+- **Risks**: Low. The deliberately changed surface is the refusal set only; the Docker image, the
+  `.env.example`-derived dev stack, jest/CI, the API gate and the boot spec are all in
+  development/test or carry a real secret.
