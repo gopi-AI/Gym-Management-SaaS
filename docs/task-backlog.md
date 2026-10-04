@@ -2353,13 +2353,29 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Risks**: Low.
 
 ### DEF-14: The webhook refund path (`refundId` in event metadata) is unreachable today (Low)
+- **Status**: **Fixed — the branch and its fixtures are deleted** (owner ruling 2026-10-04, recorded
+  verbatim below; it supersedes the 2026-10-02 ruling this entry carried until then). The declined
+  alternatives were the design note's own recommended option 3 — re-key the branch on
+  `refund.created` / `refund.updated` and leave it unreachable — and option 2, wiring refunds through
+  the gateway adapter, which cannot be completed without a real test-mode Stripe call. Pinned by
+  `webhook-event.processor.spec.ts` and `webhook-event-lease.integration.spec.ts`: both assert a
+  `charge.refunded` event is recorded `processed` with no state change, and re-adding the allowlist
+  entry fails both (mutation run, 2026-10-04).
+- **Owner ruling (2026-10-04, verbatim)**: "DEF-14: delete the unreachable refund branch and its
+  fixtures."
 - **Objective**: Record that the processor's refund branch cannot be reached by any event Stripe
   sends today, and what must change before gateway-created refunds are scheduled.
 - **Found during**: the `DEF-02`/`DEF-04`/`DEF-05`/`DEF-06` hardening pass, 2026-10-02.
 - **Files/modules affected**: `src/finance/services/stripe-payment-gateway.adapter.ts` (`refund()`),
   `src/finance/services/refunds.service.ts`, `src/finance/finance.module.ts`, the processor's
   refund fixtures; Stripe SDK 18.5.0 type files `types/EventTypes.d.ts` (`ChargeRefundedEvent`),
-  `Charges.d.ts`, `Refunds.d.ts`.
+  `Charges.d.ts`, `Refunds.d.ts`. **Deletion sites, as implemented 2026-10-04** (line numbers as of
+  `76e25ece`, all MEASURED by code read): `webhook-event.processor.ts:23-30` (the `charge.refunded`
+  allowlist entry and the `kind` discriminator), `:134` (the `refundId` read), `:156-162` (the refund
+  arm), `:7`, `:11`, `:50` (the `Refund` import, the `RefundsService` import, the constructor
+  dependency); `refunds.service.ts:216-258` (`applyGatewayOutcome()`, no other production caller);
+  `webhook-event.processor.spec.ts:83-95` and `webhook-event-lease.integration.spec.ts:428-451`
+  (the two fixtures).
 - **Root cause**: two independent gaps. (a) `StripePaymentGatewayAdapter.refund()` has no caller:
   `RefundsService` records staff-initiated refunds directly as `succeeded` and does not use
   `PAYMENT_GATEWAY` (`refunds.service.ts`, `finance.module.ts`), so no refund is created through
@@ -2372,6 +2388,8 @@ This document contains the implementation tasks broken down by phase, with depen
   nothing exercises it; the fixtures are hand-written, and no real test-mode refund event has been
   observed to contradict them.
 - **Owner ruling (2026-10-02)**: the refund webhook path is documented, not changed.
+  **Superseded 2026-10-04** — the ruling above deletes the branch instead, so this line is kept only
+  as the record of why the deletion had not been done before that date.
 - **When scheduled**: key on `refund.created` / `refund.updated` (object = `Refund`,
   `metadata.refundId`) and update the allowlist and fixtures. Needs an owner ruling when that work
   is scheduled.
@@ -2379,7 +2397,18 @@ This document contains the implementation tasks broken down by phase, with depen
   refund's metadata, and the refund fixtures match an event Stripe sends.
 - **Risks**: Low — nothing shipped is affected today; the cost lands when gateway refunds are built
   on the current fixtures.
-- **Design note (2026-10-04) — AWAITING OWNER RULING, no code changed**:
+- **Design note (2026-10-04) — RULED; option 1 has since landed.** The paragraphs below were written
+  while this entry awaited a ruling and are kept as the record of what was weighed, not as open
+  questions. **What the ruling changed, measured by code read at `76e25ece`:** `'charge.refunded'` is
+  gone from `HANDLED_EVENT_TYPES`; the refund arm of `processOne` is gone; the `kind` discriminator
+  went with it, since after the deletion it had exactly one value; and
+  `RefundsService.applyGatewayOutcome()` — the arm's only production caller, with no spec of its own —
+  is gone too, together with the processor's `Refund` import and its `RefundsService` dependency. A
+  `charge.refunded` event now takes the non-allowlisted path: logged as not handled, recorded
+  `processed`, no attribution, no outbox write. **Kept:** `StripePaymentGatewayAdapter.refund()` and
+  the `refund` member of `PaymentGatewayPort` — they are the gateway seam, not the unreachable branch.
+  `refund()` still has **no caller** anywhere in production, and this entry is the record of that.
+  The deleted transition's shape is recoverable from this entry's closing commit.
   - **Current behaviour, with file:line**: `'charge.refunded'` is an allowlisted handled type
     (`webhook-event.processor.ts:29`); `processOne` reads
     `const refundId = referenceId(object.metadata?.refundId)` from the event's `data.object`
@@ -2414,10 +2443,11 @@ This document contains the implementation tasks broken down by phase, with depen
        `refund.created` / `refund.updated` (object = `Refund`, `metadata.refundId`) and rewrite the
        fixtures to that shape. Cost: low-medium. Consequence: correct but still dead, and the
        allowlist would accept an event only a rewritten fixture produces.
-  - **RECOMMENDATION**: **(1), subject to a fresh owner ruling.** The entry's own "when scheduled"
-    line already records the correct keying, so the knowledge survives deleting the code. If the
-    2026-10-02 ruling is meant to stand unchanged, **(3)** is the smallest change that stops two
-    fixtures asserting a shape Stripe never sends.
+  - **RECOMMENDATION (as written then)**: **(1), subject to a fresh owner ruling.** The entry's own
+    "when scheduled" line already records the correct keying, so the knowledge survives deleting the
+    code. If the 2026-10-02 ruling is meant to stand unchanged, **(3)** is the smallest change that
+    stops two fixtures asserting a shape Stripe never sends. **The owner ruled (1) on 2026-10-04** —
+    see the ruling at the top of this entry — and it is implemented.
 
 ### DEF-15: The token blacklist's fail-closed check can hang instead of refusing (Medium)
 - **Status**: **Fixed** — owner ruling (2026-10-04): "fix DEF-15". One shared bounded-call helper

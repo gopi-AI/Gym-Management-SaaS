@@ -15,8 +15,8 @@
  * — not for the `DataSource`, not for an `EntityManager`, not for a repository.
  * The lease, the claim and the counter are
  * precisely the things a mock would replace with the answer the test is trying to
- * prove. `payments` and `refunds` are plain objects with switchable functions,
- * not mocks: they sit downstream of the behaviour under test.
+ * prove. `payments` is a plain object with switchable functions, not a mock: it
+ * sits downstream of the behaviour under test.
  *
  * RUNNING IT
  *   RUN_DB_INTEGRATION=1 \
@@ -52,11 +52,9 @@ import { InvoiceNumberCounter } from '../entities/invoice-number-counter.entity'
 import { TaxRate } from '../entities/tax-rate.entity';
 import { OutboxEntity } from '../../shared/outbox/outbox.entity';
 import { OutboxService } from '../../shared/outbox/outbox.service';
-import { Refund } from '../entities/refund.entity';
 import { Organization } from '../../tenancy/entities/organization.entity';
 import { Branch } from '../../tenancy/entities/branch.entity';
 import { Member } from '../../members/entities/member.entity';
-import type { RefundsService } from './refunds.service';
 import type { PaymentMethodsService } from './payment-methods.service';
 import type { TenantContextService } from '../../shared/tenant/tenant-context.service';
 
@@ -85,7 +83,6 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
   let applyCalls: string[];
   let failNext: boolean;
   let payments: Pick<PaymentsService, 'applyGatewayOutcome'>;
-  let refunds: Pick<RefundsService, 'applyGatewayOutcome'>;
   const seededIds: string[] = [];
 
   beforeAll(async () => {
@@ -121,16 +118,12 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
         applyCalls.push(paymentId);
       },
     } as unknown as Pick<PaymentsService, 'applyGatewayOutcome'>;
-    refunds = {
-      applyGatewayOutcome: async () => undefined,
-    } as unknown as Pick<RefundsService, 'applyGatewayOutcome'>;
   });
 
   function makeProcessor(): WebhookEventProcessor {
     return new WebhookEventProcessor(
       dataSource,
       payments as unknown as PaymentsService,
-      refunds as unknown as RefundsService,
     );
   }
 
@@ -145,7 +138,6 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       attempts?: number;
       lockedAgoMs?: number;
       paymentId?: string | null;
-      refundId?: string | null;
       eventType?: string;
     } = {},
   ): Promise<Seeded> {
@@ -156,10 +148,8 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
     // adapter writes `payment.id` here (`stripe-payment-gateway.adapter.ts`), so a
     // UUID is also what Stripe actually delivers.
     const paymentId = options.paymentId === undefined ? randomUUID() : options.paymentId;
-    const refundId = options.refundId ?? null;
     const metadata: Record<string, string> = {};
     if (paymentId !== null) metadata.paymentId = paymentId;
-    if (refundId !== null) metadata.refundId = refundId;
     const repository = dataSource.getRepository(WebhookEvent);
 
     await repository.save({
@@ -425,29 +415,35 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
     });
   });
 
-  it('attributes a refund event to the organization of the refund it names (DEF-04)', async () => {
-    const { orgId, paymentId } = await seedPaymentGraph();
-    const refundId = randomUUID();
-    await dataSource.getRepository(Refund).save({
-      id: refundId, organization_id: orgId, payment_id: paymentId,
-      idempotency_key: `idem-${refundId}`, reason: 'customer request',
-      amount: '10.00', refund_date: new Date(), status: 'pending',
-    });
-    // A refund is applied only by a refund TYPE carrying a refund reference
-    // (DEF-06): both have to line up, so this fixture varies both.
-    const { id: eventId } = await seed({
-      paymentId: null,
-      refundId,
-      eventType: 'charge.refunded',
-    });
+  it('records a charge.refunded event with no state change (DEF-14)', async () => {
+    // The shape Stripe actually sends: a Charge whose metadata is the
+    // `{ paymentId }` the adapter set on the PaymentIntent-created charge — never a
+    // `refundId`. With the refund branch and its allowlist entry deleted (owner
+    // ruling, 2026-10-04) this event changes nothing; re-adding the entry would
+    // route it down the PAYMENT path and settle the payment below.
+    const { paymentId, invoiceId } = await seedPaymentGraph();
+    const { id: eventId } = await seed({ paymentId, eventType: 'charge.refunded' });
 
+    // Scoped to this event's own aggregate — its invoice is the `correlationId`
+    // its payment outcome would carry. A global outbox count races the other
+    // integration suites.
+    const outboxBefore = await dataSource.getRepository(OutboxEntity).count({
+      where: { correlationId: invoiceId },
+    });
     await makeProcessor().processBatch(50);
 
     const row = await read(eventId);
-    expect({ status: row.status, org: row.organization_id }).toEqual({
+    expect({ status: row.status, org: row.organization_id, attempts: row.attempts }).toEqual({
       status: 'processed',
-      org: orgId,
+      org: null,
+      attempts: 1,
     });
+    expect(applyCalls).toHaveLength(0);
+    expect(
+      await dataSource.getRepository(OutboxEntity).count({ where: { correlationId: invoiceId } }),
+    ).toBe(outboxBefore);
+    const payment = await dataSource.getRepository(Payment).findOneOrFail({ where: { id: paymentId } });
+    expect(payment.status).toBe('pending');
   });
 
   it('leaves organization_id null for an event naming no payment or refund (DEF-04)', async () => {
@@ -609,11 +605,7 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
     // its outcomes carry. A global count races the other integration suites.
     const outboxBefore = await outboxRepository.count({ where: { correlationId: invoiceId } });
 
-    const replay = new WebhookEventProcessor(
-      dataSource,
-      realPayments,
-      refunds as unknown as RefundsService,
-    );
+    const replay = new WebhookEventProcessor(dataSource, realPayments);
     await replay.processBatch(50);
 
     const after = await paymentRepository.findOneOrFail({ where: { id: gatewayPaymentId } });
