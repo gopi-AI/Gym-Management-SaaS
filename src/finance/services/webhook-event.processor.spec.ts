@@ -106,6 +106,49 @@ describe('WebhookEventProcessor', () => {
     expect(event.organization_id).toBe(ORG);
   });
 
+  it('applies an event whose metadata organization matches the payment row (DEF-13)', async () => {
+    (event.payload.data as any).object.metadata = { paymentId, organizationId: ORG };
+    const processor = new WebhookEventProcessor(dataSource as any, payments as any);
+    const warn = jest.spyOn((processor as any).logger, 'warn').mockImplementation(() => undefined);
+
+    await (processor as any).processOne(eventId);
+
+    expect(payments.applyGatewayOutcome).toHaveBeenCalledTimes(1);
+    expect(event.status).toBe('processed');
+    expect(event.organization_id).toBe(ORG);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('applies an event whose metadata organization is absent, with a warning (DEF-13)', async () => {
+    // Payments created before DEF-13 carry no `organizationId`; absent metadata is
+    // tolerated permanently, so they keep applying against the payment row alone.
+    const processor = new WebhookEventProcessor(dataSource as any, payments as any);
+    const warn = jest.spyOn((processor as any).logger, 'warn').mockImplementation(() => undefined);
+
+    await (processor as any).processOne(eventId);
+
+    expect(payments.applyGatewayOutcome).toHaveBeenCalledTimes(1);
+    expect(event.status).toBe('processed');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('parks an event whose metadata organization differs from the payment row (DEF-13)', async () => {
+    (event.payload.data as any).object.metadata = { paymentId, organizationId: 'a-different-org' };
+    const processor = new WebhookEventProcessor(dataSource as any, payments as any);
+    const error = jest.spyOn((processor as any).logger, 'error').mockImplementation(() => undefined);
+
+    await (processor as any).processOne(eventId);
+
+    expect(payments.applyGatewayOutcome).not.toHaveBeenCalled();
+    expect(paymentOutbox).not.toHaveBeenCalled();
+    expect(event.status).toBe('dead_lettered');
+    expect(event.error_message).toContain('a-different-org');
+    expect(event.error_message).toContain(ORG);
+    expect(event.organization_id).toBeUndefined();
+    expect(event.locked_at).toBeNull();
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+
   it('applies nothing for an event type outside the allowlist (DEF-06)', async () => {
     event.event_type = 'customer.created';
     (event.payload as any).type = 'customer.created';

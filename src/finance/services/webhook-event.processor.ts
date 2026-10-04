@@ -146,12 +146,40 @@ export class WebhookEventProcessor {
           gatewayResponse: JSON.stringify(object),
           failureReason: object.status,
         };
-        await this.payments.applyGatewayOutcome(manager, paymentId, outcome);
         // DEF-04: attribute the row to a tenant. The receive path has no
         // authorized tenant context by design (it is `@Public()`, authenticated by
         // signature alone), so the org has to come from the row this event refers
         // to, read here where the transaction already holds it.
+        //
+        // DEF-13: that same read is the independent source the PaymentIntent's
+        // `metadata.organizationId` is cross-checked against before anything is
+        // applied. A mismatch means our own create path wrote one of the two wrong
+        // — the event names a payment that belongs to another organization — so the
+        // event is PARKED (the existing `dead_lettered` state and `error_message`
+        // column) instead of applied, and the payment is left untouched. Absent
+        // metadata is tolerated permanently: payments created before DEF-13 carry
+        // none. A non-string or empty value reads as absent, because Stripe's
+        // metadata is a string map and the adapter only ever writes a UUID.
         const payment = await manager.getRepository(Payment).findOne({ where: { id: paymentId } });
+        const metadataOrganizationId = object.metadata?.organizationId;
+        const hasMetadataOrganizationId =
+          typeof metadataOrganizationId === 'string' && metadataOrganizationId.length > 0;
+        if (hasMetadataOrganizationId && payment && metadataOrganizationId !== payment.organization_id) {
+          const reason =
+            `organization mismatch: event metadata ${metadataOrganizationId}, payment row ${payment.organization_id}`;
+          this.logger.error(`${who} PARKED: ${reason} (event ${event.id}, payment ${paymentId})`);
+          event.status = 'dead_lettered';
+          event.error_message = reason;
+          event.locked_at = null;
+          await manager.getRepository(WebhookEvent).save(event);
+          return;
+        }
+        if (!hasMetadataOrganizationId) {
+          this.logger.warn(
+            `${who} carries no metadata.organizationId — applied against the payment row alone (payment ${paymentId})`,
+          );
+        }
+        await this.payments.applyGatewayOutcome(manager, paymentId, outcome);
         if (payment) event.organization_id = payment.organization_id;
       } else {
         // A handled type that cannot be applied: no reference at all, or a

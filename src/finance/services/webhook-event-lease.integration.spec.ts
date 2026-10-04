@@ -138,6 +138,7 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
       attempts?: number;
       lockedAgoMs?: number;
       paymentId?: string | null;
+      metadataOrganizationId?: string | null;
       eventType?: string;
     } = {},
   ): Promise<Seeded> {
@@ -150,6 +151,9 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
     const paymentId = options.paymentId === undefined ? randomUUID() : options.paymentId;
     const metadata: Record<string, string> = {};
     if (paymentId !== null) metadata.paymentId = paymentId;
+    // DEF-13: the adapter writes `payment.organization_id` into the metadata, so a
+    // fixture that omits it is the pre-DEF-13 shape rather than an impossible one.
+    if (options.metadataOrganizationId) metadata.organizationId = options.metadataOrganizationId;
     const repository = dataSource.getRepository(WebhookEvent);
 
     await repository.save({
@@ -496,6 +500,42 @@ describeIntegration('WebhookEventProcessor lease and retry ceiling (real Postgre
     ).toBe(outboxBefore);
     const payment = await dataSource.getRepository(Payment).findOneOrFail({ where: { id: paymentId } });
     expect(payment.status).toBe('pending');
+  });
+
+  it('parks an event whose metadata organization disagrees with the payment row (DEF-13)', async () => {
+    const { orgId, paymentId, invoiceId } = await seedPaymentGraph();
+    const mismatchOrgId = randomUUID();
+    const { id: eventId } = await seed({ paymentId, metadataOrganizationId: mismatchOrgId });
+
+    // Scoped to this event's own aggregate — its invoice is the `correlationId`
+    // its payment outcome would carry.
+    const outboxBefore = await dataSource.getRepository(OutboxEntity).count({
+      where: { correlationId: invoiceId },
+    });
+    await makeProcessor().processBatch(50);
+
+    const row = await read(eventId);
+    expect({ status: row.status, attempts: row.attempts, org: row.organization_id }).toEqual({
+      status: 'dead_lettered',
+      attempts: 1,
+      org: null,
+    });
+    expect(row.error_message).toContain(mismatchOrgId);
+    expect(row.error_message).toContain(orgId);
+    expect(applyCalls.filter((appliedTo) => appliedTo === paymentId)).toHaveLength(0);
+    expect(
+      await dataSource.getRepository(OutboxEntity).count({ where: { correlationId: invoiceId } }),
+    ).toBe(outboxBefore);
+    const payment = await dataSource.getRepository(Payment).findOneOrFail({ where: { id: paymentId } });
+    expect(payment.status).toBe('pending');
+
+    // Parked is terminal: neither the next claim nor the parked sweep touches it.
+    await makeProcessor().processBatch(50);
+    const after = await read(eventId);
+    expect({ status: after.status, attempts: after.attempts }).toEqual({
+      status: 'dead_lettered',
+      attempts: 1,
+    });
   });
 
   it('leaves organization_id null for an event naming no payment or refund (DEF-04)', async () => {

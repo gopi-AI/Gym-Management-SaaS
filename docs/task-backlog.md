@@ -2380,10 +2380,53 @@ This document contains the implementation tasks broken down by phase, with depen
     (tests below); (1) is filed as `DEF-18`.**
 
 ### DEF-13: Add `organizationId` to PaymentIntent and refund metadata (Low)
+- **Status**: **Fixed** (owner ruling 2026-10-04, verbatim below). **Scope:** PaymentIntent metadata
+  only. Refund metadata is deliberately left out, and the refund path that would have read it was
+  deleted under `DEF-14` the same day.
+- **Owner ruling (2026-10-04, verbatim)**: "DEF-13: park and log organization mismatches, tolerate
+  missing metadata permanently, and leave refunds out."
+- **Owner statement recorded with the ruling (2026-10-04, verbatim)**: "No real payment data or
+  pending payment is in flight anywhere."
 - **Objective**: Add `organizationId` to PaymentIntent and refund metadata at creation, and
-  cross-check it in the processor.
-- **Blocked on**: confirming whether payment retries reuse `payment.idempotency_key`, since Stripe
-  rejects a key reused with different parameters.
+  cross-check it in the processor. (Refund metadata is out of scope per the ruling above.)
+- **Blocked on** (was): confirming whether payment retries reuse `payment.idempotency_key`, since
+  Stripe rejects a key reused with different parameters. **Answered 2026-10-04 by code read: yes** —
+  a retry reaches `StripePaymentGatewayAdapter.charge()`'s `{ idempotencyKey: payment.idempotency_key }`
+  with the key unchanged (`payment-retry.service.ts` → `payments.service.ts`
+  `applyRetryOutcome`/`applyGatewayOutcome`; that line was `:41` before this change added the metadata
+  field and its comment, `:49` after).
+  Moot in any case given the owner statement above, and the hazard it implies is recorded below.
+- **Shipped behaviour** — `stripe-payment-gateway.adapter.ts` writes
+  `metadata: { paymentId, organizationId }`; the processor cross-checks it in `processOne`'s payment
+  branch before applying anything: equal → applied; **absent → applied with a warn-level log**
+  (tolerated permanently: pre-DEF-13 payments carry none, and a non-string or empty value reads as
+  absent); **present and different → the event is parked `dead_lettered`** with an `error_message`
+  naming both organization ids, logged at error level with the event and payment ids, and the payment
+  is left untouched. The idempotency key is unchanged.
+- **Implementation choice, not a ruling (RECOMMENDATION)**: the park is written directly by
+  `processOne` — the same `dead_lettered` state and `error_message` column the claim's own `parked`
+  sweep writes — rather than by failing the event and letting it retry to the ceiling. A mismatch is
+  not transient: retrying would not change the outcome and would re-attempt nothing five times over.
+  The claim's sweep remains the only writer for abandoned rows.
+- **Ship hazard (recorded with the ruling).** Retries reuse `payment.idempotency_key` and Stripe
+  refuses a reused key whose body differs, so **any environment holding PENDING payments created
+  before this change must drain them before deploying it** — a retry of such a payment would send
+  `{ paymentId, organizationId }` where the original request sent `{ paymentId }`. The owner states
+  no such payment is in flight anywhere, so no drain is expected; this is a precondition to check,
+  not a defect.
+- **UNKNOWN**: whether Stripe accepts and echoes the added metadata. Nothing in the repository can
+  observe that; it is settled by the owner's own real test-mode payment.
+- **Mutation matrix (2026-10-04)** — each mutant typechecked (root `npm run typecheck`, EXIT=0) and
+  every kill was by ASSERTION:
+
+  | mutant | hermetic `webhook-event.processor.spec.ts` | real-DB spec (`RUN_DB_INTEGRATION=1`) |
+  |---|---|---|
+  | skip the cross-check (delete the mismatch block) | **1 failed, 8 passed** — the mismatch test | **1 failed, 20 passed** — the mismatch test |
+  | compare against the wrong field (`!== paymentId`) | **1 failed, 8 passed** — the EQUAL test | 21 passed — does not discriminate this mutant |
+  | park but still apply (drop the `return`) | **1 failed, 8 passed** — the mismatch test | **1 failed, 20 passed** — the mismatch test |
+
+  No mutant survived. The wrong-field mutant is killed only by the hermetic equal-metadata test: the
+  real-DB spec carries no fixture whose metadata matches the row, which is the gap that test covers.
 - **Rationale**: defence in depth against our own cross-tenant bugs; signed payloads cannot be
   forged without our Stripe secret key.
 - **Risks**: Low.
