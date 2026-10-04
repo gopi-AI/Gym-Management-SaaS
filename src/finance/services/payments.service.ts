@@ -20,6 +20,7 @@ import { PaymentAttemptOutcome } from './payment-gateway.port';
 import { Inject } from '@nestjs/common';
 import { PAYMENT_GATEWAY, PaymentGatewayPort } from './payment-gateway.port';
 import { PaymentMethodsService } from './payment-methods.service';
+import { isUniqueViolation } from '../../shared/utils/unique-violation';
 import {
   FINANCE_EVENT_TYPES,
   FINANCE_EVENT_VERSION,
@@ -56,9 +57,6 @@ interface PaymentFailedPayloadShape extends Record<string, unknown> {
   paymentDate: string;
 }
 
-/** PostgreSQL SQLSTATE for a unique-constraint violation. */
-const UNIQUE_VIOLATION_CODE = '23505';
-
 @Injectable()
 export class PaymentsService {
   constructor(
@@ -85,16 +83,6 @@ export class PaymentsService {
     const requestedOrgId = await this.tenantContextService.getRequestedOrganizationId();
     if (!requestedOrgId) throw new ForbiddenException('Organization context required');
     return this.tenantContextService.requireOrganizationAccess(requestedOrgId);
-  }
-
-  private static isUniqueViolation(error: unknown): boolean {
-    const candidate = error as {
-      code?: string;
-      driverError?: { code?: string };
-      message?: string;
-    };
-    const code = candidate?.driverError?.code ?? candidate?.code;
-    return code === UNIQUE_VIOLATION_CODE;
   }
 
   /**
@@ -232,7 +220,7 @@ export class PaymentsService {
     } catch (error) {
       // Two concurrent requests with the same key: the unique index decides the
       // winner and the loser returns the winner's payment instead of a 500.
-      if (dto.idempotency_key && PaymentsService.isUniqueViolation(error)) {
+      if (dto.idempotency_key && isUniqueViolation(error)) {
         const existing = await this.paymentRepository.findOne({
           where: { idempotency_key: idempotencyKey, organization_id: organizationId },
         });

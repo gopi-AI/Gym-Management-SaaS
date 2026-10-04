@@ -26,6 +26,7 @@ import { TenantContextService } from '../../shared/tenant/tenant-context.service
 import { OutboxService } from '../../shared/outbox/outbox.service';
 import { MembershipsService } from '../../memberships/services/memberships.service';
 import { endOfRange, startOfRange } from '../../shared/utils/date-range';
+import { isUniqueViolation } from '../../shared/utils/unique-violation';
 import {
   ATTENDANCE_DECISION_REASONS,
   ATTENDANCE_EVENT_KINDS,
@@ -85,9 +86,6 @@ interface AttendanceEventInput {
   eventTime: Date;
   userId: string | null;
 }
-
-/** PostgreSQL SQLSTATE for a unique-constraint violation. */
-const UNIQUE_VIOLATION_CODE = '23505';
 
 /** `YYYY-MM-DD` label of `date`'s UTC calendar day. */
 function utcDayKey(date: Date): string {
@@ -614,7 +612,7 @@ export class AttendanceService {
       // Two concurrent check-ins for the same member: the partial unique index on
       // "open session" rejects the loser, whose transaction (audit rows included)
       // rolls back — the winning request already recorded the same attempt.
-      if (AttendanceService.isUniqueViolation(error)) {
+      if (isUniqueViolation(error)) {
         throw new ConflictException(
           attendanceDenialMessage(ATTENDANCE_DECISION_REASONS.ALREADY_CHECKED_IN),
         );
@@ -661,11 +659,6 @@ export class AttendanceService {
     );
 
     return this.unwrap(outcome);
-  }
-
-  private static isUniqueViolation(error: unknown): boolean {
-    const candidate = error as { code?: string; driverError?: { code?: string } };
-    return (candidate?.driverError?.code ?? candidate?.code) === UNIQUE_VIOLATION_CODE;
   }
 
   /**

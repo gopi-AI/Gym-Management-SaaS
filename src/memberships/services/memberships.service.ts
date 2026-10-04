@@ -24,9 +24,7 @@ import { Payment } from '../../finance/entities/payment.entity';
 import { Invoice } from '../../finance/entities/invoice.entity';
 import { InvoiceItem } from '../../finance/entities/invoice-item.entity';
 import { PAYMENT_STATUS } from '../../finance/finance.constants';
-
-/** PostgreSQL SQLSTATE for a unique-constraint violation. */
-const UNIQUE_VIOLATION_CODE = '23505';
+import { isUniqueViolation } from '../../shared/utils/unique-violation';
 
 /**
  * Deterministic tie-break for the three "in force" discount reads
@@ -863,7 +861,7 @@ export class MembershipsService {
         // already aborted at this point, so nothing may be queried inside it.
         // On THIS insert a 23505 can only be that index: the PK is
         // database-generated, FK failures are 23503 and CHECK failures 23514.
-        if (MembershipsService.isUniqueViolation(error)) {
+        if (isUniqueViolation(error)) {
           throw new ConflictException('Membership already has an active discount');
         }
         throw error;
@@ -970,10 +968,6 @@ export class MembershipsService {
     }
   }
 
-  private static isUniqueViolation(error: unknown): boolean {
-    const candidate = error as { code?: string; driverError?: { code?: string } };
-    return (candidate?.driverError?.code ?? candidate?.code) === UNIQUE_VIOLATION_CODE;
-  }
 }
 
 export { MEMBERSHIP_STATUS, MembershipStatus, VALID_TRANSITIONS, TRANSITION_NAMES, NON_TERMINAL_STATUSES };

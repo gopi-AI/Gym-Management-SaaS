@@ -11,11 +11,10 @@ import { InventoryPurchaseOrder } from '../entities/inventory-purchase-order.ent
 import { InventoryPurchaseOrderItem } from '../entities/inventory-purchase-order-item.entity';
 import { INVENTORY_EVENT_TYPES, INVENTORY_EVENT_VERSION, INVENTORY_TRANSACTION_TYPES } from '../inventory.constants';
 import { ConsumeStockDto, CreateInventoryItemDto, CreatePurchaseOrderDto, CreateSupplierDto, QueryInventoryLotDto, ReceivePurchaseOrderDto, UpdateInventoryItemDto } from '../dto/inventory.dto';
+import { isUniqueViolation } from '../../shared/utils/unique-violation';
 
 const n = (value: string | number | null | undefined) => Number(value ?? 0);
 const money = (value: number) => value.toFixed(2);
-/** PostgreSQL SQLSTATE for a unique-constraint violation. */
-const UNIQUE_VIOLATION_CODE = '23505';
 
 @Injectable()
 export class InventoryService {
@@ -63,7 +62,7 @@ export class InventoryService {
       // own 409 — the wording updateItem() already returns — instead of an
       // unhandled QueryFailedError (500). The outbox write stays OUTSIDE this try:
       // its own unique key is not this collision and must not be reported as one.
-      if (InventoryService.isUniqueViolation(error)) {
+      if (isUniqueViolation(error)) {
         throw new ConflictException('An inventory item with this SKU already exists in this branch');
       }
       throw error;
@@ -159,7 +158,7 @@ export class InventoryService {
       // A 23505 on this UPDATE can only be UQ_inventory_items_org_branch_sku: the
       // `id` is given (the row was just loaded) and FK failures are 23503. Map it
       // to the module's own 409 instead of an unhandled QueryFailedError (500).
-      if (InventoryService.isUniqueViolation(error)) {
+      if (isUniqueViolation(error)) {
         throw new ConflictException('An inventory item with this SKU already exists in this branch');
       }
       throw error;
@@ -216,11 +215,6 @@ export class InventoryService {
       await manager.query(`REFRESH MATERIALIZED VIEW "MV_INVENTORY_STOCK_LEVELS"`);
       return { transaction, costOfGoodsSold: money(fifo.cogs) };
     });
-  }
-
-  private static isUniqueViolation(error: unknown): boolean {
-    const candidate = error as { code?: string; driverError?: { code?: string } };
-    return (candidate?.driverError?.code ?? candidate?.code) === UNIQUE_VIOLATION_CODE;
   }
 
   /** FIFO helper used by sale flows and unit-tested independently of HTTP. */
