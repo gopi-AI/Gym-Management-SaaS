@@ -2211,6 +2211,8 @@ This document contains the implementation tasks broken down by phase, with depen
   already fixed, and the acceptance criterion covers it.
 
 ### DEF-09: Jest teardown leak — `A worker process has failed to exit gracefully`
+- **Status**: **OPEN** — **CI-log measurement pending, owner decision on continuing the hunt
+  pending.** Local evidence added 2026-10-04 (below); no fix attempted.
 - **Objective**: Find and fix the root cause of the Jest teardown warning. A worker process
   keeps a handle open after the suite completes, so Jest prints
   `A worker process has failed to exit gracefully` and still exits 0. It is a leak, not a test
@@ -2219,6 +2221,18 @@ This document contains the implementation tasks broken down by phase, with depen
   so reproducing it reliably is the first task, and the handle that survives teardown the second.
 - **Found during**: Phase 3 sign-off, 2026-10-02 (re-measuring the runtime recorded in
   `CLAUDE.md`; the warning did not appear in that run).
+- **Local evidence (2026-10-04, the owner's 4-thread machine, load average 2–10)** — measured in
+  local runs; the counts below are of RUNS, not of suites or tests:
+  - full `npx jest` runs printed the warning in **3 of 6** runs — **2 of 5** once a cold-cache first
+    run is excluded;
+  - the runs that printed it were the slowest of the set;
+  - `--detectOpenHandles`, run in-band, reported **zero** open handles;
+  - subset bisection (`src/finance`; `src/shared` + `src/ai`; everything else) did not localise a
+    source: **1** warning across **22** subset runs;
+  - seen again on this branch (2026-10-04) during local jest runs in which every test passed.
+- **What is still unmeasured**: whether CI (`.github/workflows/ci.yml`) prints the warning at all —
+  its logs have not been read for it. That measurement, and whether to keep hunting, are the two
+  open items.
 - **Acceptance criteria**: either the leak is fixed and the warning stops appearing across N
   consecutive full runs, or the specific handle is identified and recorded here with a one-line
   rationale for leaving it open.
