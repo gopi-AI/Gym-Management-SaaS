@@ -3,6 +3,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cache } from 'cache-manager';
 import { ThrottlerStorage } from '@nestjs/throttler';
+import { withDeadline } from '../cache/bounded-cache-call';
 import {
   THROTTLE_STORAGE_TIMEOUT_MS_DEFAULT,
   THROTTLE_STORAGE_TIMEOUT_MS_ENV,
@@ -173,29 +174,19 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
     ttl: number,
     limit: number,
   ): Promise<unknown> {
-    const evalPromise = client.eval(INCREMENT_SCRIPT, {
-      keys: [`${THROTTLE_KEY_PREFIX}${key}`],
-      arguments: [String(ttl), String(limit)],
-    });
-
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`no reply within ${this.timeoutMs} ms (storage timeout)`)),
-        this.timeoutMs,
-      );
-    });
-
-    try {
-      return await Promise.race([evalPromise, timeout]);
-    } finally {
-      if (timer) clearTimeout(timer);
-      // The abandoned promise can still settle: a reply that arrives after the
-      // deadline resolves it, and a socket that errors later rejects it.
-      // Neither matters to a request that has already failed open, but an
-      // unhandled rejection would take the process down.
-      void evalPromise.catch(() => undefined);
-    }
+    // DEF-15 moved the race itself into the shared helper, so the tree holds one
+    // implementation of it rather than two. The behaviour here is unchanged:
+    // same deadline, same message, and the abandoned promise is still swallowed
+    // (a reply that arrives after the deadline must not become an unhandled
+    // rejection in a request that has already failed open).
+    return withDeadline(
+      client.eval(INCREMENT_SCRIPT, {
+        keys: [`${THROTTLE_KEY_PREFIX}${key}`],
+        arguments: [String(ttl), String(limit)],
+      }),
+      this.timeoutMs,
+      `no reply within ${this.timeoutMs} ms (storage timeout)`,
+    );
   }
 
   async increment(

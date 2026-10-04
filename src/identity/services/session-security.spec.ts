@@ -9,6 +9,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { IdentityService } from './identity.service';
 import { MfaService } from './mfa.service';
 import { UnauthorizedException } from '@nestjs/common';
+import { ServiceUnavailableWithRetryException } from '../../shared/cache/cache-unavailable.exception';
 
 describe('AuthService — Session Security (H2)', () => {
   let authService: AuthService;
@@ -169,7 +170,7 @@ describe('AuthService — Session Security (H2)', () => {
   });
 
   describe('logout blacklist fail-closed', () => {
-    it('throws UnauthorizedException when the blacklist check fails (Redis down)', async () => {
+    it('answers 503, not 401, when the blacklist check fails (Redis down)', async () => {
       mockJwtService.verify = jest.fn().mockReturnValue({
         sub: 'user-1',
         tokenType: 'refresh',
@@ -177,9 +178,16 @@ describe('AuthService — Session Security (H2)', () => {
       });
       mockCache.get.mockRejectedValue(new Error('Redis connection refused'));
 
-      await expect(
-        authService.refreshToken('some-refresh-token'),
-      ).rejects.toBeInstanceOf(UnauthorizedException);
+      // O1 (owner ruling, 2026-10-04): the refresh path still REFUSES — the
+      // rotation does not happen — but an unreachable Redis is reported as 503 +
+      // Retry-After rather than 401. A 401 here reads as "your refresh token is
+      // revoked", which makes the web client clear its tokens and sign the user
+      // out (`apps/web/src/lib/api.ts:130-133`, reached via `:151`).
+      const caught = await authService
+        .refreshToken('some-refresh-token')
+        .catch((error: unknown) => error);
+      expect(caught).toBeInstanceOf(ServiceUnavailableWithRetryException);
+      expect(caught).not.toBeInstanceOf(UnauthorizedException);
     });
   });
 });

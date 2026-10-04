@@ -13,6 +13,10 @@ import {
   AiUsageLimitService,
 } from './ai-usage-limit.service';
 import { utcDayKey, utcMonthKey } from '../config/ai-usage-limits';
+import {
+  CACHE_UNAVAILABLE_RETRY_AFTER_SECONDS,
+  ServiceUnavailableWithRetryException,
+} from '../../shared/cache/cache-unavailable.exception';
 
 /**
  * Rate limiting, token budget and cost budget tests.
@@ -104,6 +108,23 @@ class FakeRedis {
     this.calls.push({ command, key, args });
   }
 }
+
+/**
+ * The blackholed-socket shape: every command queued, no reply and no error,
+ * which is what the real driver does while it reconnects. `isReady` stays true
+ * for a blackholed socket; `false` is the dropped/never-connected shape.
+ */
+const neverSettles = () => new Promise<never>(() => undefined);
+
+const stalledClient = (isReady = true) => ({
+  isReady,
+  get: jest.fn(neverSettles),
+  set: jest.fn(neverSettles),
+  incr: jest.fn(neverSettles),
+  incrBy: jest.fn(neverSettles),
+  incrByFloat: jest.fn(neverSettles),
+  expire: jest.fn(neverSettles),
+});
 
 interface FakeQueryBuilder {
   select: jest.Mock;
@@ -414,6 +435,11 @@ describe('AiUsageLimitService', () => {
       const error = await expectHttpStatus(service.assertRequestAllowed(context()), 503);
       expect(error.message).not.toContain('READONLY');
       expect(usageRepository.createQueryBuilder).not.toHaveBeenCalled();
+      // O1: the 503 carries the retry hint through the shared mechanism.
+      expect(error).toBeInstanceOf(ServiceUnavailableWithRetryException);
+      expect((error as ServiceUnavailableWithRetryException).retryAfterSeconds).toBe(
+        CACHE_UNAVAILABLE_RETRY_AFTER_SECONDS,
+      );
     });
 
     it('rejects with 503 when the shared cache exposes no counter client', async () => {
@@ -421,6 +447,19 @@ describe('AiUsageLimitService', () => {
 
       const error = await expectHttpStatus(service.assertRequestAllowed(context()), 503);
       expect(error.message).not.toMatch(/redis|client/i);
+      expect(error).toBeInstanceOf(ServiceUnavailableWithRetryException);
+    });
+
+    it('rejects with 503 when the counter client is known-offline', async () => {
+      // The other half of "present and ready" — a client that exists but has
+      // been dropped from under the app reaches the same refusal, without a
+      // round trip.
+      const offline = stalledClient(false);
+      const service = await createService(DEFAULT_CONFIG, offline);
+
+      const error = await expectHttpStatus(service.assertRequestAllowed(context()), 503);
+      expect(error).toBeInstanceOf(ServiceUnavailableWithRetryException);
+      expect(offline.incr).not.toHaveBeenCalled();
     });
 
     it('does not fail an already-completed provider call when counters cannot be updated', async () => {
@@ -430,6 +469,68 @@ describe('AiUsageLimitService', () => {
       await expect(
         service.recordUsage({ organizationId: ORG_A, totalTokens: 10, estimatedCostUsd: '0.5' }),
       ).resolves.toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // R9: the "Redis unavailable ⇒ 503" promise must hold even with no limits on
+  // ---------------------------------------------------------------------------
+  describe('R9 unconditional counter-client check', () => {
+    // EVERY limit disabled: `0` is the documented way to turn a limit off, and
+    // with all three at 0 no counter call is ever reached — so before R9 an
+    // unreachable Redis went unnoticed and the request was allowed unmetered.
+    const NO_LIMITS = {
+      AI_RATE_LIMIT_RPM: '0',
+      AI_RATE_LIMIT_TPD: '0',
+      AI_COST_LIMIT_MONTHLY_USD: '0',
+    };
+    const neverSettles = () => new Promise<never>(() => undefined);
+
+    it('still answers 503 with all limits 0 when no counter client is exposed', async () => {
+      const service = await createService(NO_LIMITS, null);
+
+      const error = await expectHttpStatus(service.assertRequestAllowed(context()), 503);
+      expect(error).toBeInstanceOf(ServiceUnavailableWithRetryException);
+      expect((error as ServiceUnavailableWithRetryException).retryAfterSeconds).toBe(
+        CACHE_UNAVAILABLE_RETRY_AFTER_SECONDS,
+      );
+      // Nothing above the check ran: no budget was read to produce this answer.
+      expect(usageRepository.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it('still answers 503 with all limits 0 when the client is known-offline', async () => {
+      const offline = {
+        isReady: false,
+        get: jest.fn(neverSettles),
+        set: jest.fn(neverSettles),
+        incr: jest.fn(neverSettles),
+        incrBy: jest.fn(neverSettles),
+        incrByFloat: jest.fn(neverSettles),
+        expire: jest.fn(neverSettles),
+      };
+      const service = await createService(NO_LIMITS, offline);
+
+      await expectHttpStatus(service.assertRequestAllowed(context()), 503);
+      // The check is a readiness test, not a round trip: nothing was sent.
+      expect(offline.incr).not.toHaveBeenCalled();
+      expect(offline.get).not.toHaveBeenCalled();
+    });
+
+    it('does not answer 503 when the client is present and ready, even with no limits', async () => {
+      // The check must not become a new way to fail a healthy request.
+      const service = await createService(NO_LIMITS);
+
+      await expect(service.assertRequestAllowed(context())).resolves.toBeUndefined();
+      expect(redis.calls).toHaveLength(0);
+    });
+
+    it('does not run the check while AI is disabled, so the kill-switch still allows', async () => {
+      // A disabled deployment is not "unavailable": it must keep flowing with no
+      // counter client at all, exactly as before.
+      aiProviderService.isEnabled.mockReturnValue(false);
+      const service = await createService(NO_LIMITS, null);
+
+      await expect(service.assertRequestAllowed(context())).resolves.toBeUndefined();
     });
   });
 
@@ -453,6 +554,40 @@ describe('AiUsageLimitService', () => {
       const keys = redis.calls.map((call) => call.key);
       expect(keys).toContain(`ai:ratelimit:${ORG_B}:${USER_B}:${REQUEST_TYPE}`);
       expect(keys.every((key) => !key.includes(ORG_A))).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // DEF-15: a counter call that never answers must not hold the request open
+  // ---------------------------------------------------------------------------
+  describe('DEF-15 bounded cache calls', () => {
+    it('answers 503 instead of hanging when the rate-limit counter never answers', async () => {
+      const service = await createService({ CACHE_CALL_TIMEOUT_MS: '30' }, stalledClient());
+      const started = Date.now();
+
+      await expect(service.assertRequestAllowed(context())).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      // Upper bound only: what is under test is that it returned at all.
+      expect(Date.now() - started).toBeLessThan(5_000);
+    });
+
+    it('keeps the best-effort usage write best-effort when the counter never answers', async () => {
+      const service = await createService({ CACHE_CALL_TIMEOUT_MS: '30' }, stalledClient());
+
+      await expect(
+        service.recordUsage({ organizationId: ORG_A, totalTokens: 42, estimatedCostUsd: null }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('fails closed without a round trip when the client is not ready', async () => {
+      const offline = stalledClient(false);
+      const service = await createService({ CACHE_CALL_TIMEOUT_MS: '30' }, offline);
+
+      await expect(service.assertRequestAllowed(context())).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      expect(offline.incr).not.toHaveBeenCalled();
     });
   });
 });

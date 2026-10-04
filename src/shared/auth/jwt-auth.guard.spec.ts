@@ -5,9 +5,18 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { CACHE_CALL_TIMEOUT_MS_DEFAULT } from '../cache/bounded-cache-call';
+import {
+  CACHE_UNAVAILABLE_RETRY_AFTER_SECONDS,
+  ServiceUnavailableWithRetryException,
+} from '../cache/cache-unavailable.exception';
 
-function mockContext(
-  authHeader: string | undefined,
+/** Real timers must not leak out of the one test that installs fake ones. */
+afterEach(() => {
+  jest.useRealTimers();
+});
+
+function mockContext(  authHeader: string | undefined,
   isPublic = false,
 ): ExecutionContext {
   const handler = () => {};
@@ -35,7 +44,9 @@ describe('JwtAuthGuard — Security (H2)', () => {
   let mockReflector: jest.Mocked<Reflector>;
   let mockJwtService: jest.Mocked<JwtService>;
   let mockConfigService: jest.Mocked<ConfigService>;
-  let mockCache: { get: jest.Mock; set: jest.Mock };
+  // `store.client` is part of the shape a real cache-manager `Cache` always has,
+  // and DEF-15 reads it to check readiness before the blacklist round trip.
+  let mockCache: { get: jest.Mock; set: jest.Mock; store: { client: { isReady: boolean } } };
 
   beforeEach(async () => {
     mockReflector = new Reflector() as jest.Mocked<Reflector>;
@@ -52,6 +63,7 @@ describe('JwtAuthGuard — Security (H2)', () => {
     mockCache = {
       get: jest.fn().mockResolvedValue(undefined),
       set: jest.fn(),
+      store: { client: { isReady: true } },
     };
 
     guard = new JwtAuthGuard(
@@ -153,7 +165,7 @@ describe('JwtAuthGuard — Security (H2)', () => {
     ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it('fails CLOSED when Redis is unreachable (cache throws)', async () => {
+  it('fails CLOSED when Redis is unreachable (cache throws), answering 503 not 401', async () => {
     mockJwtService.verifyAsync.mockResolvedValue({
       sub: 'u1',
       email: 'test@test.com',
@@ -161,8 +173,68 @@ describe('JwtAuthGuard — Security (H2)', () => {
     });
     mockCache.get.mockRejectedValue(new Error('Redis connection refused'));
 
+    // O1 (2026-10-04): the refusal is unchanged — the token is NOT accepted —
+    // but it is no longer reported to the client as an invalid session.
     await expect(
       guard.canActivate(mockContext('Bearer good-token-but-redis-down')),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
+    ).rejects.toBeInstanceOf(ServiceUnavailableWithRetryException);
+  });
+
+  // ---- DEF-15 / O1: the blacklist read is bounded AND answers 503 on an outage ----
+  describe('infrastructure failure on the blacklist read', () => {
+    /** The blackholed-socket shape: queued forever, no reply and no error. */
+    const neverSettles = () => new Promise<never>(() => undefined);
+
+    beforeEach(() => {
+      mockJwtService.verifyAsync.mockResolvedValue({
+        sub: 'u1',
+        email: 'test@test.com',
+        tokenType: 'access',
+      });
+    });
+
+    it('rejects with the 503 (Retry-After carried) when the blacklist read never answers', async () => {
+      // Fake timers so a removed deadline fails an ASSERTION here rather than
+      // hanging until jest's 5 s timeout — a hang reports the runner, not the
+      // defect. The guard reads the default deadline (the mocked ConfigService
+      // answers `undefined` for anything but JWT_SECRET).
+      jest.useFakeTimers();
+      mockCache.get.mockImplementation(neverSettles);
+      let caught: unknown = '(still pending: the guard never answered)';
+
+      void guard
+        .canActivate(mockContext('Bearer never-answered'))
+        .catch((error: unknown) => {
+          caught = error;
+        });
+
+      await jest.advanceTimersByTimeAsync(CACHE_CALL_TIMEOUT_MS_DEFAULT);
+
+      expect(caught).toBeInstanceOf(ServiceUnavailableWithRetryException);
+      expect((caught as ServiceUnavailableWithRetryException).getStatus()).toBe(503);
+      expect((caught as ServiceUnavailableWithRetryException).retryAfterSeconds).toBe(
+        CACHE_UNAVAILABLE_RETRY_AFTER_SECONDS,
+      );
+      // The DEADLINE ended it, not the readiness check: the operation really ran
+      // and really was abandoned. `isReady` is true on this mock, so the
+      // short-circuit is not what produced the answer.
+      expect(mockCache.get).toHaveBeenCalled();
+      expect(mockCache.store.client.isReady).toBe(true);
+    });
+
+    it('still answers 401 for a token that really is blacklisted', async () => {
+      // The genuine answer must not be reachable through the 503 path.
+      mockCache.get.mockResolvedValue('true');
+
+      await expect(
+        guard.canActivate(mockContext('Bearer blacklisted-token')),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('still admits a token that really is not blacklisted', async () => {
+      mockCache.get.mockResolvedValue(undefined);
+
+      await expect(guard.canActivate(mockContext('Bearer good-token'))).resolves.toBe(true);
+    });
   });
 });

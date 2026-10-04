@@ -4,13 +4,14 @@ import {
   Inject,
   Injectable,
   Logger,
-  ServiceUnavailableException,
 } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Cache } from 'cache-manager';
 import { Repository } from 'typeorm';
+import { boundedCacheCall, cacheCallTimeoutFrom } from '../../shared/cache/bounded-cache-call';
+import { ServiceUnavailableWithRetryException } from '../../shared/cache/cache-unavailable.exception';
 import { AiUsage } from '../entities/ai-usage.entity';
 import { AiProviderService } from './ai-provider.service';
 import {
@@ -43,6 +44,8 @@ import {
  * client, pool, module or dependency is introduced for rate limiting.
  */
 interface AiCounterClient {
+  /** node-redis reports a client that is connected-but-offline as `false` (DEF-15). */
+  readonly isReady?: boolean;
   get(key: string): Promise<string | null>;
   set(key: string, value: string, options?: { NX?: boolean; EX?: number }): Promise<unknown>;
   incr(key: string): Promise<number>;
@@ -109,6 +112,12 @@ export interface AiUsageRecording {
 @Injectable()
 export class AiUsageLimitService {
   private readonly logger = new Logger(AiUsageLimitService.name);
+  /**
+   * DEF-15: the counters below are request-path cache calls and run under this
+   * deadline, so "Redis failure is FAIL CLOSED" reaches its 503 within the
+   * deadline instead of holding the request open for the whole outage.
+   */
+  private readonly cacheTimeoutMs: number;
 
   constructor(
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
@@ -116,7 +125,14 @@ export class AiUsageLimitService {
     private readonly usageRepository: Repository<AiUsage>,
     private readonly config: ConfigService,
     private readonly aiProviderService: AiProviderService,
-  ) {}
+  ) {
+    this.cacheTimeoutMs = cacheCallTimeoutFrom(this.config);
+  }
+
+  /** One bounded counter call, with the deadline read from the shared config. */
+  private counterCall<T>(label: string, operation: (client: AiCounterClient) => Promise<T>): Promise<T> {
+    return boundedCacheCall(this.cacheManager, this.cacheTimeoutMs, label, operation);
+  }
 
   /**
    * Adds the provider-reported usage of a completed call to the fast counters.
@@ -144,7 +160,7 @@ export class AiUsageLimitService {
 
     try {
       const client = this.counterClient();
-      if (!client) {
+      if (!client || client.isReady === false) {
         this.logger.error(
           `AI usage counters are unavailable; organization ${usage.organizationId} usage was recorded in AI_USAGE only`,
         );
@@ -154,17 +170,23 @@ export class AiUsageLimitService {
       if (tokens > 0 && limits.tokensPerDay > 0) {
         const window = utcDayBounds(now);
         const key = buildDailyTokenBudgetKey(usage.organizationId, utcDayKey(now));
-        await client.incrBy(key, tokens);
+        await this.counterCall('AI usage counter INCRBY', (counter) => counter.incrBy(key, tokens));
         // The window end is fixed, so re-expiring can only align the TTL with
         // the current UTC day — it can never extend the window.
-        await client.expire(key, secondsUntil(window.end, now));
+        await this.counterCall('AI usage counter EXPIRE', (counter) =>
+          counter.expire(key, secondsUntil(window.end, now)),
+        );
       }
 
       if (cost > 0 && limits.monthlyCostUsd > 0) {
         const window = utcMonthBounds(now);
         const key = buildMonthlyCostBudgetKey(usage.organizationId, utcMonthKey(now));
-        await client.incrByFloat(key, cost);
-        await client.expire(key, secondsUntil(window.end, now));
+        await this.counterCall('AI cost counter INCRBYFLOAT', (counter) =>
+          counter.incrByFloat(key, cost),
+        );
+        await this.counterCall('AI cost counter EXPIRE', (counter) =>
+          counter.expire(key, secondsUntil(window.end, now)),
+        );
       }
     } catch (error) {
       this.logger.error(
@@ -181,7 +203,9 @@ export class AiUsageLimitService {
    * is called.
    *
    * @throws HttpException 429 when a limit is exhausted
-   * @throws ServiceUnavailableException 503 when limits cannot be verified
+   * @throws ServiceUnavailableWithRetryException 503 (with a `Retry-After`
+   *   header, owner ruling O1) when the counter client is missing or offline, or
+   *   when limits cannot be verified
    */
   async assertRequestAllowed(context: AiRequestLimitContext): Promise<void> {
     // A disabled deployment is not "rate limited": the request must keep
@@ -190,20 +214,45 @@ export class AiUsageLimitService {
       return;
     }
 
+    // R9 (owner ruling O2, 2026-10-04): the "Redis is unavailable ⇒ 503" promise
+    // in `.env.example` must hold in EVERY configuration, and the counter calls
+    // below cannot carry it alone — every one of them is skipped when its limit
+    // is 0 (`0` is the documented way to disable a limit), so an all-zero
+    // deployment would reach Redis never, notice nothing, and allow the request
+    // through unmetered. This check is unconditional and does no round trip.
+    //
+    // It runs BEFORE the try so the 503 it raises is not re-derived from a
+    // caught error: the answer is the same as the catch below produces, and
+    // `ServiceUnavailableWithRetryException` is an `HttpException`, so had it
+    // been thrown inside the try it would pass through unchanged either way.
+    const counterClient = this.counterClient();
+    if (!counterClient || counterClient.isReady === false) {
+      this.logger.error(
+        `AI usage limits could not be verified for organization ${context.organizationId} ` +
+          '(failing closed): the Redis counter client is unavailable',
+      );
+      throw new ServiceUnavailableWithRetryException(AI_LIMITER_UNAVAILABLE_MESSAGE);
+    }
+
     const limits = this.resolveLimits();
     const now = new Date();
 
     try {
-      const client = this.requireCounterClient();
-
+      // DEF-15: every counter call below is bounded, and a missing or
+      // known-offline client is reported by the same helper — so the catch at
+      // the end of this block turns any of those into the 503 that "fails
+      // closed" has always meant here. No round trip starts until the deadline
+      // is armed.
       if (limits.requestsPerMinute > 0) {
         const key = buildRateLimitKey(context.organizationId, context.userId, context.requestType);
         // INCR-then-check is atomic, so concurrent requests cannot slip past a
         // non-atomic read/modify/write pair. Over-limit requests keep counting
         // inside the same fixed window (stricter, never more permissive).
-        const count = await client.incr(key);
+        const count = await this.counterCall('AI rate limit INCR', (counter) => counter.incr(key));
         if (count === 1) {
-          await client.expire(key, AI_RATE_LIMIT_WINDOW_SECONDS);
+          await this.counterCall('AI rate limit EXPIRE', (counter) =>
+            counter.expire(key, AI_RATE_LIMIT_WINDOW_SECONDS),
+          );
         }
         if (count > limits.requestsPerMinute) {
           throw new HttpException(AI_RATE_LIMIT_EXCEEDED_MESSAGE, HttpStatus.TOO_MANY_REQUESTS);
@@ -211,14 +260,14 @@ export class AiUsageLimitService {
       }
 
       if (limits.tokensPerDay > 0) {
-        const used = await this.readDailyTokens(client, context.organizationId, now);
+        const used = await this.readDailyTokens(context.organizationId, now);
         if (used >= limits.tokensPerDay) {
           throw new HttpException(AI_TOKEN_BUDGET_EXCEEDED_MESSAGE, HttpStatus.TOO_MANY_REQUESTS);
         }
       }
 
       if (limits.monthlyCostUsd > 0) {
-        const spent = await this.readMonthlyCost(client, context.organizationId, now);
+        const spent = await this.readMonthlyCost(context.organizationId, now);
         if (spent >= limits.monthlyCostUsd) {
           throw new HttpException(AI_COST_BUDGET_EXCEEDED_MESSAGE, HttpStatus.TOO_MANY_REQUESTS);
         }
@@ -230,7 +279,7 @@ export class AiUsageLimitService {
       this.logger.error(
         `AI usage limit check failed for organization ${context.organizationId} (failing closed): ${errorMessage(error)}`,
       );
-      throw new ServiceUnavailableException(AI_LIMITER_UNAVAILABLE_MESSAGE);
+      throw new ServiceUnavailableWithRetryException(AI_LIMITER_UNAVAILABLE_MESSAGE);
     }
   }
 
@@ -273,30 +322,20 @@ export class AiUsageLimitService {
     };
   }
 
-  private async readDailyTokens(
-    client: AiCounterClient,
-    organizationId: string,
-    now: Date,
-  ): Promise<number> {
+  private async readDailyTokens(organizationId: string, now: Date): Promise<number> {
     const window = utcDayBounds(now);
     const key = buildDailyTokenBudgetKey(organizationId, utcDayKey(now));
     return this.readBudgetCounter(
-      client,
       key,
       () => this.sumTokens(organizationId, window),
       secondsUntil(window.end, now),
     );
   }
 
-  private async readMonthlyCost(
-    client: AiCounterClient,
-    organizationId: string,
-    now: Date,
-  ): Promise<number> {
+  private async readMonthlyCost(organizationId: string, now: Date): Promise<number> {
     const window = utcMonthBounds(now);
     const key = buildMonthlyCostBudgetKey(organizationId, utcMonthKey(now));
     return this.readBudgetCounter(
-      client,
       key,
       () => this.sumCost(organizationId, window),
       secondsUntil(window.end, now),
@@ -307,14 +346,18 @@ export class AiUsageLimitService {
    * Reads a budget counter, hydrating it from the durable `AI_USAGE` ledger on
    * a miss. `SET NX` means a concurrent request can never overwrite a counter
    * that a peer has already advanced.
+   *
+   * Each Redis call is bounded on its own (DEF-15) rather than the sequence
+   * being bounded as a whole: `hydrate()` is a Postgres read with its own
+   * timeout, and folding it into this budget would fail requests that a slow
+   * database — not a slow Redis — made slow.
    */
   private async readBudgetCounter(
-    client: AiCounterClient,
     key: string,
     hydrate: () => Promise<number>,
     ttlSeconds: number,
   ): Promise<number> {
-    const raw = await client.get(key);
+    const raw = await this.counterCall('AI budget counter GET', (client) => client.get(key));
     if (raw !== null && raw !== undefined) {
       const parsed = Number(raw);
       if (Number.isFinite(parsed) && parsed >= 0) {
@@ -323,9 +366,11 @@ export class AiUsageLimitService {
     }
 
     const hydrated = await hydrate();
-    await client.set(key, String(hydrated), { NX: true, EX: Math.max(Math.floor(ttlSeconds), 1) });
+    await this.counterCall('AI budget counter SET NX', (client) =>
+      client.set(key, String(hydrated), { NX: true, EX: Math.max(Math.floor(ttlSeconds), 1) }),
+    );
 
-    const stored = await client.get(key);
+    const stored = await this.counterCall('AI budget counter re-GET', (client) => client.get(key));
     if (stored !== null && stored !== undefined) {
       const parsed = Number(stored);
       if (Number.isFinite(parsed) && parsed >= 0) {
@@ -381,14 +426,6 @@ export class AiUsageLimitService {
     }
     const complete = COUNTER_METHODS.every((method) => typeof client[method] === 'function');
     return complete ? (client as AiCounterClient) : null;
-  }
-
-  private requireCounterClient(): AiCounterClient {
-    const client = this.counterClient();
-    if (!client) {
-      throw new ServiceUnavailableException(AI_LIMITER_UNAVAILABLE_MESSAGE);
-    }
-    return client;
   }
 }
 
