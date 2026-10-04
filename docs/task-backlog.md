@@ -3094,9 +3094,12 @@ session-rejection paths (`api.ts:171`, `api.ts:195`) still leave `gym.organizati
   frontend typecheck step moved into the new `web` job — that split is the ruling's first line.
 - `pull_request` now has **no** `branches` filter, so a PR whose base is another branch gets CI.
   Whether a real stacked PR then receives a run is **UNKNOWN** until one exists.
-- `concurrency: ${{ github.workflow }}-${{ github.ref }}` with `cancel-in-progress: true`
-  (RECOMMENDATION, not ruled): a superseded run on the same ref is cancelled — including a
-  superseded run on `main`.
+- `concurrency: ${{ github.workflow }}-${{ github.ref }}` with
+  `cancel-in-progress: ${{ github.event_name == 'pull_request' }}` — **changed 2026-10-05** from the
+  plain `true` this entry originally shipped, on the owner's verbatim answer **"yes"** to the
+  question of whether cancel-in-progress on `main` should be dropped. A superseded run on a pull
+  request is cancelled; a superseded **push to `main` is left to finish**. This is a change to
+  observable CI behaviour.
 - **The integration job's environment file** is generated per run from `.env.example` plus the
   service values, with throwaway secrets (`openssl rand`), written to `$RUNNER_TEMP` outside the
   checkout. Two of its values are deliberately NOT the job's: `DB_DATABASE=gym_ci_dev` (a name that

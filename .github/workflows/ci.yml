@@ -12,11 +12,11 @@ on:
 permissions:
   contents: read
 
-# One run per ref. A superseded push (or a new commit on the same PR) cancels
-# the run it replaces instead of leaving both to finish.
+# One run per ref. A superseded run on a pull_request cancels the run it
+# replaces; a superseded push to main is left to finish.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ── Backend: hermetic (no Postgres, no Redis, no .env) ─────────────────────
