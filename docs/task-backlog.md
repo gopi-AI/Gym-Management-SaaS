@@ -2211,8 +2211,11 @@ This document contains the implementation tasks broken down by phase, with depen
   already fixed, and the acceptance criterion covers it.
 
 ### DEF-09: Jest teardown leak — `A worker process has failed to exit gracefully`
-- **Status**: **OPEN** — **CI-log measurement pending, owner decision on continuing the hunt
-  pending.** Local evidence added 2026-10-04 (below); no fix attempted.
+- **Status**: **OPEN — unattributed, low priority.** Owner ruling (owner, 2026-10-05, IST), recorded
+  verbatim: "DEF-09: record as open and unattributed with the trigger." The same ruling's companion
+  answer, to whether `cancel-in-progress` on `main` should be dropped, verbatim: **"yes"** (applied
+  and recorded under `D16`). The CI-log measurement is done (below). Local evidence added
+  2026-10-04 (below); no fix attempted.
 - **Objective**: Find and fix the root cause of the Jest teardown warning. A worker process
   keeps a handle open after the suite completes, so Jest prints
   `A worker process has failed to exit gracefully` and still exits 0. It is a leak, not a test
@@ -2230,12 +2233,31 @@ This document contains the implementation tasks broken down by phase, with depen
   - subset bisection (`src/finance`; `src/shared` + `src/ai`; everything else) did not localise a
     source: **1** warning across **22** subset runs;
   - seen again on this branch (2026-10-04) during local jest runs in which every test passed.
-- **What is still unmeasured**: whether CI (`.github/workflows/ci.yml`) prints the warning at all —
-  its logs have not been read for it. That measurement, and whether to keep hunting, are the two
-  open items.
+- **CI evidence (2026-10-05, read-only measurement of the 60 most recent `CI` runs — 68 jest-job
+  logs, **0 excluded**; a log carrying no jest `Test Suites:` line would have been excluded, and
+  none did)** — the counts below are of RUNS and LOGS, not of suites or tests: the warning
+  appeared in **1 of 68** logs — run `37191702360`, `pull_request`, branch
+  `fix/web-503-session-handling`, head `392f3fcb`, job `ci (24)`, at 2026-10-04T09:19:48Z. That run
+  was **green**. Exact 95% interval for the rate (Clopper–Pearson): **0.037%–7.92%**. Pushes to
+  `main`: **0 of 38**.
+  The post-`D16` layout has **12** jest-job logs and **0** events. The warned run's jest `Time` was
+  **53.981 s**, the 9th slowest of the 60 `ci (24)` logs (8 slower), so the local "the runs that
+  printed it were the slowest of the set" finding **did not replicate** in CI.
+- **Lineage (measured 2026-10-05, `git merge-base --is-ancestor`)**: the warned run **postdates**
+  PR #7 (its merged work `71211d3b` IS an ancestor of `392f3fcb`, EXIT=0) and **predates** PR #8
+  (its merged work `178892c3` is NOT an ancestor, EXIT=1). Whether either merge relates to the
+  warning is not established by this.
+- **Cause: UNKNOWN — no attribution.** The data neither supports nor excludes an environmental
+  cause, and it does not identify **which suite or worker leaked**: the log records the warning
+  only after the fact and attaches no worker identity.
+- **Reopen trigger (owner, 2026-10-05)**: re-measure after about **50** post-`D16` runs; reopen if
+  the warning appears on a **push to `main`** or the rate goes **above a few percent**. Until then
+  this entry stays open and unattributed at low priority.
 - **Acceptance criteria**: either the leak is fixed and the warning stops appearing across N
   consecutive full runs, or the specific handle is identified and recorded here with a one-line
-  rationale for leaving it open.
+  rationale for leaving it open. **The second branch is superseded by the 2026-10-05 owner ruling
+  recorded above**: this entry's current state is *recorded, unattributed, with a reopen trigger*,
+  and the trigger — not a handle identification — is what reopens it.
 - **Risks**: Low — test-only; affects neither shipped behaviour nor the exit code.
 
 ### DEF-10: Extract `isUniqueViolation` into a shared util (Low)
@@ -2994,9 +3016,11 @@ entry below.
 
 ## DEF-17 — `clearTokens()` leaves `gym.organizationId` behind (2026-10-04)
 
-**Status: Fixed** — owner instruction (owner, 2026-10-04), recorded verbatim: "DEF-17: fix the one
+**Status: Partially fixed** — owner instruction (owner, 2026-10-04), recorded verbatim: "DEF-17: fix the one
 line typo and bundle it with D16's web-test script." Filed on 2026-10-04 as a RECOMMENDATION out of
-the `DEF-16` follow-up work; the fix ships on `chore/ci-slice-d16` (the D16 PR).
+the `DEF-16` follow-up work; the fix shipped on `chore/ci-slice-d16` (the D16 PR, merged as
+`3f9869f7`). The two automatic session-rejection paths (`api.ts:171`, `api.ts:195`) still leave
+`gym.organizationId` in place.
 
 - **Objective**: record that the web client's sign-out does not clear the organization id it sends
   as `X-Organization-Id`, and that the two sign-out paths disagree about it.
@@ -3075,9 +3099,16 @@ the `DEF-16` follow-up work; the fix ships on `chore/ci-slice-d16` (the D16 PR).
   frontend typecheck step moved into the new `web` job — that split is the ruling's first line.
 - `pull_request` now has **no** `branches` filter, so a PR whose base is another branch gets CI.
   Whether a real stacked PR then receives a run is **UNKNOWN** until one exists.
-- `concurrency: ${{ github.workflow }}-${{ github.ref }}` with `cancel-in-progress: true`
-  (RECOMMENDATION, not ruled): a superseded run on the same ref is cancelled — including a
-  superseded run on `main`.
+- `concurrency: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}`
+  with `cancel-in-progress: true`. The `group` key is the mechanism: a pull request keeps its
+  ref-based group, while **each push to `main` gets a group of its own**, so a superseded main push
+  is never replaced — running or queued. The key **landed on `main` directly** in `a4957762` (owner,
+  2026-10-05T01:24:39+05:30), the owner's verbatim **"yes"** to whether `cancel-in-progress` on
+  `main` should be dropped. This entry briefly narrowed the expression to
+  `${{ github.event_name == 'pull_request' }}` instead; that is **reverted here**, because with a
+  per-push group the expression is inert on a push, and the narrower form conflicted with `main` for
+  no behavioural gain. The observable behaviour is nonetheless changed: a superseded push to `main`
+  is no longer cancelled.
 - **The integration job's environment file** is generated per run from `.env.example` plus the
   service values, with throwaway secrets (`openssl rand`), written to `$RUNNER_TEMP` outside the
   checkout. Two of its values are deliberately NOT the job's: `DB_DATABASE=gym_ci_dev` (a name that
@@ -3092,11 +3123,13 @@ the `DEF-16` follow-up work; the fix ships on `chore/ci-slice-d16` (the D16 PR).
   that had drifted to "70 suites / 700+ tests"); it now describes the isolation and points at the
   gated specs' job. The "Frontend ESLint (explicitly SKIPPED)" block went as well — web lint is a CI
   step now.
-- **Docker measurement (2026-10-04, local cold build on this machine, nothing pushed)**:
-  `BUILD_EXIT=0`, wall time **385 s**, image **613 MB** (`612627317` bytes). Under the ~10-minute
-  guideline the RECOMMENDATION set, needs no secret (only `github.sha`), and runs on main only — so
-  the job ships. Its duration on a GitHub runner is still **unmeasured**: `docker-image` is skipped
-  on a PR, so the first push to `main` after the merge is what will exercise it.
+- **Docker measurement — two different measurements (local cold build vs GitHub runner)**:
+  **Local (2026-10-04, cold build on this machine, nothing pushed)**: `BUILD_EXIT=0`, wall time
+  **385 s**, image **613 MB** (`612627317` bytes). **GitHub runner (2026-10-04, run `37225142240`
+  on `3f9869f7` — the first push to `main` after the merge, which exercised the job)**: the
+  `docker-image` job ran **74 s** (started 18:37:30Z, completed 18:38:44Z, conclusion `success`).
+  Under the ~10-minute guideline the RECOMMENDATION set, needs no secret (only `github.sha`), and
+  runs on main only — so the job ships.
 - **Measured on the PR (2026-10-04, run `37221183483` on `68dbd55b`, three attempts — the opening
   run plus two `gh run rerun`s; every attempt green)**. These are run and job durations, not counts
   of suites or tests:
