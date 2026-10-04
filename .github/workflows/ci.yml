@@ -3,12 +3,28 @@ name: CI
 on:
   push:
     branches: [main]
+  # Deliberately NO `branches` filter here: `pull_request` fires for a PR whose
+  # base is any branch, so a stacked PR (base = another feature branch) gets CI
+  # as well. Only `push` stays restricted to main.
   pull_request:
-    branches: [main]
+
+# This workflow never writes to the repository and uses no secrets.
+permissions:
+  contents: read
+
+# One run per ref. A superseded push (or a new commit on the same PR) cancels
+# the run it replaces instead of leaving both to finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # ── Backend: hermetic (no Postgres, no Redis, no .env) ─────────────────────
+  # The job id + matrix below are what produce the check name `ci (24)`; keep
+  # them as they are — a protected `main` would require that name first.
   ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     # Matches .nvmrc (Node 24, the pinned version used locally).
     strategy:
@@ -28,34 +44,256 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # ── Backend typecheck ────────────────────────────────────────────────────────
+      # ── Backend typecheck ────────────────────────────────────────────────────
       # Runs `tsc --noEmit -p tsconfig.spec.json` (the project's actual
       # `npm run typecheck` script).
       - name: Backend typecheck
         run: npm run typecheck
 
-      # ── Backend lint ──────────────────────────────────────────────────────────────
-      # Runs ESLint over the backend source + contracts package only (`src/**` and
-      # `packages/**`). The frontend in `apps/web` is intentionally excluded
-      # from linting — see the ESLINT-002 follow-up ticket (ESLint version
-      # conflict in apps/web).
+      # ── Backend lint ──────────────────────────────────────────────────────────
+      # Runs ESLint over the backend source + contracts package only (`src/**`
+      # and `packages/**`). The frontend has its own flat config and is linted
+      # in the `web` job, not here.
       - name: Backend lint
         run: npm run lint
 
-      # ── Frontend typecheck ────────────────────────────────────────────────────────
-      # `apps/web` lives in its own npm workspace but keeps its own tsconfig.
-      - name: Frontend typecheck
-        run: cd apps/web && npm run typecheck
-
-      # ── Full backend test suite ────────────────────────────────────────────────────
-      # Runs every Jest suite (currently 70 suites / 700+ tests), isolated from
-      # any .env file so tests never reach out to real services.
+      # ── Backend test suite ────────────────────────────────────────────────────
+      # Hermetic by construction: `jest.config.js` declares no `setupFiles` and
+      # nothing loads `.env`, so this needs neither Postgres nor Redis. The
+      # specs that DO need them sit behind `RUN_DB_INTEGRATION` and run in the
+      # `integration` job.
       - name: Backend tests
         run: npx jest --passWithNoTests
 
-      # ── Frontend ESLint (explicitly SKIPPED) ──────────────────────────────
-      # Frontend lint is deferred — the apps/web ESLint version conflict was tracked
-      # as its own ticket (ESLINT-002) and is intentionally NOT part of this
-      # pipeline. The workflow must not fail or warn about its absence here.
-      # Follow-up: re-enable `cd apps/web && npm run lint` once that ticket
-      # lands.
+  # ── Web (`apps/web`): its own toolchain, its own job ────────────────────────
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `apps/web` keeps its own tsconfig (the workspace root does not compile it).
+      - name: Web typecheck
+        run: cd apps/web && npm run typecheck
+
+      # ESLint 9 flat config (`apps/web/eslint.config.mjs`). The pre-existing
+      # warning baseline does not fail this step; an error would.
+      - name: Web lint
+        run: cd apps/web && npm run lint
+
+      # `apps/web/jest.config.js` collects `*.test.ts` (NOT `*.spec.ts`, which
+      # the root hermetic run would collect and fail on — it compiles with the
+      # repo-root tsconfig, whose `lib` has no DOM).
+      - name: Web tests
+        run: cd apps/web && npm run test
+
+      - name: Web build
+        run: cd apps/web && npm run build
+
+  # ── Integration: the specs and the API gate that need real services ─────────
+  # NON-REQUIRED BY DESIGN is a branch-protection concept: nothing here is
+  # marked required on main yet, and no step carries `continue-on-error`, so a
+  # failure is visible and red rather than swallowed.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Same major versions as docker-compose.yml (postgres:16-alpine, redis:7-alpine).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # The service containers publish to the runner's loopback, which is what the
+    # app, the specs and `scripts/dev-db-env.sh` all require. `DEV_DB_PUBLISHED_PORT`
+    # is the guard's documented CI override: it asserts the port Docker publishes
+    # instead of asking the Docker daemon for the mapping.
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '5432'
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DEV_DB_PUBLISHED_PORT: '5432'
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: '6379'
+      # Scratch index for the Redis-backed specs (the gate picks 15 for its own
+      # throwaway index; the env file below keeps the development value, 0).
+      REDIS_DATABASE: '15'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # ── Environment file ──────────────────────────────────────────────────────
+      # Generated per run from `.env.example` + the service values above, with
+      # throwaway secrets (`openssl rand`). No repository secret is referenced,
+      # and the file lives in `$RUNNER_TEMP`, outside the checkout, so it can
+      # never be committed. `scripts/dev-db-env.sh` reads the DB_* keys;
+      # `scripts/api-gate.js` reads REDIS_DATABASE to make sure the index it
+      # picks for its own scratch keys is a different one.
+      - name: Generate the CI environment file
+        run: |
+          cp .env.example "$RUNNER_TEMP/ci.env"
+          {
+            echo ''
+            echo '# ── D16 CI overrides (appended: the last value of a key wins) ──'
+            echo "DB_HOST=$DB_HOST"
+            echo "DB_PORT=$DB_PORT"
+            echo "DB_USERNAME=$DB_USERNAME"
+            echo "DB_PASSWORD=$DB_PASSWORD"
+            # The "development" target this file describes. It is never created
+            # and never opened: `scripts/api-gate.js` refuses to connect to the
+            # database named here, and the migration/spec steps below name the
+            # scratch database explicitly instead.
+            echo "DB_DATABASE=gym_ci_dev"
+            echo "REDIS_HOST=$REDIS_HOST"
+            echo "REDIS_PORT=$REDIS_PORT"
+            # THE DEVELOPMENT INDEX, deliberately not the job's scratch index:
+            # `scripts/api-gate.js` REFUSES to run when the index it would use
+            # for its own scratch keys matches the one in this file.
+            echo "REDIS_DATABASE=0"
+            echo "JWT_SECRET=$(openssl rand -hex 32)"
+            echo "JWT_REFRESH_SECRET=$(openssl rand -hex 32)"
+            echo "MFA_ENCRYPTION_KEY=$(openssl rand -base64 32)"
+          } >> "$RUNNER_TEMP/ci.env"
+
+      # ── Scratch database ──────────────────────────────────────────────────────
+      # Uniquely named per run attempt. Created through the `pg` client that is
+      # already a dependency, so the runner image needs no `psql`. The name is
+      # recomputed (never carried in $GITHUB_ENV) so each step is self-contained.
+      - name: Create the scratch database
+        run: |
+          export SCRATCH_DB="gym_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          # The node program is single-quoted on purpose: its own `$1` parameter
+          # placeholder must reach node literally rather than be expanded here.
+          # shellcheck disable=SC2016
+          node -e '
+            const { Client } = require("pg");
+            (async () => {
+              const c = new Client({
+                host: process.env.DB_HOST,
+                port: Number(process.env.DB_PORT),
+                user: process.env.DB_USERNAME,
+                password: process.env.DB_PASSWORD,
+                database: "postgres",
+              });
+              await c.connect();
+              const name = process.env.SCRATCH_DB;
+              const found = await c.query("SELECT 1 FROM pg_database WHERE datname = $1", [name]);
+              if (found.rowCount === 0) {
+                await c.query("CREATE DATABASE \"" + name + "\"");
+                console.log("created " + name);
+              } else {
+                console.log("reusing " + name);
+              }
+              await c.end();
+            })().catch((e) => { console.error(e); process.exit(1); });
+          '
+
+      # ── Migrations ────────────────────────────────────────────────────────────
+      # The gated specs need a MIGRATED database; `src/data-source.ts` reads the
+      # DB_* variables straight from the environment (it never loads `.env`).
+      - name: Run migrations on the scratch database
+        run: DB_DATABASE="gym_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}" npm run migration:run
+
+      # ── Gated specs ───────────────────────────────────────────────────────────
+      # Every spec gated by `const RUN = process.env.RUN_DB_INTEGRATION === '1'`.
+      # The pattern is path-based, so a new integration spec is picked up
+      # automatically; without `--passWithNoTests`, a pattern matching nothing
+      # exits non-zero instead of passing silently.
+      - name: Integration specs (real Postgres and Redis)
+        run: RUN_DB_INTEGRATION=1 DB_DATABASE="gym_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}" npx jest --testPathPattern='\.integration\.spec\.ts$'
+
+      # ── API gate ──────────────────────────────────────────────────────────────
+      # Boots the real entrypoint (`src/main.ts`) on its OWN throwaway database
+      # (`gym_gate_*`, created and dropped by the gate) and exercises the Phase 3
+      # surface over HTTP. `--env-path` points the guard at the generated file.
+      - name: API gate
+        run: npm run api:gate -- --env-path="$RUNNER_TEMP/ci.env"
+
+      # ── Teardown ──────────────────────────────────────────────────────────────
+      # Runs even when an earlier step failed, so no scratch database outlives
+      # the job; the count it prints is the proof that none did.
+      - name: Drop the scratch database
+        if: always()
+        run: |
+          export SCRATCH_DB="gym_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          # The node program is single-quoted on purpose: its own `$1` parameter
+          # placeholder must reach node literally rather than be expanded here.
+          # shellcheck disable=SC2016
+          node -e '
+            const { Client } = require("pg");
+            (async () => {
+              const c = new Client({
+                host: process.env.DB_HOST,
+                port: Number(process.env.DB_PORT),
+                user: process.env.DB_USERNAME,
+                password: process.env.DB_PASSWORD,
+                database: "postgres",
+              });
+              await c.connect();
+              const name = process.env.SCRATCH_DB;
+              // FORCE (PostgreSQL 13+) so a connection a failed spec left open
+              // cannot make the teardown fail and mask the real result.
+              await c.query("DROP DATABASE IF EXISTS \"" + name + "\" WITH (FORCE)");
+              const left = await c.query("SELECT count(*)::int AS n FROM pg_database WHERE datname LIKE $1", ["gym_ci_%"]);
+              console.log("dropped " + name + "; gym_ci_* databases remaining: " + left.rows[0].n);
+              await c.end();
+            })().catch((e) => { console.error(e); process.exit(1); });
+          '
+
+  # ── Docker image: main only ─────────────────────────────────────────────────
+  # A PR does not need an image and this is the slowest job, so it runs on
+  # pushes to main only. It builds the repository's own Dockerfile with the
+  # standard GIT_REVISION argument (the Dockerfile REFUSES to build without a
+  # real revision) and pushes nothing anywhere.
+  docker-image:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build the production image
+        run: docker build --build-arg GIT_REVISION="${{ github.sha }}" -t gym-api:ci .

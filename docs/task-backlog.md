@@ -2806,9 +2806,11 @@ Recorded verbatim. These govern the `DEF-07` throttling work, delivered on branc
 
 ## ESLINT-002 — `apps/web` lint (2026-10-03)
 
-**Status: DONE — lint green.** Branch `chore/web-eslint-flat-config`. `cd apps/web && npm run lint`
-→ `EXIT=0`. Web lint is still **not** a CI gate: `.github/workflows/ci.yml` is deliberately
-untouched here (the D16 CI slice). This is the lint half of the D16 `ESLINT-002` item; the
+**Status: DONE — lint green, and since 2026-10-04 it IS a CI gate.** Branch
+`chore/web-eslint-flat-config`. `cd apps/web && npm run lint` → `EXIT=0`. Web lint was **not** a CI
+gate when this entry was written — the D16 CI slice added it to the `web` job of
+`.github/workflows/ci.yml` (recorded under "D16" at the end of this file). This is the lint half of
+the D16 `ESLINT-002` item; the
 web-build half was a truncated local `@next/swc-linux-x64-gnu` addon (53,261,824 B on disk, ELF
 section headers declared at 143,142,856 B), fixed the same day by `npm ci` at the workspace root —
 `next build` has run `EXIT=0` since.
@@ -2927,24 +2929,31 @@ entry below.
   outage answered 401 and the defect therefore persisted — no longer applies and is removed rather
   than left to mislead a later reader. Measured on `5cbf8b56` (2026-10-04): the merge is an ancestor
   of `main`, and the tree CI ran on is the tree verified locally.
-- **Test setup and its CI status**: `apps/web` has no unit runner (no `test` script; only
-  `@playwright/test`) and still has none wired into CI. The new specs run from a dedicated
+- **Test setup and its CI status**: `apps/web` had no unit runner (no `test` script; only
+  `@playwright/test`) and, when this was written, none wired into CI either — superseded on
+  2026-10-04 by the D16 slice (see the D16 entry at the end of this file); the toolchain below is
+  unchanged. The new specs run from a dedicated
   `apps/web/jest.config.js` using `jest`/`ts-jest` already in the lockfile — no new dependency. They are
   named `*.test.ts`, **not** `*.spec.ts`, deliberately: the repository-root jest config uses
   `testMatch: ['**/*.spec.ts']` with `rootDir: '.'`, so a `*.spec.ts` under `apps/web` is collected by
   the backend `npx jest` run and fails there, because that run compiles with the repo-root
   `tsconfig.spec.json`, whose `lib` has no DOM (`TS2304: Cannot find name 'window'`). Both halves were
-  measured on 2026-10-04. Making web tests a CI gate is a separate change and `.github/workflows/ci.yml`
-  is untouched.
-- **D16 — the web tests are not collected by CI**: the root `npx jest --passWithNoTests` job matches
-  `**/*.spec.ts`, and the web specs are `*.test.ts` under `apps/web`, so no CI job runs them.
+  measured on 2026-10-04. Making web tests a CI gate was a separate change, and `.github/workflows/ci.yml`
+  was untouched by the DEF-16 work — it was the D16 slice that made them a gate.
+- **D16 — the web tests are not collected by the ROOT job; they run in their own job**: the root
+  `npx jest --passWithNoTests` matches `**/*.spec.ts` and the web specs are `*.test.ts` under
+  `apps/web`, so the root run collects none of them — deliberately, for the tsconfig reason above.
+  When this was written that also meant no CI job ran them at all; the D16 CI slice (2026-10-04)
+  added a `web` job that runs `cd apps/web && npm run test`, the script the same slice added to
+  `apps/web/package.json`.
 - **Acceptance criteria**: with the backend unable to answer the refresh, the stored tokens survive and
   the caller sees the refresh failure rather than a 401; only a 401 from the refresh endpoint clears the
   session; a valid access token plus an unavailable route behaves exactly as before.
 - **Risks**: Low–Medium. The classification is by status only, and the pre-PR-#8 401-for-infrastructure
   ambiguity that was the original residual is resolved now that both halves are on `main`. What
-  remains is the accepted risk recorded under `### R8` below, plus the standing D16 gap that nothing
-  runs these web specs in CI.
+  remains is the accepted risk recorded under `### R8` below. (The former D16 gap — that nothing ran
+  these web specs in CI — was closed on 2026-10-04 by the `web` job of the D16 CI slice, recorded in
+  the D16 entry at the end of this file.)
 
 ### R8 — Logout clears the session even when the revocation call failed
 
@@ -2985,8 +2994,9 @@ entry below.
 
 ## DEF-17 — `clearTokens()` leaves `gym.organizationId` behind (2026-10-04)
 
-**Status: OPEN — unruled, no code change.** Filed as a RECOMMENDATION out of the `DEF-16`
-follow-up work; nothing was changed.
+**Status: Fixed** — owner instruction (owner, 2026-10-04), recorded verbatim: "DEF-17: fix the one
+line typo and bundle it with D16's web-test script." Filed on 2026-10-04 as a RECOMMENDATION out of
+the `DEF-16` follow-up work; the fix ships on `chore/ci-slice-d16` (the D16 PR).
 
 - **Objective**: record that the web client's sign-out does not clear the organization id it sends
   as `X-Organization-Id`, and that the two sign-out paths disagree about it.
@@ -3016,11 +3026,116 @@ follow-up work; nothing was changed.
 - **Risks**: Low for confidentiality — the server refuses. Low-Medium for usability: a signed-in
   session that 403s until the id is replaced is indistinguishable, to the user, from a broken
   account.
-- **RECOMMENDATION (not ruled)**: have `clearTokens()` clear `gym.organizationId` as well, or route
-  every sign-out through one path that does. Not done here: it changes sign-out behaviour, which
-  the `DEF-16` ruling `F1` deliberately left alone, so it waits for a ruling.
+- **The fix (D16 slice, 2026-10-04)**: `Navbar.tsx`'s sign-out now calls `setOrganizationId(null)`
+  after clearing the tokens — the single line the instruction asked for, mirroring `Sidebar.tsx`.
+  The alternative in the RECOMMENDATION below — teaching `clearTokens()` itself to clear
+  `gym.organizationId` — was **not** taken: `clearTokens()` has five call sites, three of them not
+  sign-outs (measured list below), so that edit changes more behaviour than the two sign-out
+  controls this entry is about, which the `DEF-16` ruling `F1` deliberately left alone.
+- **Pinned by**: `apps/web` typecheck, lint and `next build`, plus the diff — **no unit test**. A
+  test for this needs a React rendering/testing dependency the repo does not carry; adding one is
+  not ruled, so the runtime behaviour (an actual click on "Sign out") is **UNKNOWN**, verified by
+  inspection only.
+- **Measured 2026-10-04 (grep over `apps/web/src`, after the fix)**: `clearTokens()` has five call
+  sites — `auth-api.ts:39` (the logout `finally`), `api.ts:171` and `api.ts:195` (the two automatic
+  "session rejected" paths `DEF-16 F2` added), `Sidebar.tsx:208` and `Navbar.tsx:87` (the two
+  sign-out controls). Both sign-out controls now clear the stored organization id; the two automatic
+  paths clear the tokens and leave the organization id in place.
+- **RECOMMENDATION (not ruled)**: have `clearTokens()` clear `gym.organizationId` as well, so the
+  automatic paths are covered too — declined for this slice as above; it stays the owner's call.
 - **Acceptance criteria**: either the organization id is cleared with the tokens on every sign-out
-  path, or the decision to keep it is recorded here with its rationale.
+  path, or the decision to keep it is recorded here with its rationale. Met for the two sign-out
+  controls by the fix; the automatic session-rejection paths are the residue recorded above.
+
+## D16 — CI pipeline slice (2026-10-04)
+
+**Status: DONE — branch `chore/ci-slice-d16`, delivered by PR (this session does not merge).**
+
+- **Owner ruling (owner, 2026-10-03), recorded verbatim**: "D16 CI slice: accept my scope as listed."
+  The scope as listed: split CI into parallel backend, web and integration jobs; add the web build
+  and lint; run the gated specs and api:gate against Postgres and Redis service containers on every
+  PR (non-required at first) and on main; drop the `branches` filter on `pull_request` (stacked PRs
+  currently get no CI); a Docker build in a main-only job after measuring it once; npm cache only, no
+  secrets; branch protection last, in the GitHub UI.
+- **Owner instruction (owner, 2026-10-04), recorded verbatim**: "DEF-17: fix the one line typo and
+  bundle it with D16's web-test script." — shipped in this PR, see the DEF-17 entry above.
+
+**Jobs as shipped** (`.github/workflows/ci.yml`; every job runs `actions/checkout@v4` +
+`actions/setup-node@v4` with `cache: npm`, under `permissions: contents: read`, with no secret and no
+`continue-on-error`):
+
+| Job (check name) | Trigger | Steps | Services | Timeout |
+|---|---|---|---|---|
+| `ci (24)` | push to main, every PR | backend typecheck, backend lint, hermetic `npx jest --passWithNoTests` | none | 20 min |
+| `web` | push to main, every PR | web typecheck, web lint, web tests (`cd apps/web && npm run test`), web build | none | 20 min |
+| `integration` | push to main, every PR | generated env file → scratch database → migrations → `RUN_DB_INTEGRATION=1` specs → `api:gate` → drop the scratch database | `postgres:16-alpine`, `redis:7-alpine`, both health-checked | 30 min |
+| `docker-image` | push to main **only** | `docker build --build-arg GIT_REVISION=${{ github.sha }}` (pushes nothing) | none | 30 min |
+
+- The backend job keeps its id and matrix precisely so the check is still called `ci (24)`; its
+  frontend typecheck step moved into the new `web` job — that split is the ruling's first line.
+- `pull_request` now has **no** `branches` filter, so a PR whose base is another branch gets CI.
+  Whether a real stacked PR then receives a run is **UNKNOWN** until one exists.
+- `concurrency: ${{ github.workflow }}-${{ github.ref }}` with `cancel-in-progress: true`
+  (RECOMMENDATION, not ruled): a superseded run on the same ref is cancelled — including a
+  superseded run on `main`.
+- **The integration job's environment file** is generated per run from `.env.example` plus the
+  service values, with throwaway secrets (`openssl rand`), written to `$RUNNER_TEMP` outside the
+  checkout. Two of its values are deliberately NOT the job's: `DB_DATABASE=gym_ci_dev` (a name that
+  is never created and never opened — `api:gate` refuses to connect to the database this file names)
+  and `REDIS_DATABASE=0` (the development index — `api:gate` refuses when its own scratch index, 15,
+  equals the file's). The run's scratch database is `gym_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}`,
+  named inline on each step (`DB_DATABASE="gym_ci_…" npm run migration:run`) so the file's
+  `gym_ci_dev` is never touched; teardown runs under `if: always()` and drops it `WITH (FORCE)`
+  (PostgreSQL 13+). No `psql` is needed — create and drop use the `pg` client already in the
+  dependency tree.
+- **The stale comment is gone**: the backend-tests step no longer names a suite/test count (the one
+  that had drifted to "70 suites / 700+ tests"); it now describes the isolation and points at the
+  gated specs' job. The "Frontend ESLint (explicitly SKIPPED)" block went as well — web lint is a CI
+  step now.
+- **Docker measurement (2026-10-04, local cold build on this machine, nothing pushed)**:
+  `BUILD_EXIT=0`, wall time **385 s**, image **613 MB** (`612627317` bytes). Under the ~10-minute
+  guideline the RECOMMENDATION set, needs no secret (only `github.sha`), and runs on main only — so
+  the job ships. Its duration on a GitHub runner is still **unmeasured**: `docker-image` is skipped
+  on a PR, so the first push to `main` after the merge is what will exercise it.
+- **Measured on the PR (2026-10-04, run `37221183483` on `68dbd55b`, three attempts — the opening
+  run plus two `gh run rerun`s; every attempt green)**. These are run and job durations, not counts
+  of suites or tests:
+
+  | Attempt | Run wall clock | `ci (24)` | `web` | `integration` | `docker-image` |
+  |---|---|---|---|---|---|
+  | 1 (opened) | 2m54s | 1m51s | 2m24s | 2m50s | skipped (PR) |
+  | 2 (rerun) | 2m53s | 2m48s | 2m36s | 2m47s | skipped (PR) |
+  | 3 (rerun) | 2m59s | 2m55s | 2m21s | 2m49s | skipped (PR) |
+
+  For comparison, the three most recent pushes to `main` before this slice ran in 1m29s–2m27s
+  (`gh run list --branch main --limit 3`, read 2026-10-04), so the split held the wall clock in the
+  same band while adding the web gates, the gated specs and `api:gate` to it. Re-measure these
+  before turning any of the new checks into a required one.
+
+**What CI covers now**: backend typecheck/lint/hermetic suite; web typecheck/lint/tests/build; the
+`RUN_DB_INTEGRATION`-gated specs against real Postgres and real Redis; `api:gate` (boots the real
+`src/main.ts` over HTTP on its own throwaway database); a production image build on main.
+
+**What CI still does not cover**: browser/E2E driving (no Playwright run — `apps/web` keeps
+`@playwright/test` as a dependency but nothing in CI uses it); the web specs inside the ROOT jest
+run (they stay `*.test.ts`, uncollected there by design); any publish/deploy step (nothing is pushed
+to a registry or an environment); and migrations against any database other than the job's own
+throwaway ones.
+
+### Branch protection (owner action, not done)
+
+Nothing in this slice changes repository settings. On 2026-10-03 the protection endpoint answered
+`404 Branch not protected` and the rulesets endpoint answered `[]` — **CI is advisory, not a gate**,
+and a red check does not block a merge. When the owner turns protection on in the GitHub UI, the
+check names available to require are, in the order this entry suggests:
+
+1. `ci (24)` — the backend check, required first: it is the one with the longest history;
+2. `web`;
+3. `integration` — the ruling's "non-required at first" job;
+4. `docker-image` — main-only, so it never reports on a PR at all.
+
+Required checks should be turned on **last**, after the new jobs have run several times and their
+durations are known.
 
 ## DEF-18 — Webhook lease fencing token (2026-10-04)
 

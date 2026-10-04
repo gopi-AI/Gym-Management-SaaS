@@ -2,7 +2,14 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { authApi, clearTokens, decodeJwt, getAccessToken, getRefreshToken } from '@/lib';
+import {
+  authApi,
+  clearTokens,
+  decodeJwt,
+  getAccessToken,
+  getRefreshToken,
+  setOrganizationId,
+} from '@/lib';
 
 interface NavbarProps {
   activeMenu?: string;
@@ -79,6 +86,8 @@ function NavbarUserDropdown({ userName }: { userName: string }) {
       // Best-effort server logout; always clear locally.
       clearTokens();
     }
+    // Clear the selected tenant so no stale organization context survives.
+    setOrganizationId(null);
     router.push('/login');
   };
 
