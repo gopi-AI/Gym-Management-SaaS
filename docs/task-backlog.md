@@ -2972,7 +2972,22 @@ the `DEF-16` follow-up work; the fix ships on `chore/ci-slice-d16` (the D16 PR).
 - **Docker measurement (2026-10-04, local cold build on this machine, nothing pushed)**:
   `BUILD_EXIT=0`, wall time **385 s**, image **613 MB** (`612627317` bytes). Under the ~10-minute
   guideline the RECOMMENDATION set, needs no secret (only `github.sha`), and runs on main only — so
-  the job ships. Its duration on a GitHub runner is not measured.
+  the job ships. Its duration on a GitHub runner is still **unmeasured**: `docker-image` is skipped
+  on a PR, so the first push to `main` after the merge is what will exercise it.
+- **Measured on the PR (2026-10-04, run `37221183483` on `68dbd55b`, three attempts — the opening
+  run plus two `gh run rerun`s; every attempt green)**. These are run and job durations, not counts
+  of suites or tests:
+
+  | Attempt | Run wall clock | `ci (24)` | `web` | `integration` | `docker-image` |
+  |---|---|---|---|---|---|
+  | 1 (opened) | 2m54s | 1m51s | 2m24s | 2m50s | skipped (PR) |
+  | 2 (rerun) | 2m53s | 2m48s | 2m36s | 2m47s | skipped (PR) |
+  | 3 (rerun) | 2m59s | 2m55s | 2m21s | 2m49s | skipped (PR) |
+
+  For comparison, the three most recent pushes to `main` before this slice ran in 1m29s–2m27s
+  (`gh run list --branch main --limit 3`, read 2026-10-04), so the split held the wall clock in the
+  same band while adding the web gates, the gated specs and `api:gate` to it. Re-measure these
+  before turning any of the new checks into a required one.
 
 **What CI covers now**: backend typecheck/lint/hermetic suite; web typecheck/lint/tests/build; the
 `RUN_DB_INTEGRATION`-gated specs against real Postgres and real Redis; `api:gate` (boots the real
