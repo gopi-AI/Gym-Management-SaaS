@@ -3,25 +3,25 @@ import { Cache } from 'cache-manager';
 import {
   CACHE_CALL_TIMEOUT_MS_DEFAULT,
   CACHE_CALL_TIMEOUT_MS_ENV,
+  CACHE_CALL_TIMEOUT_MS_MAX,
+  CacheUnavailableError,
   boundedCacheCall,
   cacheCallTimeoutFrom,
   readCacheCallTimeout,
   withDeadline,
 } from './bounded-cache-call';
 
-/**
- * Wall-clock slack for LOWER bounds on an elapsed measurement.
- *
- * The value measured is produced by a `setTimeout`, and a timer-driven duration
- * read with `Date.now()` can come back one millisecond SHORT of the delay it was
- * given — the clock is truncated to the millisecond and libuv ends the timer on
- * its own cached clock (measured on node v24.20.0; see the DEF-15 throttling
- * specs). The slack is small on purpose: an assertion must still fail when the
- * helper gives up far earlier than its deadline.
- */
-const TIMER_JITTER_MS = 10;
-
 const cacheWith = (client: unknown) => ({ store: { client } }) as unknown as Cache;
+
+/**
+ * R1 (owner ruling O2, 2026-10-04): the deadline is asserted with FAKE timers,
+ * so every assertion about when the helper gives up is an assertion about the
+ * helper's own scheduling rather than about how loaded the runner was. Real
+ * timers must not leak out of a test that installed fake ones.
+ */
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 describe('boundedCacheCall (DEF-15)', () => {
   it('resolves with the operation result when the call answers in time', async () => {
@@ -34,41 +34,76 @@ describe('boundedCacheCall (DEF-15)', () => {
     expect(operation).toHaveBeenCalledWith(client);
   });
 
-  it('propagates the operation error unchanged', async () => {
+  it('propagates the operation failure as a cache-unavailable error, keeping it as the cause', async () => {
+    // The helper wraps the operation's own rejection (owner ruling O1): every way
+    // a bounded call can fail is an infrastructure failure, and the call sites
+    // answer 503 by testing for ONE type. Nothing is swallowed — the original
+    // failure stays reachable as `cause` and its message is kept.
     const client = { isReady: true };
     const failure = new Error('socket gone');
 
-    await expect(
-      boundedCacheCall(cacheWith(client), 500, 'probe', () => Promise.reject(failure)),
-    ).rejects.toBe(failure);
+    const caught = await boundedCacheCall(
+      cacheWith(client),
+      500,
+      'probe',
+      () => Promise.reject(failure),
+    ).catch((error: unknown) => error);
+
+    expect(caught).toBeInstanceOf(CacheUnavailableError);
+    expect((caught as CacheUnavailableError).cause).toBe(failure);
+    expect((caught as Error).message).toBe('probe: socket gone');
   });
 
-  it('rejects with a labelled deadline error when the call never answers', async () => {
+  it('does not reject one millisecond early, and rejects with the labelled error at the deadline', async () => {
+    // R1 (owner ruling O2, 2026-10-04): the deadline is driven by FAKE timers, so
+    // the assertion is about the helper's own scheduling and not about how busy
+    // the machine was. The previous version of this test measured elapsed wall
+    // clock and needed a jitter allowance to survive a loaded runner.
+    jest.useFakeTimers();
     // isReady stays true — a blackholed socket emits no error — so only the
     // deadline can end the call.
     const client = { isReady: true };
-    const started = Date.now();
+    let outcome: { settled: false } | { settled: true; error: unknown } = { settled: false };
 
-    await expect(
-      boundedCacheCall(cacheWith(client), 40, 'blacklist check', () => new Promise(() => undefined)),
-    ).rejects.toThrow(/blacklist check: no reply within 40 ms/);
+    // The result is deliberately NOT awaited. If the deadline is ever removed the
+    // call stays pending forever, and awaiting it would turn this test into a
+    // jest 5 s timeout — noise that hides which behaviour broke. The assertions
+    // below read the handler's effect instead, so a missing deadline fails as an
+    // ASSERTION.
+    void boundedCacheCall(
+      cacheWith(client),
+      500,
+      'blacklist check',
+      () => new Promise(() => undefined),
+    ).then(
+      () => {
+        outcome = { settled: true, error: '(resolved unexpectedly)' };
+      },
+      (error: unknown) => {
+        outcome = { settled: true, error };
+      },
+    );
 
-    const elapsed = Date.now() - started;
-    // No wall-clock upper bound here, deliberately. This file alone measures
-    // ~50 ms for this call; the same test beside the rest of the suite measured
-    // 6054 ms against a 40 ms deadline, because what the load delays is the
-    // timer CALLBACK itself. An upper bound would report the runner, not the
-    // helper. What has to hold is asserted instead: the call REJECTED with the
-    // deadline's own message (a call that was never bounded never settles at
-    // all, and jest's own per-test timeout is the backstop for that), and it did
-    // not reject early.
-    expect(elapsed).toBeGreaterThanOrEqual(40 - TIMER_JITTER_MS);
+    await jest.advanceTimersByTimeAsync(499);
+    expect(outcome).toEqual({ settled: false });
+
+    await jest.advanceTimersByTimeAsync(1);
+    // The handler runs inside a closure, so the declared union is what the
+    // assertions must read through; the cast is `unknown`-first because the
+    // compiler has narrowed the initialiser's type by this point.
+    const settled = outcome as unknown as { settled: true; error: unknown };
+    expect(settled.settled).toBe(true);
+    expect(settled.error).toBeInstanceOf(CacheUnavailableError);
+    expect((settled.error as Error).message).toBe('blacklist check: no reply within 500 ms');
   });
 
   it('refuses without a round trip when the client reports it is not ready', async () => {
     const client = { isReady: false };
     const operation = jest.fn();
 
+    await expect(boundedCacheCall(cacheWith(client), 500, 'probe', operation)).rejects.toBeInstanceOf(
+      CacheUnavailableError,
+    );
     await expect(boundedCacheCall(cacheWith(client), 500, 'probe', operation)).rejects.toThrow(
       /not ready/,
     );
@@ -78,10 +113,44 @@ describe('boundedCacheCall (DEF-15)', () => {
   it('refuses when the store exposes no Redis client', async () => {
     const operation = jest.fn();
 
+    await expect(
+      boundedCacheCall(cacheWith(undefined), 500, 'probe', operation),
+    ).rejects.toBeInstanceOf(CacheUnavailableError);
     await expect(boundedCacheCall(cacheWith(undefined), 500, 'probe', operation)).rejects.toThrow(
       /no Redis client/,
     );
     expect(operation).not.toHaveBeenCalled();
+  });
+
+  it('types every infrastructure failure that needs no timer as CacheUnavailableError', async () => {
+    // The type has to be COMPLETE: the call sites map 503 by testing for it, so
+    // an infrastructure failure arriving as anything else would be reported to
+    // the client as an invalid session instead of an outage. The fourth shape,
+    // the deadline, is asserted in the fake-timer test above — a never-settling
+    // call cannot be awaited here without turning a missing deadline into a
+    // jest timeout rather than a failed assertion.
+    // Each shape is built LAZILY, immediately before it is awaited: building
+    // them eagerly would leave an already-rejected promise unhandled until the
+    // loop reached it, which node reports as an unhandled rejection.
+    const failures: Array<[string, () => Promise<unknown>]> = [
+      ['no client', () => boundedCacheCall(cacheWith(undefined), 50, 'probe', jest.fn())],
+      [
+        'not ready',
+        () => boundedCacheCall(cacheWith({ isReady: false }), 50, 'probe', jest.fn()),
+      ],
+      [
+        'driver error',
+        () =>
+          boundedCacheCall(cacheWith({ isReady: true }), 50, 'probe', () =>
+            Promise.reject(new Error('READONLY')),
+          ),
+      ],
+    ];
+
+    for (const [shape, call] of failures) {
+      const caught = await call().catch((error: unknown) => error);
+      expect([shape, caught instanceof CacheUnavailableError]).toEqual([shape, true]);
+    }
   });
 
   it('swallows a rejection from the promise it abandoned at the deadline', async () => {
@@ -108,11 +177,27 @@ describe('boundedCacheCall (DEF-15)', () => {
   });
 
   it('labels the error with the operation name and never with a key or token', async () => {
+    // Fake timers for the same reason as the test above: this call never settles
+    // on its own, so a removed deadline must fail an assertion here rather than
+    // hang until jest's own timeout.
+    jest.useFakeTimers();
     const client = { isReady: true };
+    let message: string | undefined;
 
-    await expect(
-      boundedCacheCall(cacheWith(client), 20, 'blacklist lookup', () => new Promise(() => undefined)),
-    ).rejects.toThrow(/^blacklist lookup: no reply within 20 ms$/);
+    void boundedCacheCall(
+      cacheWith(client),
+      20,
+      'blacklist lookup',
+      () => new Promise(() => undefined),
+    ).then(
+      () => undefined,
+      (error: Error) => {
+        message = error.message;
+      },
+    );
+
+    await jest.advanceTimersByTimeAsync(20);
+    expect(message).toBe('blacklist lookup: no reply within 20 ms');
   });
 });
 
@@ -134,6 +219,25 @@ describe('readCacheCallTimeout', () => {
     expect(() => readCacheCallTimeout('-5')).toThrow(/CACHE_CALL_TIMEOUT_MS/);
     expect(() => readCacheCallTimeout('abc')).toThrow(/CACHE_CALL_TIMEOUT_MS/);
     expect(() => readCacheCallTimeout('1.5')).toThrow(/CACHE_CALL_TIMEOUT_MS/);
+    expect(() => readCacheCallTimeout('NaN')).toThrow(/CACHE_CALL_TIMEOUT_MS/);
+    expect(() => readCacheCallTimeout('Infinity')).toThrow(/CACHE_CALL_TIMEOUT_MS/);
+  });
+
+  it('accepts the whole documented range, both ends inclusive', () => {
+    // R6: the range is [1, CACHE_CALL_TIMEOUT_MS_MAX]. Both ends are legal and
+    // the boundaries are exercised so an off-by-one cannot pass.
+    expect(readCacheCallTimeout(1)).toBe(1);
+    expect(readCacheCallTimeout(String(CACHE_CALL_TIMEOUT_MS_MAX))).toBe(CACHE_CALL_TIMEOUT_MS_MAX);
+    expect(CACHE_CALL_TIMEOUT_MS_MAX).toBe(10_000);
+  });
+
+  it('rejects a deadline above the ceiling instead of arming a request path with it', () => {
+    // R6. A deadline past the ceiling stops bounding anything and becomes the
+    // outage it was meant to cut short, so it fails the boot.
+    expect(() => readCacheCallTimeout(String(CACHE_CALL_TIMEOUT_MS_MAX + 1))).toThrow(
+      /CACHE_CALL_TIMEOUT_MS must be an integer between 1 and 10000/,
+    );
+    expect(() => readCacheCallTimeout('600000')).toThrow(/between 1 and 10000/);
   });
 
   it('reads through a ConfigService, and defaults when there is none', () => {

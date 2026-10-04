@@ -11,11 +11,16 @@
  *
  * WHAT THIS FILE ASSERTS
  * Each probe asserts the call SETTLES within a generous budget (4x the 500 ms
- * deadline the fix uses): before the fix a probe failed with `settled: false` —
- * that failure was the reproduction, the request never came back. What the fix
- * changed is the CALL SITES, not the driver, so the probes that exercise the
- * driver alone now go through the same helper the call sites use; the guard
- * probe drives the real class end to end and is unchanged.
+ * deadline the fix uses) — and, since O1, asserts WHAT it settled WITH: the
+ * guard probe checks it answered the 503, and the helper probes check the
+ * failure arrived as a `CacheUnavailableError`. A probe that only asserted
+ * `settled: true` cannot tell a bounded refusal from any other answer.
+ *
+ * The unbounded call is not asserted to hang from memory: the raw-client
+ * CONTROL probe below runs the same shape on the same blackholed socket with no
+ * helper and requires it NOT to settle. That is what makes the rest of the file
+ * meaningful — it shows the blackhole really is producing the hang the deadline
+ * exists to end.
  *
  * There is NO mock in this file: a real node-redis client, a real
  * `cache-manager` Redis store, and a real TCP proxy in front of real Redis.
@@ -42,8 +47,13 @@ import * as net from 'net';
 import { createClient } from 'redis';
 import {
   CACHE_CALL_TIMEOUT_MS_DEFAULT,
+  CacheUnavailableError,
   boundedCacheCall,
 } from '../cache/bounded-cache-call';
+import {
+  CACHE_UNAVAILABLE_RETRY_AFTER_SECONDS,
+  ServiceUnavailableWithRetryException,
+} from '../cache/cache-unavailable.exception';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
 const RUN = process.env.RUN_DB_INTEGRATION === '1';
@@ -168,8 +178,23 @@ async function settleWithin(promise: Promise<unknown>, ms: number): Promise<Outc
   }
 }
 
-const makeGuardContext = (token: string): ExecutionContext =>
-  ({
+/**
+ * The error a probe rejected with, failing loudly when the probe hung (the
+ * DEF-15 defect) or resolved (which for these probes is equally wrong). Asserting
+ * the answer, not just that there was one, is what tells a bounded 503 apart
+ * from any other settled outcome.
+ */
+function rejectionOf(outcome: Outcome): unknown {
+  if (!outcome.settled) {
+    throw new Error('the probe never settled — the DEF-15 hang is back');
+  }
+  if (outcome.error === undefined) {
+    throw new Error(`the probe resolved (value: ${JSON.stringify(outcome.value)}) instead of rejecting`);
+  }
+  return outcome.error;
+}
+
+const makeGuardContext = (token: string): ExecutionContext =>  ({
     switchToHttp: () => ({
       getRequest: () => ({ headers: { authorization: `Bearer ${token}` } }),
       getResponse: () => ({}),
@@ -237,35 +262,88 @@ describeIntegration('DEF-15: request-path cache calls are bounded (real Redis)',
     await cleaner.quit();
   });
 
-  it('the auth guard answers instead of hanging (every authenticated route)', async () => {
+  it('the auth guard answers 503 for the blackholed read instead of hanging', async () => {
     const outcome = await settleWithin(guard.canActivate(makeGuardContext(token)), PROBE_BUDGET_MS);
 
+    // DEF-15: it came back at all. Before the fix this was `settled: false` and
+    // the request never returned.
     expect(outcome.settled).toBe(true);
+    // R5: assert WHAT it answered, not merely that it answered. A settled call
+    // that answered 401 is the O1 defect this change exists to fix, and
+    // `settled: true` alone cannot tell the two apart.
+    const answered = rejectionOf(outcome) as ServiceUnavailableWithRetryException;
+    expect(answered).toBeInstanceOf(ServiceUnavailableWithRetryException);
+    expect(answered.getStatus()).toBe(503);
+    expect(answered.retryAfterSeconds).toBe(CACHE_UNAVAILABLE_RETRY_AFTER_SECONDS);
+  });
+
+  const bounded = <T>(label: string, operation: (redis: ProbeClient) => Promise<T>) =>
+    boundedCacheCall(cache, CACHE_CALL_TIMEOUT_MS_DEFAULT, label, operation);
+
+  // ---------------------------------------------------------------------------
+  // R2: the CONTROL. Everything below drives the shared helper directly, so on
+  // its own it cannot show that anything was ever hanging — a helper that
+  // returns proves only that the helper returns. This probe runs the SAME
+  // operation shape on the SAME blackholed socket WITHOUT the helper, which is
+  // what the call sites did before DEF-15: it must NOT settle. If it ever does
+  // settle, the blackhole is not reproducing an outage and every "settles"
+  // assertion in this file is vacuous.
+  //
+  // WHAT THIS WINDOW CAN AND CANNOT DETECT (measured 2026-10-04, both directions)
+  // The unbounded call never settles, so ANY window shows it not settling. But
+  // the control only distinguishes "never settles" from "bounded", which means a
+  // replacement call bounded at or above this window is indistinguishable from
+  // the hang inside it: replacing the raw call with the shared helper at its
+  // default 500 ms deadline let this probe PASS unchanged, because 500 ms of
+  // silence looks exactly like an outage in a 300 ms window. Replacing it with
+  // the same helper at a 100 ms deadline failed the probe as intended. So the
+  // control discriminates unbounded-hang from "bounded well below this window",
+  // and that is the property it is here to pin.
+  // ---------------------------------------------------------------------------
+  const RAW_CONTROL_WINDOW_MS = 300;
+
+  it('the unbounded raw call does NOT settle, while its bounded counterpart does', async () => {
+    const raw = await settleWithin(
+      // `.catch` only attaches a handler so a late rejection during teardown
+      // cannot become an unhandled rejection; it never settles, so the raced
+      // promise stays pending exactly as the unbounded call site did.
+      client.incr(key('raw-control')).catch(() => undefined),
+      RAW_CONTROL_WINDOW_MS,
+    );
+    expect(raw.settled).toBe(false);
+
+    const boundedOutcome = await settleWithin(
+      bounded('raw-control bounded', (redis) => redis.incr(key('raw-control-bounded'))),
+      PROBE_BUDGET_MS,
+    );
+    expect(boundedOutcome.settled).toBe(true);
   });
 
   // The remaining probes cover the operation SHAPES the other call sites use
   // (`auth.service`, `ai-usage-limit.service`), run through the same helper
-  // those sites now run through. They assert the helper ends the call; that the
-  // call sites call it, and what each answers, is pinned in their own specs.
-  const bounded = <T>(label: string, operation: (redis: ProbeClient) => Promise<T>) =>
-    boundedCacheCall(cache, CACHE_CALL_TIMEOUT_MS_DEFAULT, label, operation);
-
-  it('the refresh-path blacklist read settles (auth.service isTokenBlacklisted)', async () => {
+  // those sites now run through. They assert the helper ends the call. They do
+  // NOT cover the services themselves: `AuthService` and `AiUsageLimitService`
+  // are never constructed in this file, and what each site answers is pinned in
+  // its own hermetic spec (`auth.service.spec.ts`,
+  // `ai-usage-limit.service.spec.ts`, `jwt-auth.guard.spec.ts`).
+  it('helper against a blackholed socket, blacklist-read shape (GET), settles', async () => {
     const outcome = await settleWithin(bounded('blacklist lookup', () => cache.get(key('blacklist-read'))), PROBE_BUDGET_MS);
 
     expect(outcome.settled).toBe(true);
+    expect(rejectionOf(outcome)).toBeInstanceOf(CacheUnavailableError);
   });
 
-  it('the blacklist write settles (auth.service blacklistToken / logout)', async () => {
+  it('helper against a blackholed socket, blacklist-write shape (SET), settles', async () => {
     const outcome = await settleWithin(
       bounded('blacklist write', () => cache.set(key('blacklist-write'), 'true', 60_000)),
       PROBE_BUDGET_MS,
     );
 
     expect(outcome.settled).toBe(true);
+    expect(rejectionOf(outcome)).toBeInstanceOf(CacheUnavailableError);
   });
 
-  it('the MFA challenge claim settles (auth.service verifyMfaAndLogin SET NX)', async () => {
+  it('helper against a blackholed socket, MFA-claim shape (SET NX), settles', async () => {
     const outcome = await settleWithin(
       bounded('MFA challenge claim', (redis) =>
         redis.set(key('mfa-claim'), JSON.stringify('true'), { PX: 60_000, NX: true }),
@@ -274,27 +352,30 @@ describeIntegration('DEF-15: request-path cache calls are bounded (real Redis)',
     );
 
     expect(outcome.settled).toBe(true);
+    expect(rejectionOf(outcome)).toBeInstanceOf(CacheUnavailableError);
   });
 
-  it('the AI rate-limit increment settles (ai-usage-limit assertRequestAllowed INCR)', async () => {
+  it('helper against a blackholed socket, rate-limit shape (INCR), settles', async () => {
     const outcome = await settleWithin(
       bounded('AI rate limit INCR', (redis) => redis.incr(key('ai-rate'))),
       PROBE_BUDGET_MS,
     );
 
     expect(outcome.settled).toBe(true);
+    expect(rejectionOf(outcome)).toBeInstanceOf(CacheUnavailableError);
   });
 
-  it('the AI budget read settles (ai-usage-limit readBudgetCounter GET)', async () => {
+  it('helper against a blackholed socket, budget-read shape (GET), settles', async () => {
     const outcome = await settleWithin(
       bounded('AI budget counter GET', (redis) => redis.get(key('ai-budget'))),
       PROBE_BUDGET_MS,
     );
 
     expect(outcome.settled).toBe(true);
+    expect(rejectionOf(outcome)).toBeInstanceOf(CacheUnavailableError);
   });
 
-  it('the AI budget hydration write settles (ai-usage-limit SET NX EX)', async () => {
+  it('helper against a blackholed socket, budget-hydration shape (SET NX EX), settles', async () => {
     const outcome = await settleWithin(
       bounded('AI budget counter SET NX', (redis) =>
         redis.set(key('ai-hydrate'), '0', { NX: true, EX: 60 }),
@@ -303,14 +384,16 @@ describeIntegration('DEF-15: request-path cache calls are bounded (real Redis)',
     );
 
     expect(outcome.settled).toBe(true);
+    expect(rejectionOf(outcome)).toBeInstanceOf(CacheUnavailableError);
   });
 
-  it('the AI usage-counter write settles (ai-usage-limit recordUsage INCRBY)', async () => {
+  it('helper against a blackholed socket, usage-counter shape (INCRBY), settles', async () => {
     const outcome = await settleWithin(
       bounded('AI usage counter INCRBY', (redis) => redis.incrBy(key('ai-tokens'), 7)),
       PROBE_BUDGET_MS,
     );
 
     expect(outcome.settled).toBe(true);
+    expect(rejectionOf(outcome)).toBeInstanceOf(CacheUnavailableError);
   });
 });

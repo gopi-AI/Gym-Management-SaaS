@@ -26,6 +26,7 @@ import {
   readCacheCallTimeout,
 } from './shared/cache/bounded-cache-call';
 import { parseTrustProxy } from './shared/throttling/trust-proxy';
+import { ServiceUnavailableRetryFilter } from './shared/cache/service-unavailable-retry.filter';
 import { CryptoModule } from './shared/crypto/crypto.module';
 import { HealthModule } from './shared/health/health.module';
 import { InventoryModule } from './inventory/inventory.module';
@@ -234,9 +235,23 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     // behaves like Nest's default and does NOT contact any service — it never crashes
     // and never logs anything about being absent. No existing exception filter exists
     // in src/shared/ to integrate with, so this is the single global filter.
+    //
+    // It stays FIRST here, deliberately: Nest REVERSES the filter list before
+    // matching (`RouterExceptionFilters.create` → `setCustomFilters(filters.reverse())`
+    // in `@nestjs/core/router/router-exception-filters.js`), so the LAST filter
+    // registered is the FIRST one tried. `SentryGlobalFilter` is `@Catch()` and
+    // matches every exception, so anything registered BEFORE it would never run.
     {
       provide: APP_FILTER,
       useClass: SentryGlobalFilter,
+    },
+    // DEF-15 / owner ruling O1 (2026-10-04): turns a cache-infrastructure
+    // failure into 503 + Retry-After. Registered AFTER SentryGlobalFilter so the
+    // reversal above puts it first for its own exception type; every other
+    // exception falls through to SentryGlobalFilter exactly as before.
+    {
+      provide: APP_FILTER,
+      useClass: ServiceUnavailableRetryFilter,
     },
   ],
 })

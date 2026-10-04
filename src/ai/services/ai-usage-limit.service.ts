@@ -4,7 +4,6 @@ import {
   Inject,
   Injectable,
   Logger,
-  ServiceUnavailableException,
 } from '@nestjs/common';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { ConfigService } from '@nestjs/config';
@@ -12,6 +11,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Cache } from 'cache-manager';
 import { Repository } from 'typeorm';
 import { boundedCacheCall, cacheCallTimeoutFrom } from '../../shared/cache/bounded-cache-call';
+import { ServiceUnavailableWithRetryException } from '../../shared/cache/cache-unavailable.exception';
 import { AiUsage } from '../entities/ai-usage.entity';
 import { AiProviderService } from './ai-provider.service';
 import {
@@ -203,13 +203,35 @@ export class AiUsageLimitService {
    * is called.
    *
    * @throws HttpException 429 when a limit is exhausted
-   * @throws ServiceUnavailableException 503 when limits cannot be verified
+   * @throws ServiceUnavailableWithRetryException 503 (with a `Retry-After`
+   *   header, owner ruling O1) when the counter client is missing or offline, or
+   *   when limits cannot be verified
    */
   async assertRequestAllowed(context: AiRequestLimitContext): Promise<void> {
     // A disabled deployment is not "rate limited": the request must keep
     // flowing through so the existing 503 kill-switch semantics are preserved.
     if (!this.aiProviderService.isEnabled()) {
       return;
+    }
+
+    // R9 (owner ruling O2, 2026-10-04): the "Redis is unavailable ⇒ 503" promise
+    // in `.env.example` must hold in EVERY configuration, and the counter calls
+    // below cannot carry it alone — every one of them is skipped when its limit
+    // is 0 (`0` is the documented way to disable a limit), so an all-zero
+    // deployment would reach Redis never, notice nothing, and allow the request
+    // through unmetered. This check is unconditional and does no round trip.
+    //
+    // It runs BEFORE the try so the 503 it raises is not re-derived from a
+    // caught error: the answer is the same as the catch below produces, and
+    // `ServiceUnavailableWithRetryException` is an `HttpException`, so had it
+    // been thrown inside the try it would pass through unchanged either way.
+    const counterClient = this.counterClient();
+    if (!counterClient || counterClient.isReady === false) {
+      this.logger.error(
+        `AI usage limits could not be verified for organization ${context.organizationId} ` +
+          '(failing closed): the Redis counter client is unavailable',
+      );
+      throw new ServiceUnavailableWithRetryException(AI_LIMITER_UNAVAILABLE_MESSAGE);
     }
 
     const limits = this.resolveLimits();
@@ -257,7 +279,7 @@ export class AiUsageLimitService {
       this.logger.error(
         `AI usage limit check failed for organization ${context.organizationId} (failing closed): ${errorMessage(error)}`,
       );
-      throw new ServiceUnavailableException(AI_LIMITER_UNAVAILABLE_MESSAGE);
+      throw new ServiceUnavailableWithRetryException(AI_LIMITER_UNAVAILABLE_MESSAGE);
     }
   }
 

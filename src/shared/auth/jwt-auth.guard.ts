@@ -11,7 +11,8 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
-import { boundedCacheCall, cacheCallTimeoutFrom } from '../cache/bounded-cache-call';
+import { boundedCacheCall, cacheCallTimeoutFrom, CacheUnavailableError } from '../cache/bounded-cache-call';
+import { ServiceUnavailableWithRetryException } from '../cache/cache-unavailable.exception';
 import { IS_PUBLIC_KEY } from './public.decorator';
 
 @Injectable()
@@ -60,9 +61,15 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Invalid token type for this endpoint');
     }
 
-    // Blacklist check (fail closed if Redis is unavailable for security-sensitive paths).
+    // Blacklist check (fail closed: an unreachable Redis must not accept a token
+    // it may have revoked).
     // DEF-15: bounded, so an unreachable Redis reaches the catch below within the
     // deadline instead of holding the request open for the whole outage.
+    // O1 (2026-10-04): an INFRASTRUCTURE failure answers 503 + Retry-After, not
+    // 401 — the session is not known to be invalid, and a 401 makes the web
+    // client run a refresh that fails and drops the user's tokens
+    // (`apps/web/src/lib/api.ts:151`, `:130-133`). A token that IS blacklisted
+    // still answers 401 below, and that answer cannot reach the 503 branch.
     try {
       const blacklisted = await boundedCacheCall(
         this.cacheManager,
@@ -73,10 +80,13 @@ export class JwtAuthGuard implements CanActivate {
       if (blacklisted) throw new UnauthorizedException('Token has been revoked');
     } catch (err) {
       if (err instanceof UnauthorizedException) throw err;
+      // Anything that is not a `CacheUnavailableError` is not an outage and is
+      // not ours to relabel: rethrow it rather than claim the session is invalid.
+      if (!(err instanceof CacheUnavailableError)) throw err;
       this.logger.error(
-        'Blacklist check failed (failing closed): ' + (err as Error).message,
+        'Blacklist check failed (failing closed): ' + err.message,
       );
-      throw new UnauthorizedException('Authentication backend unavailable');
+      throw new ServiceUnavailableWithRetryException('Authentication backend unavailable');
     }
 
     req.user = {

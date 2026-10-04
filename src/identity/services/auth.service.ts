@@ -5,7 +5,12 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Cache } from 'cache-manager';
-import { boundedCacheCall, cacheCallTimeoutFrom } from '../../shared/cache/bounded-cache-call';
+import {
+  boundedCacheCall,
+  cacheCallTimeoutFrom,
+  CacheUnavailableError,
+} from '../../shared/cache/bounded-cache-call';
+import { ServiceUnavailableWithRetryException } from '../../shared/cache/cache-unavailable.exception';
 import { IdentityUser } from '../entities/identity-users.entity';
 import * as bcrypt from 'bcrypt';
 import { IdentityService } from './identity.service';
@@ -144,8 +149,11 @@ export class AuthService {
     const ttl = this.tokenTtlSeconds(challengePayload.exp);
     const claimKey = `blacklisted:${challengeToken}`;
     // DEF-15: bounded. A claim that cannot be made must NOT be skipped — the
-    // replay guard is the whole point of this step — so every failure ends the
-    // same way the missing-client case always did: refuse the challenge.
+    // replay guard is the whole point of this step — so a failure still refuses
+    // the challenge. O1 (2026-10-04): an infrastructure failure refuses it with
+    // 503 + Retry-After rather than 401, so an unreachable Redis is not reported
+    // to the client as a bad session. A claim that RETURNS NULL (the challenge
+    // was already consumed) is a real answer and stays 401 below.
     let claimed: string | null;
     try {
       claimed = await boundedCacheCall(
@@ -156,10 +164,11 @@ export class AuthService {
           client.set(claimKey, JSON.stringify('true'), { PX: ttl * 1000, NX: true }),
       );
     } catch (error) {
+      if (!(error instanceof CacheUnavailableError)) throw error;
       this.logger.error(
-        'MFA challenge claim failed (failing closed): ' + (error as Error).message,
+        'MFA challenge claim failed (failing closed): ' + error.message,
       );
-      throw new UnauthorizedException('Authentication backend unavailable');
+      throw new ServiceUnavailableWithRetryException('Authentication backend unavailable');
     }
     if (claimed === null) {
       throw new UnauthorizedException('MFA challenge has already been used');
@@ -263,6 +272,11 @@ export class AuthService {
     // Check if the token is present in the Redis-backed blacklist cache.
     // Fail CLOSED: if the cache is unreachable we MUST treat the token as
     // blacklisted so revoked credentials are never accidentally accepted.
+    // O1 (2026-10-04): "unreachable" answers 503 + Retry-After, not 401 — the
+    // fail-closed decision is unchanged, only how it is reported to the client.
+    // This is the refresh path's revocation read: a 401 here would make the web
+    // client believe the REFRESH TOKEN is revoked, clear its tokens and sign the
+    // user out (`apps/web/src/lib/api.ts:130-133` via `:151`).
     try {
       // DEF-15: bounded — the deadline is what lets this catch run during an
       // outage, instead of the read staying pending for its whole duration.
@@ -274,10 +288,11 @@ export class AuthService {
       );
       return result !== undefined;
     } catch (err) {
+      if (!(err instanceof CacheUnavailableError)) throw err;
       this.logger.error(
-        'Blacklist lookup failed (failing closed): ' + (err as Error).message,
+        'Blacklist lookup failed (failing closed): ' + err.message,
       );
-      throw new UnauthorizedException('Authentication backend unavailable');
+      throw new ServiceUnavailableWithRetryException('Authentication backend unavailable');
     }
   }
 
@@ -423,11 +438,23 @@ export class AuthService {
     // in milliseconds, so convert the seconds-based `ttl` before storing.
     // DEF-15: bounded, and deliberately NOT swallowed — if the revocation did
     // not happen, the caller (logout, refresh rotation) must not report success.
-    await boundedCacheCall(
-      this.cacheManager,
-      this.cacheTimeoutMs,
-      'blacklist write',
-      () => this.cacheManager.set(`blacklisted:${token}`, 'true', ttl * 1000),
-    );
+    // O1 (2026-10-04): a write that times out answers 503 + Retry-After. It was
+    // an unplanned 500 before, because nothing caught it; a 500 tells the client
+    // the request was broken, while 503 says the service is briefly unavailable
+    // and the revocation did NOT happen. The callers keep their ordering —
+    // `refreshToken` still revokes BEFORE issuing (so a timeout means no new
+    // tokens and no rotation), and `logout` still does access then refresh.
+    try {
+      await boundedCacheCall(
+        this.cacheManager,
+        this.cacheTimeoutMs,
+        'blacklist write',
+        () => this.cacheManager.set(`blacklisted:${token}`, 'true', ttl * 1000),
+      );
+    } catch (error) {
+      if (!(error instanceof CacheUnavailableError)) throw error;
+      this.logger.error('Blacklist write failed (failing closed): ' + error.message);
+      throw new ServiceUnavailableWithRetryException('Authentication backend unavailable');
+    }
   }
 }

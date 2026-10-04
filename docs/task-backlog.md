@@ -2322,15 +2322,74 @@ This document contains the implementation tasks broken down by phase, with depen
 ### DEF-15: The token blacklist's fail-closed check can hang instead of refusing (Medium)
 - **Status**: **Fixed** — owner ruling (2026-10-04): "fix DEF-15". One shared bounded-call helper
   (`src/shared/cache/bounded-cache-call.ts`) is applied at every request-path cache call, and each
-  control keeps the answer it already had rather than acquiring a new one. The alternative declined
-  was bounding only the four call sites this entry originally listed and leaving the AI usage
-  counters — the non-auth half of the same exposure — unbounded. Pinned by
-  `src/shared/cache/bounded-cache-call.spec.ts` (hermetic: resolves, propagates the call's own
-  error, times out with a labelled message, refuses without a round trip when the client is not
+  control keeps the answer it already had rather than acquiring a new one. Pinned by
+  `src/shared/cache/bounded-cache-call.spec.ts` (hermetic: resolves, types the operation's own
+  failure as a cache-unavailable error with the cause kept, refuses a millisecond early under fake
+  timers, times out with a labelled message, refuses without a round trip when the client is not
   ready, refuses when the store exposes no client, swallows the promise it abandoned) and by
-  `src/shared/auth/def-15-cache-hang.integration.spec.ts` (gated real-Redis, blackholed socket:
-  before the fix every probe reports `settled: false`; after it they all return — measured
-  2026-10-04).
+  `src/shared/auth/def-15-cache-hang.integration.spec.ts` (gated real-Redis, blackholed socket: the
+  unbounded shape's `settled: false` — the reproduction — is shown in the tree by the raw-client
+  CONTROL probe alongside its bounded counterpart, which settles; measured 2026-10-04).
+- **Owner ruling O1 (2026-10-04, verbatim)**: "Use 503 Service Unavailable with Retry-After, not
+  401, for infrastructure timeouts: Guard blacklist read, Refresh blacklist read, MFA replay claim,
+  Blacklist writes. Keep the authentication path fail-closed, but do not represent a Redis
+  infrastructure failure to the web client as an invalid user session."
+  - **Why it matters on the web side (READ-ONLY inspection of `apps/web`, no code changed)**:
+    `apps/web/src/lib/api.ts:151` runs its refresh-and-retry only when `res.status === 401`, and the
+    `refreshAccessToken` it triggers calls `clearTokens()` on any non-ok refresh (`:130-133`). A 401
+    for a Redis outage therefore ran a refresh that also failed and left the user signed out.
+    Answering 503 skips that branch entirely and surfaces an `ApiError(503)` with the tokens intact.
+  - **Per-site answer under O1.** "Infrastructure failure" means any of the four shapes the helper
+    types as `CacheUnavailableError`: the deadline expiring, the store exposing no client, a client
+    reporting `isReady === false`, or the driver rejecting the call.
+
+    | # | Site | Before | After | `Retry-After` | Request |
+    |---|---|---|---|---|---|
+    | 1 | `jwt-auth.guard.ts` blacklist read — infrastructure failure | 401 | **503** | yes | stops |
+    | 2 | `jwt-auth.guard.ts` blacklist read — token found blacklisted | 401 | 401 | no | stops |
+    | 3 | `auth.service.ts` MFA claim `SET NX` — infrastructure failure | 401 | **503** | yes | stops |
+    | 4 | `auth.service.ts` MFA claim `SET NX` — returns null (replay) | 401 | 401 | no | stops |
+    | 5 | `auth.service.ts` refresh blacklist read — infrastructure failure | 401 | **503** | yes | stops |
+    | 6 | `auth.service.ts` refresh blacklist read — token blacklisted | 401 | 401 | no | stops |
+    | 7 | `auth.service.ts` `blacklistToken` write via `refreshToken` | unplanned 500 | **503** | yes | stops |
+    | 8 | `auth.service.ts` `blacklistToken` write via `logout` (access token) | unplanned 500 | **503** | yes | stops |
+    | 9 | `auth.service.ts` `blacklistToken` write via `logout` (refresh token) | unplanned 500 | **503** | yes | stops |
+    | 10-13 | `ai-usage-limit.service.ts` `recordUsage` (4 counter calls) | best effort, logged, request continues | unchanged | no | continues |
+    | 14-21 | `ai-usage-limit.service.ts` `assertRequestAllowed` (rate limit `INCR`/`EXPIRE`, budget `GET`/`SET NX`/re-`GET`) | 503 | 503 | **added** | stops |
+    | 22 | `ai-usage-limit.service.ts` unconditional client check (new, R9) | *absent* — allowed unmetered when every limit was `0` | **503** | yes | stops |
+    | — | `redis-throttler.storage.ts` (DEF-07) | fail OPEN, 429 + `Retry-After` | **unchanged** | its own | continues |
+
+    Ordering is preserved at every write site: `refreshToken` still revokes the presented token
+    BEFORE issuing the new pair, so a write timeout means no new tokens and no rotation; `logout`
+    still revokes the access token before the refresh token, so a timeout on the first leaves the
+    second un-attempted.
+  - **How the header is emitted.** `ServiceUnavailableWithRetryException`
+    (`src/shared/cache/cache-unavailable.exception.ts`) extends `ServiceUnavailableException` and
+    carries `retryAfterSeconds`; `ServiceUnavailableRetryFilter`
+    (`src/shared/cache/service-unavailable-retry.filter.ts`) sets `Retry-After` and then delegates
+    to `BaseExceptionFilter`, so the status and body shape are Nest's own. The filter's position in
+    `app.module.ts` is load-bearing and is the opposite of what it looks like: Nest REVERSES the
+    filter list before matching (`@nestjs/core/router/router-exception-filters.js`,
+    `setCustomFilters(filters.reverse())`) and takes the first match, so the LAST filter registered
+    is the FIRST tried. Registered before `SentryGlobalFilter` (which is `@Catch()`), it would never
+    run — measured, not assumed: with the two providers in that order the header came back `null`
+    on a 503 whose body was otherwise perfect. Pinned over real HTTP with the real filter chain by
+    `src/shared/cache/service-unavailable-retry.filter.spec.ts`.
+  - **The `Retry-After` value is a RECOMMENDATION, not a ruling.** O1 ruled that the header is sent
+    but did not fix its value; `CACHE_UNAVAILABLE_RETRY_AFTER_SECONDS = 5` seconds is this change's
+    choice. Extending the same header to the pre-existing AI-limit 503s (rows 14-21) reuses the one
+    mechanism and is likewise a **RECOMMENDATION** — the owner has not ruled on it.
+  - **R6 — the deadline is now bounded above as well as below.** `readCacheCallTimeout` accepts an
+    integer in `[1, 10000]` (`CACHE_CALL_TIMEOUT_MS_MAX`); a value above the ceiling, `0`, a
+    negative, a fraction or a non-numeric value fails the boot. A deadline longer than the outage it
+    is meant to cut short bounds nothing. Documented in `.env.example`.
+  - **R9 — the unconditional check.** `assertRequestAllowed` tests that the counter client is
+    present and ready BEFORE the per-limit branches and without a round trip. Previously the only
+    readiness checks lived inside the counter calls, and every one of those is skipped when its
+    limit is `0` — `0` being the documented way to disable a limit — so an all-zero deployment
+    reached Redis never and allowed requests through unmetered while Redis was down, contradicting
+    the promise `.env.example` made. That sentence now holds in every configuration and says so.
+    `recordUsage` is untouched and stays best-effort.
 - **Objective**: Give the blacklist read the same bound the throttling storage now has, so a Redis
   outage refuses a token promptly instead of holding the request open.
 - **Found during**: the `DEF-07` fail-open fix, 2026-10-03 — the blacklist was quoted as the
@@ -2383,16 +2442,20 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Fix (shipped 2026-10-04)**: one shared helper, `src/shared/cache/bounded-cache-call.ts`, doing
   what `RedisThrottlerStorage` did alone: resolve the raw client through the cache store, refuse
   the call outright when `isReady === false` (no round trip), then race it against
-  `CACHE_CALL_TIMEOUT_MS` (tunable, default 500 ms, documented in `.env.example`, malformed value
-  fails the boot). It throws a labelled error and leaves the outcome to the call site's EXISTING
-  error path, so nothing silently became fail-open — the blacklist read and the MFA claim still
-  answer 401, the blacklist write still propagates, and the AI limit check still answers 503.
+  `CACHE_CALL_TIMEOUT_MS` (tunable, default 500 ms, integer in `[1, 10000]`, documented in
+  `.env.example`, a value outside that range fails the boot). It throws a typed, labelled
+  `CacheUnavailableError` and leaves the outcome to the call site's EXISTING error path, so nothing
+  silently became fail-open. The fail-closed DECISIONS are all unchanged; O1 (2026-10-04, above)
+  changed how an infrastructure failure is REPORTED to the client — the blacklist read, the MFA
+  claim and the blacklist write answer 503 + `Retry-After` instead of 401/500, and the AI limit
+  check answers its existing 503 with the header added.
   `RedisThrottlerStorage` now races its `EVAL` through the same helper, so the tree holds one
   implementation of the deadline rather than two; its own variable, default, message and fail-open
   behaviour are untouched (DEF-07 Q11/Q12). The two deadlines are deliberately separate controls:
   the storage fails OPEN, these calls do not.
-- **Widened 2026-10-04** (same pass as the fix; line numbers re-derived by grep in that session,
-  not carried over): the exposure is not auth-only. `src/ai/services/ai-usage-limit.service.ts` is
+- **Widened 2026-10-04** — **scope widened by task instruction 2026-10-04; owner confirmation of
+  the widening is not on record.** Line numbers re-derived by grep in that session, not carried
+  over. The exposure is not auth-only. `src/ai/services/ai-usage-limit.service.ts` is
   a second, non-auth control on the same client, and every one of its counter calls awaited the
   client with no readiness check and no deadline:
   - `recordUsage` — `incrBy` and `expire` for the daily token and monthly cost counters. Already
@@ -2417,8 +2480,28 @@ This document contains the implementation tasks broken down by phase, with depen
   if the decision were made when it was written down.
 - **Acceptance criteria**: with Redis dropped mid-run, a request carrying a revoked token is
   refused within the deadline and one carrying a live token is decided — never held open past it.
+  Under O1 the refusal is 503 + `Retry-After` for an infrastructure failure and 401 for a genuine
+  revocation, and the written revocation is never reported as successful.
 - **Risks**: Medium — the blacklist is a security control; the deadline must keep the fail-closed
-  answer (401) and only change how fast it arrives.
+  decision (the token is not accepted) and only change how fast it arrives and how it is reported
+  (503 rather than 401, per O1).
+
+### DEF-15 follow-ups
+
+- **The DEF-07 throttler timing flake (PR #7) reproduces when the WHOLE spec file runs.** Measured
+  2026-10-04: 20 of 100 fresh-process whole-file runs failed, 0 of 70 runs with `-t`. The mechanism
+  is **not established**; a stale libuv loop-time effect is an **unproven inference** from that data,
+  not a finding. `TIMER_JITTER_MS = 10` is unchanged (measured worst shortfall 1 ms as an integer,
+  2.37 ms in truth), and the PR #7 assertions are untouched by this entry.
+- **R8 — the web logout path clears local tokens even when the revocation POST fails (OPEN, and
+  deliberately NOT fixed here).** `apps/web/src/lib/auth-api.ts:33-41` wraps the logout POST in
+  `try { ... } finally { clearTokens() }`, so the tokens are dropped whatever the server answers;
+  `apps/web/src/components/layout/Navbar.tsx:74-83` and `Sidebar.tsx:203-213` do the same by hand
+  ("always clear locally"). With O1 a timed-out revocation write now answers 503, which means the
+  revocation did NOT happen: the user is returned to `/login` looking signed out while the token
+  stays valid until it expires. The best-effort intent is reasonable for a user who ASKED to log
+  out and wrong for an outage; deciding which is an owner question, so this is filed separately
+  from DEF-15 and nothing under `apps/web` was changed in the DEF-15 work (O3, 2026-10-04).
 
 ## Hardening pass rulings (owner, 2026-10-02)
 
