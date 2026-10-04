@@ -2505,3 +2505,98 @@ TODO in `eslint.config.mjs`** (the TODO's count is the 10 below), and the other 
 **Coverage gap (follow-up, not this slice).** The base preset enables the TypeScript parser but no
 `@typescript-eslint` rules — an unused variable is not flagged. Escalating to
 `eslint-config-next/typescript` and/or `core-web-vitals` is a separate change.
+
+## DEF-16 — The web client ends the session when the refresh call cannot answer (2026-10-04)
+
+**Status: refresh path FIXED** on branch `fix/web-503-session-handling`. **`R8` is NOT fixed** — see
+its own entry below and the owner question it raises.
+
+- **Objective**: stop the web client from reading an infrastructure failure on `POST /v1/auth/refresh`
+  as "your session is invalid".
+- **Owner rulings (owner, 2026-10-04)**, recorded as such:
+  - **W1.** Fix the expired-access-token + Redis-down sign-out in a separate small web PR, not on PR #8.
+  - **W2.** Include R8 (the logout `finally { clearTokens() }`) in the same PR.
+  - **W3.** The session decides the web test setup after inspecting `apps/web`.
+  - This work serves the earlier ruling: "do not represent a Redis infrastructure failure to the web
+    client as an invalid user session."
+  - **Not ruled** — every item below marked RECOMMENDATION is this branch's choice, not an owner
+    decision: which statuses count as "session rejected" versus "unavailable"; the network-error and
+    429 classification; the exact logout behaviour; whether `ApiError` exposes `Retry-After`.
+- **Files/modules affected**: `apps/web/src/lib/api.ts`; the web test setup
+  (`apps/web/jest.config.js`, `apps/web/tsconfig.spec.json`) and `apps/web/src/lib/api.test.ts`.
+- **Measured trace (root cause)** — measured 2026-10-04 with a throwaway harness over byte-identical
+  `apps/web/src/lib/api.ts` + `token-store.ts`, printing the token store before and after:
+  an expired access token is refused **401 by `JwtAuthGuard` before any Redis call**
+  (`jwt-auth.guard.ts:44-49`, the blacklist read at `:60` is never reached), so the client refreshes;
+  **the refresh call is the one that reaches Redis**. With Redis down the refresh route answers 503
+  (401 before PR #8 merges). The old `refreshAccessToken` ran `if (!res.ok) { clearTokens(); return false; }`,
+  so **both tokens were cleared** (`{"access":null,"refresh":null}`), `apiRequest` then threw the
+  **stale original 401**, and `AuthGuard` redirected to `/login` because `isAuthenticated()` was false.
+  A 503 on a route carrying a **still-valid** access token was already correct: `apiRequest` enters
+  the refresh branch on `res.status === 401` only.
+- **Fix**: `refreshAccessToken` returns a three-way result instead of a boolean, and `apiRequest`
+  acts on the outcome rather than on the original response.
+- **Behaviour table** (refresh path; RECOMMENDATION unless it restates a measured backend fact):
+
+  | Refresh outcome | Status / failure | Tokens | `apiRequest` throws | User-visible |
+  |---|---|---|---|---|
+  | refreshed | 200 with a usable pair | replaced | — (retries the original request) | stays signed in |
+  | rejected | **401 only** — invalid, expired, revoked, wrong type, or account gone (`auth.service.ts:175-193`) | **cleared** (unchanged) | the original 401 | redirected to `/login` |
+  | unavailable | 5xx, 429, any other non-OK | **kept** | the refresh failure's status, not the stale 401 | stays signed in, error shown |
+  | unavailable | no HTTP response (network/DNS/reset) | **kept** | `ApiError` with `status: 0` | stays signed in, error shown |
+  | unavailable | 2xx with no usable token pair | **kept** | `ApiError` with the actual 2xx status | stays signed in, error shown |
+  | rejected | no refresh token stored | nothing to clear | the original 401 | redirected to `/login` |
+
+  Concurrent 401s share the single in-flight refresh and receive the **same** outcome; the shared
+  promise is still cleared in `finally`, so the next 401 starts a fresh refresh.
+- **`ApiError.retryAfter` (RECOMMENDATION)**: `parseError` now reads `Retry-After` in its delta-seconds
+  form, so the 429 the throttler sends and the 503 a degraded auth backend sends both reach the caller.
+  The HTTP-date form is deliberately not parsed and yields `undefined`.
+- **Contingency — the benefit depends on PR #8 merging.** Until it does, a Redis outage on the refresh
+  route answers **401**, which the client cannot distinguish from a genuinely rejected token, so this
+  defect persists on `main`. The client change is safe in both worlds (it never regresses the pre-#8
+  behaviour); it becomes effective when the backend separates the two answers.
+- **Test setup and its CI status**: `apps/web` has no unit runner (no `test` script; only
+  `@playwright/test`) and still has none wired into CI. The new specs run from a dedicated
+  `apps/web/jest.config.js` using `jest`/`ts-jest` already in the lockfile — no new dependency. They are
+  named `*.test.ts`, **not** `*.spec.ts`, deliberately: the repository-root jest config uses
+  `testMatch: ['**/*.spec.ts']` with `rootDir: '.'`, so a `*.spec.ts` under `apps/web` is collected by
+  the backend `npx jest` run and fails there, because that run compiles with the repo-root
+  `tsconfig.spec.json`, whose `lib` has no DOM (`TS2304: Cannot find name 'window'`). Both halves were
+  measured on 2026-10-04. Making web tests a CI gate is a separate change and `.github/workflows/ci.yml`
+  is untouched.
+- **Acceptance criteria**: with the backend unable to answer the refresh, the stored tokens survive and
+  the caller sees the refresh failure rather than a 401; only a 401 from the refresh endpoint clears the
+  session; a valid access token plus an unavailable route behaves exactly as before.
+- **Risks**: Low–Medium. The classification is by status only; the pre-PR-#8 401-for-infrastructure
+  ambiguity above is the residual, and it is a backend-side limitation.
+
+### R8 — Logout clears the session even when the revocation call failed
+
+- **Status: OPEN — not fixed on `fix/web-503-session-handling`. OWNER DECISION NEEDED.**
+- **Content** (filed on PR #8's branch; absent from `main`, recorded here so it is not lost):
+  `apps/web/src/lib/auth-api.ts` `logout` is `try { return await api.post('/v1/auth/logout', …) } finally
+  { clearTokens(); }` — the stored tokens are cleared even when the revocation POST failed, so the user
+  can be signed out locally while the refresh token stays valid server-side.
+- **Why it was not fixed here**: the intended fix (keep the tokens on 5xx/429/network and show a
+  retryable error) cannot be completed inside the files this change is allowed to touch.
+  - `POST /v1/auth/logout` is **not** `@Public()` — it runs through `JwtAuthGuard`, whose blacklist read
+    is exactly what fails during a Redis outage. On `main` that failure is a **401**
+    (`auth.service.ts:244`, `jwt-auth.guard.ts:67`), indistinguishable from "your token is already
+    invalid", so a status-only rule would classify an outage as a rejected session and clear it — the
+    same defect DEF-16 fixes on the refresh path.
+  - The two sign-out call sites are `Navbar.tsx:76-82` and `Sidebar.tsx:204-213`. Each already calls
+    `clearTokens()` in its own `catch` and then `router.push('/login')` **unconditionally**, so changing
+    `auth-api.ts` alone changes nothing observable.
+  - Showing the error needs an error surface the chrome does not have. The repo's only error display is
+    `Alert`, used inline in page content; the sign-out control is a Bootstrap `.dropdown-item`, and
+    `bootstrap@5.3.8` `dropdown.js` defaults to `autoClose: true` and closes the menu on any click inside
+    it (`clearMenus`, `:365-391`), so an `Alert` rendered inside the dropdown is never seen. Wiring it up
+    means editing `Navbar.tsx`/`Sidebar.tsx`/`AppLayout.tsx` — outside this change's allowed file list —
+    and choosing a layout/UX behaviour the owner has explicitly left unruled.
+- **Question for the owner**: where should a failed sign-out surface its error, and should a failed
+  sign-out keep the session at all (today it silently ends the local session while the server-side
+  refresh token stays live)?
+- **Note**: this is a separate path from DEF-16 — DEF-16 is the automatic refresh on an expired access
+  token, R8 is the explicit sign-out. They share only the shape "a non-OK response is treated as proof
+  the session is dead".
