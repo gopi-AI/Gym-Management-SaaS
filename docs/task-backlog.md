@@ -2493,15 +2493,9 @@ This document contains the implementation tasks broken down by phase, with depen
   is **not established**; a stale libuv loop-time effect is an **unproven inference** from that data,
   not a finding. `TIMER_JITTER_MS = 10` is unchanged (measured worst shortfall 1 ms as an integer,
   2.37 ms in truth), and the PR #7 assertions are untouched by this entry.
-- **R8 — the web logout path clears local tokens even when the revocation POST fails (OPEN, and
-  deliberately NOT fixed here).** `apps/web/src/lib/auth-api.ts:33-41` wraps the logout POST in
-  `try { ... } finally { clearTokens() }`, so the tokens are dropped whatever the server answers;
-  `apps/web/src/components/layout/Navbar.tsx:74-83` and `Sidebar.tsx:203-213` do the same by hand
-  ("always clear locally"). With O1 a timed-out revocation write now answers 503, which means the
-  revocation did NOT happen: the user is returned to `/login` looking signed out while the token
-  stays valid until it expires. The best-effort intent is reasonable for a user who ASKED to log
-  out and wrong for an outage; deciding which is an owner question, so this is filed separately
-  from DEF-15 and nothing under `apps/web` was changed in the DEF-15 work (O3, 2026-10-04).
+- **R8 — the web logout path clears local tokens even when the revocation POST fails: accepted risk
+  (owner ruling F1, 2026-10-04).** Filed separately from DEF-15 (O3, 2026-10-04); the single
+  authoritative record is `### R8` under DEF-16 below.
 
 ## Hardening pass rulings (owner, 2026-10-02)
 
@@ -2641,20 +2635,38 @@ TODO in `eslint.config.mjs`** (the TODO's count is the 10 below), and the other 
 
 ## DEF-16 — The web client ends the session when the refresh call cannot answer (2026-10-04)
 
-**Status: refresh path FIXED** on branch `fix/web-503-session-handling`. **`R8` is NOT fixed** — see
-its own entry below and the owner question it raises.
+**Status: FIXED, and on `main`.** The refresh path landed via PR #9 (merge commit `76757c73`,
+2026-10-04) and became effective when the backend half landed via PR #8 (merge commit `5cbf8b56`,
+the same day): with both on `main` the refresh route answers 503 for an unreachable cache instead of
+401, so the client can tell an outage from a rejected token. The no-refresh-token case is fixed on
+`fix/web-no-refresh-token-clears-session`. **`R8` is an accepted risk, not a defect** — see its own
+entry below.
 
 - **Objective**: stop the web client from reading an infrastructure failure on `POST /v1/auth/refresh`
   as "your session is invalid".
 - **Owner rulings (owner, 2026-10-04)**, recorded as such:
   - **W1.** Fix the expired-access-token + Redis-down sign-out in a separate small web PR, not on PR #8.
-  - **W2.** Include R8 (the logout `finally { clearTokens() }`) in the same PR.
+  - **W2.** Include R8 (the logout `finally { clearTokens() }`) in the same PR. **Superseded by F1.**
   - **W3.** The session decides the web test setup after inspecting `apps/web`.
+  - **F1 (supersedes W2).** R8 is **option A**: accept today's logout behaviour — tokens are always
+    cleared locally and the user is sent to `/login` — and record it as an **accepted risk**. If the
+    revocation POST fails, for example during a Redis outage, the server-side refresh token stays
+    valid until it expires (up to 7 days by default). `Navbar.tsx`, `Sidebar.tsx`, `auth-api.ts`
+    `logout` and any logout UI are deliberately left unchanged. No token is claimed to have been
+    stolen; the risk is the validity window alone.
+  - **F2.** Fix the no-stored-refresh-token case **in code**: when a 401 arrives and there is no
+    stored refresh token, clear the local tokens so the user is treated as signed out.
+  - **F3.** Merge order: PR #8 first, then PR #9. **Recorded fact, no blame:** the two landed about
+    thirteen minutes apart in the opposite order — PR #9 merged at 10:57Z, PR #8 at 11:10Z. Between
+    those two moments `main` carried a client that had been taught to expect a 503 the backend did
+    not yet send, so the fix was inert there; both are on `main` now and neither change regressed
+    the other.
   - This work serves the earlier ruling: "do not represent a Redis infrastructure failure to the web
     client as an invalid user session."
   - **Not ruled** — every item below marked RECOMMENDATION is this branch's choice, not an owner
     decision: which statuses count as "session rejected" versus "unavailable"; the network-error and
-    429 classification; the exact logout behaviour; whether `ApiError` exposes `Retry-After`.
+    429 classification; whether `ApiError` exposes `Retry-After`. (The exact logout behaviour was on
+    this list until F1 ruled it.)
 - **Files/modules affected**: `apps/web/src/lib/api.ts`; the web test setup
   (`apps/web/jest.config.js`, `apps/web/tsconfig.spec.json`) and `apps/web/src/lib/api.test.ts`.
 - **Measured trace (root cause)** — measured 2026-10-04 with a throwaway harness over byte-identical
@@ -2678,17 +2690,20 @@ its own entry below and the owner question it raises.
   | unavailable | 5xx, 429, any other non-OK | **kept** | the refresh failure's status, not the stale 401 | stays signed in, error shown |
   | unavailable | no HTTP response (network/DNS/reset) | **kept** | `ApiError` with `status: 0` | stays signed in, error shown |
   | unavailable | 2xx with no usable token pair | **kept** | `ApiError` with the actual 2xx status | stays signed in, error shown |
-  | rejected | no refresh token stored | nothing to clear | the original 401 | redirected to `/login` |
+  | rejected | no refresh token stored | **cleared** — the leftover access token goes too (before this change it was kept, leaving a session that 401'd on every request) | the original 401 | redirected to `/login` |
 
   Concurrent 401s share the single in-flight refresh and receive the **same** outcome; the shared
   promise is still cleared in `finally`, so the next 401 starts a fresh refresh.
 - **`ApiError.retryAfter` (RECOMMENDATION)**: `parseError` now reads `Retry-After` in its delta-seconds
   form, so the 429 the throttler sends and the 503 a degraded auth backend sends both reach the caller.
   The HTTP-date form is deliberately not parsed and yields `undefined`.
-- **Contingency — the benefit depends on PR #8 merging.** Until it does, a Redis outage on the refresh
-  route answers **401**, which the client cannot distinguish from a genuinely rejected token, so this
-  defect persists on `main`. The client change is safe in both worlds (it never regresses the pre-#8
-  behaviour); it becomes effective when the backend separates the two answers.
+- **Both halves are on `main`; the condition this entry was contingent on has been met.** PR #9
+  (merge commit `76757c73`) and PR #8 (merge commit `5cbf8b56`) are both ancestors of `main`, so the
+  refresh route now answers **503 with `Retry-After`** for an unreachable cache rather than 401, and
+  the client keeps the session on that answer. The earlier caveat — that until PR #8 merged a Redis
+  outage answered 401 and the defect therefore persisted — no longer applies and is removed rather
+  than left to mislead a later reader. Measured on `5cbf8b56` (2026-10-04): the merge is an ancestor
+  of `main`, and the tree CI ran on is the tree verified locally.
 - **Test setup and its CI status**: `apps/web` has no unit runner (no `test` script; only
   `@playwright/test`) and still has none wired into CI. The new specs run from a dedicated
   `apps/web/jest.config.js` using `jest`/`ts-jest` already in the lockfile — no new dependency. They are
@@ -2698,26 +2713,38 @@ its own entry below and the owner question it raises.
   `tsconfig.spec.json`, whose `lib` has no DOM (`TS2304: Cannot find name 'window'`). Both halves were
   measured on 2026-10-04. Making web tests a CI gate is a separate change and `.github/workflows/ci.yml`
   is untouched.
+- **D16 — the web tests are not collected by CI**: the root `npx jest --passWithNoTests` job matches
+  `**/*.spec.ts`, and the web specs are `*.test.ts` under `apps/web`, so no CI job runs them.
 - **Acceptance criteria**: with the backend unable to answer the refresh, the stored tokens survive and
   the caller sees the refresh failure rather than a 401; only a 401 from the refresh endpoint clears the
   session; a valid access token plus an unavailable route behaves exactly as before.
-- **Risks**: Low–Medium. The classification is by status only; the pre-PR-#8 401-for-infrastructure
-  ambiguity above is the residual, and it is a backend-side limitation.
+- **Risks**: Low–Medium. The classification is by status only, and the pre-PR-#8 401-for-infrastructure
+  ambiguity that was the original residual is resolved now that both halves are on `main`. What
+  remains is the accepted risk recorded under `### R8` below, plus the standing D16 gap that nothing
+  runs these web specs in CI.
 
 ### R8 — Logout clears the session even when the revocation call failed
 
-- **Status: OPEN — not fixed on `fix/web-503-session-handling`. OWNER DECISION NEEDED.**
-- **Content** (filed on PR #8's branch; absent from `main`, recorded here so it is not lost):
-  `apps/web/src/lib/auth-api.ts` `logout` is `try { return await api.post('/v1/auth/logout', …) } finally
-  { clearTokens(); }` — the stored tokens are cleared even when the revocation POST failed, so the user
-  can be signed out locally while the refresh token stays valid server-side.
-- **Why it was not fixed here**: the intended fix (keep the tokens on 5xx/429/network and show a
-  retryable error) cannot be completed inside the files this change is allowed to touch.
+- **Status: ACCEPTED RISK (owner ruling F1, 2026-10-04).** Option A was chosen: the local session is
+  always ended, and the exposure is recorded rather than fixed.
+- **The risk, stated precisely — no theft is claimed.** `apps/web/src/lib/auth-api.ts` `logout` is
+  `try { return await api.post('/v1/auth/logout', …) } finally { clearTokens(); }`, so the stored
+  tokens are cleared even when the revocation POST failed; `Navbar.tsx:76-82` and `Sidebar.tsx:204-213`
+  each call `clearTokens()` in their own `catch` and then `router.push('/login')` unconditionally, so
+  the user is returned to `/login` looking signed out either way. When that POST fails — for example
+  during a Redis outage, where the revocation did **not** happen — the server-side refresh token stays
+  valid until it expires, up to 7 days by default (`JWT_REFRESH_EXPIRATION`, `.env.example`). **The
+  exposure is that validity window**, on an explicit sign-out. This is a separate path from DEF-16,
+  which is the *automatic* refresh on an expired access token.
+- **Why options B and C were declined** (recorded so the reasoning is not re-litigated): the
+  alternative — keep the tokens on 5xx/429/network and show a retryable error — cannot be completed
+  inside the files the web change is allowed to touch.
   - `POST /v1/auth/logout` is **not** `@Public()` — it runs through `JwtAuthGuard`, whose blacklist read
-    is exactly what fails during a Redis outage. On `main` that failure is a **401**
+    is exactly what fails during a Redis outage. When this was written `main` answered **401** there
     (`auth.service.ts:244`, `jwt-auth.guard.ts:67`), indistinguishable from "your token is already
-    invalid", so a status-only rule would classify an outage as a rejected session and clear it — the
-    same defect DEF-16 fixes on the refresh path.
+    invalid", so a status-only rule would have classified an outage as a rejected session and cleared
+    it — the same defect DEF-16 fixes on the refresh path. (PR #8 has since made that answer **503**,
+    which *is* distinguishable, so this is the weakest of the three reasons today.)
   - The two sign-out call sites are `Navbar.tsx:76-82` and `Sidebar.tsx:204-213`. Each already calls
     `clearTokens()` in its own `catch` and then `router.push('/login')` **unconditionally**, so changing
     `auth-api.ts` alone changes nothing observable.
@@ -2727,9 +2754,8 @@ its own entry below and the owner question it raises.
     it (`clearMenus`, `:365-391`), so an `Alert` rendered inside the dropdown is never seen. Wiring it up
     means editing `Navbar.tsx`/`Sidebar.tsx`/`AppLayout.tsx` — outside this change's allowed file list —
     and choosing a layout/UX behaviour the owner has explicitly left unruled.
-- **Question for the owner**: where should a failed sign-out surface its error, and should a failed
-  sign-out keep the session at all (today it silently ends the local session while the server-side
-  refresh token stays live)?
-- **Note**: this is a separate path from DEF-16 — DEF-16 is the automatic refresh on an expired access
-  token, R8 is the explicit sign-out. They share only the shape "a non-OK response is treated as proof
-  the session is dead".
+- **Owner ruling (F1, 2026-10-04) answered that question: accept it.** The tokens are cleared locally
+  and the user goes to `/login`, whatever the server answered; `Navbar.tsx`, `Sidebar.tsx`,
+  `auth-api.ts` `logout` and every logout UI stay exactly as they are.
+- **Note**: DEF-16 is the automatic refresh on an expired access token; R8 is the explicit sign-out.
+  They share only the shape "a non-OK response is treated as proof the session is dead".
