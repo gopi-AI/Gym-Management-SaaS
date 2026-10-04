@@ -15,7 +15,7 @@ permissions:
 # One run per ref. A superseded push (or a new commit on the same PR) cancels
 # the run it replaces instead of leaving both to finish.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
   cancel-in-progress: true
 
 jobs:
