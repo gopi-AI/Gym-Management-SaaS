@@ -15,6 +15,9 @@ permissions:
 # One run per ref. A superseded push (or a new commit on the same PR) cancels
 # the run it replaces instead of leaving both to finish.
 concurrency:
+  # PRs: one group per PR ref; a newer commit cancels the older run.
+  # main pushes: each commit gets its own group, so one push cannot replace
+  # another push's run.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'push' && github.sha || 'pr' }}
   cancel-in-progress: true
 
