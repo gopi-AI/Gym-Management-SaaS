@@ -487,6 +487,26 @@ describe('MembershipsService', () => {
       mockHistoryRepo.save.mockResolvedValue({});
     });
 
+    /**
+     * Pin the clock. `remainingDays` / `daysRemaining` are the whole calendar days from the
+     * *event instant* to `end_date` ('2026-10-01' above), and `diffDays` clamps a negative
+     * difference to 0 by design (src/memberships/services/memberships.service.ts) — so on a
+     * real clock those two counts decay to 0 once `end_date` has passed and the
+     * `toBeGreaterThan(0)` assertions below become a time bomb. Freezing "now" before that
+     * date keeps the fixture date-independent without touching the production clamp, and
+     * matches the freeze pattern already used by
+     * src/attendance/services/attendance.service.spec.ts and
+     * src/crm/services/follow-ups.service.spec.ts.
+     */
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2026-09-01T12:00:00.000Z'));
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
     it('resume -> MembershipResumed.v1 matches the documented payload field-for-field', async () => {
       const paused = { ...membership, status: 'paused' } as Membership;
       mockMembershipRepo.findOne
