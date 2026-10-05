@@ -8,13 +8,17 @@ import { LoyaltyDashboardResponse, QueryLoyaltyDashboardDto } from '../dto/loyal
  *
  * **Why `/v1/loyalty/dashboard` rather than `/v1/report/dashboards/loyalty`.**
  * §4.4 declares `GET /v1/report/dashboards/{domain}` as the dashboard-hub route,
- * and that is where this data will be reachable once the hub exists — but the hub
- * is P6-08, which has **no backlog ticket and no code**: `src/reports/` contains
- * only three entities and a `types/` module, there is no reports controller, and
- * `grep -rln 'dashboards' src/` returns nothing. Serving the dashboard from here
- * means P6-19 can be built now, and when P6-08 lands its route should *delegate* to
- * `LoyaltyReadService.getDashboard()` rather than re-implement the aggregates —
- * one implementation of §6.7's figures, in the module that owns the ledger.
+ * and that is where this data will be reachable once the hub is built. The hub is
+ * P6-08, now filed as a ticket (`docs/task-backlog.md:877`) though its routes are
+ * not yet built, and its `loyalty` domain is served by P6-08's own
+ * `DashboardsService`, which is **repository-only**: it re-queries these figures
+ * from `LoyaltyTransaction` entity metadata directly, the same ledger this module
+ * reads, rather than importing or delegating to `LoyaltyReadService`. That follows
+ * §2.2 (`docs/phase6-scoping-plan.md:96`; rationale at `:114`), under which
+ * `ReportsModule` reads domain *entities* and does **not** import domain *services*.
+ * Serving the dashboard from here means P6-19 can be built now, and this route
+ * stays in place when the hub lands — two reads of the same organization-scoped
+ * ledger, not one implementation delegating to the other.
  *
  * The response carries exactly §6.7's three Loyalty Reports rows, which is the
  * only description of what the dashboard renders (P6-19 is a plan §12 row with no
