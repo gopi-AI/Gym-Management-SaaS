@@ -3300,3 +3300,94 @@ still be enrolled with only a live access token."
   `src/identity/dto/mfa-enable.dto.ts`, their specs, and one check in `scripts/api-gate.js`.
 - **Risks**: Low. The MFA-off flow is byte-for-byte the previous behaviour; the ENABLED flow now requires a
   code that the caller's authenticator already produces.
+
+## DEF-21 — The org-scoped branch routes carried no RBAC decorator (2026-10-05)
+
+**Status: FIXED (consistency fix)** — owner ruling (2026-10-05), recorded verbatim: "Org-branch pair:
+add the decorators. Keep the routes, add branch:create to POST and branch:read to GET, and add focused
+controller/authorization tests. This is a consistency fix, not a claim of stronger tenant isolation."
+
+- **What it was**: `POST`/`GET /v1/organizations/:orgId/branches`
+  (`src/tenancy/controllers/organizations-branch.controller.ts`) carried no `@RequirePermissions`
+  decorator, while the sibling routes `POST /v1/branches` and `GET /v1/branches`
+  (`src/tenancy/controllers/branches.controller.ts:39`, `:23`) require
+  `{ resource: 'branch', action: 'create' }` / `{ resource: 'branch', action: 'read' }`. Under the
+  global `PermissionsGuard` (`src/shared/auth/permissions.guard.ts:31` —
+  `if (!required || required.length === 0) return true`) a handler without the decorator passes for any
+  authenticated user, so the pair was gated by the tenant check alone.
+- **What changed**: exactly two decorators, matching the siblings' values —
+  `@RequirePermissions({ resource: 'branch', action: 'create' })` on the POST (`:17`) and
+  `{ resource: 'branch', action: 'read' }` on the GET (`:30`) — plus the import they need. Nothing else
+  in the controller changed: both handlers still call
+  `tenantContextService.requireOrganizationAccess(orgId)` (`:24`, `:34`) before the service, so RBAC is
+  additive to tenant isolation, not a replacement for it.
+- **Scope, in the ruling's own terms**: this is a consistency fix, **not a claim of stronger tenant
+  isolation**. Permissions here are **user-global**: `PermissionsGuard` →
+  `IdentityService.hasPermission` (`src/identity/services/identity.service.ts:147-173`) reads
+  IDENTITY_USER_ROLES → IDENTITY_ROLE_PERMISSIONS → IDENTITY_PERMISSIONS only; the per-organization role
+  column on membership is never consulted by it (see "Deployment preconditions" below).
+- **Observable change for a caller**: a user who is an active member of the organization but whose
+  user-global roles lack `branch:create` / `branch:read` now receives 403 from these two routes, where
+  the request previously reached the handler. In this repository those permission rows exist only via
+  `bootstrap:dev` and only the `owner` role holds them.
+- **Callers**: zero in-repo callers — `apps/web` calls only `/v1/branches`
+  (`apps/web/src/lib/tenancy-api.ts:27-32`), `scripts/api-gate.js` likewise, and no spec constructed
+  `OrganizationsBranchController` before this change. The routes are listed in `docs/api-plan.md:42-43`.
+  **Callers outside this repository are UNKNOWN.**
+- **Verification**: `src/tenancy/controllers/organizations-branch.controller.spec.ts` asserts the
+  metadata on all four branch handlers (each org-scoped route equal to its `/v1/branches` sibling for the
+  matching verb) and drives the real `PermissionsGuard` through the real controller: without the
+  permission the guard throws `ForbiddenException` before the handler body and neither
+  `requireOrganizationAccess` nor the service method is called; with it the handler runs and
+  `requireOrganizationAccess` is still called with the route orgId. Stubbed in that spec: only
+  `IdentityService.hasPermission`, `TenantContextService.requireOrganizationAccess` and the two
+  `BranchesService` methods.
+- **Files**: `src/tenancy/controllers/organizations-branch.controller.ts` and its new spec.
+- **Risks**: Low. Two decorator lines; the routes keep their tenant check and their handlers.
+
+## Deployment preconditions — onboarding deferred (owner, 2026-10-05)
+
+Owner instruction, recorded verbatim: "Onboarding: defer. Record it explicitly as a deployment
+precondition + deferred onboarding scope, rather than silently treating bootstrap:dev as production
+onboarding."
+
+Facts, each re-derived by command on `main` at `e54dbd44` (file:line as read there):
+
+- **The only role name any reachable path creates is `owner`**: `src/scripts/bootstrap-dev.ts:46`
+  (`const OWNER_ROLE_NAME = 'owner';`) and the permission-provisioning migrations, which create the same
+  role when it is missing — `src/migrations/1788965263267-ProvisionCrmPermissions.ts:3`,
+  `src/migrations/1788965263265-ProvisionInventoryPermissions.ts:14`, and the multiline ones through
+  their `*_PERMISSIONS_ROLE_NAME = 'owner'` constants
+  (`1788965263246-ProvisionPtPermissions.ts:34`, `1788965263235-ProvisionAttendancePermissions.ts:45`).
+  `IdentityService.createRole` (`src/identity/services/identity.service.ts:90`) accepts any name and has
+  **no callers**.
+- **No role-management API exists**: no route path contains `role` (a decorator-path grep over `src`
+  matches nothing, proved against a pattern that matches other resources), `src/identity/controllers/`
+  contains only `auth.controller.ts` (+ its spec), no controller injects `IdentityService`, and
+  `createRole` (`:90`), `assignRoleToUser` (`:128`) and `assignUserToOrganization` (`:182`) have zero
+  callers.
+- **Creating an organization grants the creator nothing**: `OrganizationsService.create`
+  (`src/tenancy/services/organizations.service.ts:30-37`) writes only the ORGANIZATIONS row — no
+  membership, no role link; the service references no role or membership repository, and the controller
+  handler (`src/tenancy/controllers/organizations.controller.ts:43-46`) only delegates to it.
+- **`branch:*` and `organization:*` permission rows are created only by `bootstrap:dev`**
+  (`src/scripts/bootstrap-dev.ts:54-59`). The permission-provisioning migrations cover eight other
+  resources (`pt`, `finance`, `workout`, `diet`, `ai`, `inventory`, `crm`, `attendance`) and contain no
+  quoted `'branch'` or `'organization'` resource literal.
+- **The per-organization role column is written but never read**:
+  `IDENTITY_USER_ORGANIZATIONS.role_id` (`src/identity/entities/identity-user-organizations.entity.ts:51`)
+  is written by `assignUserToOrganization` (`src/identity/services/identity.service.ts:190`, no callers)
+  and by `bootstrap-dev.ts:222`, `:231`. The authorization path (`hasPermission`, `:147-173`) never reads
+  it, and `getUserOrganizations` (`:200-205`), which does load the relation, has no callers.
+- **`bootstrap:dev` has no production guard**: `grep -n "NODE_ENV\|production"
+  src/scripts/bootstrap-dev.ts` matches nothing (the same pattern matches in `src/main.ts`, so the
+  matcher is sound). It does not create an account — it requires `test2@example.com`
+  (`src/scripts/bootstrap-dev.ts:44`) to already exist and throws otherwise (`:187-194`).
+- **`bootstrap:dev` is NOT adopted as production onboarding.** Nothing in this repository onboards a
+  production tenant today: there is no role-assignment or membership-grant API, organization creation
+  grants the creator nothing, and the only creator of `branch:*` / `organization:*` permission rows is
+  the development seed script.
+- **Deployment precondition**: any deployment whose `NODE_ENV` is not `development`/`test` needs an
+  operator-run path for the first account, its role, its memberships and the permission rows before the
+  API is usable by anyone. That path does not exist in this repository; **onboarding is deferred** by
+  the owner's instruction above, and `bootstrap:dev` is not a substitute for it.
