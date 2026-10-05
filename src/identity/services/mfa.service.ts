@@ -77,6 +77,43 @@ export class MfaService {
   }
 
   /**
+   * Begin MFA enrollment for a user — the re-authentication-gated write path.
+   *
+   * Owner ruling (2026-10-05): when MFA is ALREADY ENABLED the caller must
+   * present a currently valid TOTP code before a new secret is generated or
+   * stored. Without that check a live access token alone could silently rebind
+   * the second factor to another authenticator. The check runs FIRST: nothing
+   * is generated or written when it fails, so there is no window in which the
+   * old secret has been replaced and the check failed.
+   *
+   * When MFA is not enabled there is no factor to present — no secret exists
+   * yet, so a first-time enrollee cannot produce a code — and enrollment is
+   * unchanged. That is the ruled, accepted gap: enrolling an MFA-off account
+   * needs only a live access token. It includes the stored-but-unverified state
+   * this very method creates, because `storeSecret` writes before `mfa-verify`
+   * flips `is_mfa_enabled`.
+   *
+   * Returns null when the re-authentication check fails; the controller answers
+   * 401 — the same exception type and status `disableMfa`'s bad-code path uses.
+   */
+  async startEnrollment(
+    userId: string,
+    otpCode?: string,
+  ): Promise<{ secret: string; provisioningUri: string } | null> {
+    if (await this.isMfaEnabled(userId)) {
+      // `verifyTotp` is reused unchanged — same code, same window (1).
+      const currentCodeValid = await this.verifyTotp(userId, otpCode ?? '');
+      if (!currentCodeValid) {
+        return null;
+      }
+    }
+
+    const { secret, provisioningUri } = await this.generateSecret(userId);
+    await this.storeSecret(userId, secret);
+    return { secret, provisioningUri };
+  }
+
+  /**
    * Verify a TOTP code against the user's stored secret.
    * Returns true if the code is valid within the clock skew window.
    */

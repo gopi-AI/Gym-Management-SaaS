@@ -3253,3 +3253,50 @@ unless NODE_ENV is development or test."
 - **Risks**: Low. The deliberately changed surface is the refusal set only; the Docker image, the
   `.env.example`-derived dev stack, jest/CI, the API gate and the boot spec are all in
   development/test or carry a real secret.
+
+## DEF-20 — `mfa-enable` replaced an ENABLED account's TOTP secret without re-authentication (2026-10-05)
+
+**Status: FIXED** — owner ruling (2026-10-05), recorded verbatim: "MFA: A - require the current TOTP when
+MFA is already enabled." The same ruling accepts the gap it leaves: "an account with MFA NOT enabled can
+still be enrolled with only a live access token."
+
+- **What it was**: `POST /v1/auth/mfa-enable` called `MfaService.generateSecret()` → `storeSecret()`, and
+  `storeSecret` overwrites an existing row unconditionally. `MfaEnableDto.otpCode` was required by the DTO
+  but never read by the handler, so a live access token alone could silently rebind an account's second
+  factor to another authenticator — the new secret could always be verified afterwards through
+  `mfa-verify`.
+- **What changed**: `MfaService.startEnrollment(userId, otpCode?)` is now the enrollment write path. When
+  `is_mfa_enabled` is true it verifies the CURRENT code with the existing `verifyTotp` (unchanged — same
+  window, 1, that `mfa-disable` uses) BEFORE anything is generated or stored, and returns `null` when that
+  fails, so there is no window in which the old secret was replaced and the check failed. The controller
+  answers **401 `Invalid TOTP code`** — the same exception type and status as `mfa-disable`'s bad-code path,
+  with a message that names neither the stored secret nor the enabled/disabled state. **The 401 choice is the
+  assistant's reading of the ruling, not part of the ruling's own words.** `mfa-verify` and `mfa-disable` are
+  untouched, as is the unused `force` field on `MfaDisableDto`.
+- **The accepted gap (ruled)**: when MFA is not enabled — including the *stored-but-unverified* state this
+  very method creates, because `storeSecret` writes before `mfa-verify` flips the flag — a caller holding a
+  live access token can still enroll or overwrite the secret with no code. There is no secret to prove
+  possession of, so there is nothing to check.
+- **DTO**: `MfaEnableDto.otpCode` became optional (`@IsOptional`). A first-time enrollee has no secret yet
+  and therefore cannot produce a code, so the field cannot be required for the flow the ruling leaves
+  unchanged; the requirement now lives in the service, where the enabled case demands a valid one. An
+  MFA-off caller that omits it is enrolled exactly as before; an ENABLED caller that omits it gets the 401
+  above rather than a 400 from the validation pipe.
+- **Throttling**: `mfa-enable` carries **no throttle decorator** — only the four `@Public` routes have one,
+  and this handler has `@HttpCode` + `@UseGuards(JwtAuthGuard)` and nothing else — and `docs/api-plan.md`
+  states that authenticated routes are not throttled. With the re-auth gate in place a failed attempt costs
+  one TOTP comparison; rate-limiting an endpoint whose failure mode is a 6-digit guess is a
+  **RECOMMENDATION** for a future hardening pass, **not applied here** (this entry changes no throttling).
+- **Verification**: a real-Postgres spec (`src/identity/services/mfa-enable-reauth.integration.spec.ts`)
+  asserts the ruled cases through a SECOND READ of `IDENTITY_MFA_SECRETS` and `IDENTITY_USERS` — the secret
+  is byte-identical after a refusal, rotated after a success, and MFA-off enrollment is unchanged — and a
+  controller spec pins the 401 shape. The D15 gate's `auth-07` check drives the same flow over HTTP with
+  real `speakeasy` codes: enrol (MFA off, no code) → verify → refuse without a code → refuse a wrong code →
+  allow with the current code and issue a new secret.
+- **Replay, reported not redesigned**: `verifyTotp` keeps no one-time-use record — the same current code
+  verifies repeatedly against an unchanged secret inside its ±1 step (30 s) window. Inside
+  `startEnrollment` a replay is moot in any case, because a successful call rotates the secret.
+- **Files**: `src/identity/services/mfa.service.ts`, `src/identity/controllers/auth.controller.ts`,
+  `src/identity/dto/mfa-enable.dto.ts`, their specs, and one check in `scripts/api-gate.js`.
+- **Risks**: Low. The MFA-off flow is byte-for-byte the previous behaviour; the ENABLED flow now requires a
+  code that the caller's authenticator already produces.

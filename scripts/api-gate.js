@@ -62,6 +62,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+// Real TOTP codes for the mfa-enable re-authentication check (auth-07): the
+// service verifies against this same library, so a code generated here is the
+// real thing rather than a stub.
+const speakeasy = require('speakeasy');
 
 const ROOT = path.resolve(__dirname, '..');
 const GUARD = path.join(ROOT, 'scripts', 'dev-db-env.sh');
@@ -765,6 +769,91 @@ check({
     return verdict(
       r.status === 429,
       `POST /v1/auth/login (spoofed X-Forwarded-For, already-throttled email) -> ${r.status}`,
+    );
+  },
+});
+
+check({
+  id: 'auth-07',
+  group: 'auth',
+  title: 'mfa-enable demands the CURRENT TOTP once MFA is enabled (owner ruling 2026-10-05)',
+  run: async (ctx) => {
+    // A dedicated account, so enabling MFA here cannot disturb any other check
+    // (userA/userB must stay able to log in without a challenge).
+    const email = `gate-mfa-${ctx.runId}@example.com`;
+    const password = 'Gate-Mfa-Passw0rd!';
+    const mfaEnable = (body, token) =>
+      call(ctx, { method: 'POST', path: '/v1/auth/mfa-enable', token, body });
+    const totp = (secret, offsetSeconds = 0) =>
+      speakeasy.totp({
+        secret,
+        encoding: 'base32',
+        time: Math.floor(Date.now() / 1000) + offsetSeconds,
+      });
+
+    const registered = await call(ctx, {
+      method: 'POST',
+      path: '/v1/auth/register',
+      body: { email, password, first_name: 'Gate', last_name: 'Mfa' },
+    });
+    const login = await call(ctx, {
+      method: 'POST',
+      path: '/v1/auth/login',
+      body: { email, password },
+    });
+    const token = login.body && login.body.accessToken;
+
+    // 1) MFA off: enrollment needs no code at all (the ruled, accepted gap).
+    const firstEnrollment = await mfaEnable({}, token);
+    const firstSecret = firstEnrollment.body && firstEnrollment.body.secret;
+
+    // 2) Enable MFA for real: the code is computed from the returned secret.
+    const verified = await call(ctx, {
+      method: 'POST',
+      path: '/v1/auth/mfa-verify',
+      token,
+      body: { otpCode: totp(firstSecret) },
+    });
+
+    // 3) ENABLED + no code -> refused.
+    const withoutCode = await mfaEnable({}, token);
+
+    // 4) ENABLED + a wrong code -> refused. The wrong code is chosen outside the
+    //    ±1 step window `verifyTotp` accepts, so this cannot flake on the clock.
+    const accepted = new Set([totp(firstSecret, -30), totp(firstSecret, 30)]);
+    let wrongCode = '000000';
+    for (let n = 0; n < 1000; n += 1) {
+      const candidate = String(n).padStart(6, '0');
+      if (candidate !== totp(firstSecret) && !accepted.has(candidate)) {
+        wrongCode = candidate;
+        break;
+      }
+    }
+    const withWrongCode = await mfaEnable({ otpCode: wrongCode }, token);
+
+    // 5) ENABLED + the current code -> allowed, and a NEW secret is issued.
+    const withCode = await mfaEnable({ otpCode: totp(firstSecret) }, token);
+    const newSecret = withCode.body && withCode.body.secret;
+
+    const ok =
+      registered.status === 201 &&
+      login.status === 200 &&
+      firstEnrollment.status === 200 &&
+      Boolean(firstSecret) &&
+      verified.status === 200 &&
+      verified.body &&
+      verified.body.success === true &&
+      withoutCode.status === 401 &&
+      withWrongCode.status === 401 &&
+      withCode.status === 200 &&
+      Boolean(newSecret) &&
+      newSecret !== firstSecret;
+
+    return verdict(
+      ok,
+      `mfa-enable: off/enroll -> ${firstEnrollment.status}; verify -> ${verified.status}; ` +
+        `enabled/no code -> ${withoutCode.status}; enabled/wrong code -> ${withWrongCode.status}; ` +
+        `enabled/current code -> ${withCode.status}${ok ? '' : ` (${fragment(withCode)})`}`,
     );
   },
 });
