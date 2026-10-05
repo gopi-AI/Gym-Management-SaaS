@@ -75,13 +75,20 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
   async enableMfa(@CurrentUser() user: { userId: string }, @Body() dto: MfaEnableDto): Promise<{ secret: string; provisioningUri: string }> {
-    // First generate a secret for the authenticated user
-    const { secret, provisioningUri } = await this.authService.mfaService.generateSecret(user.userId);
+    // `startEnrollment` enforces the re-authentication rule (owner ruling
+    // 2026-10-05): when MFA is already enabled the CURRENT TOTP must be valid
+    // before anything is generated or stored. It returns null when that check
+    // fails, and the answer mirrors `mfa-disable`'s bad-code path: a 401 with a
+    // message that names neither the stored state nor the secret.
+    const enrollment = await this.authService.mfaService.startEnrollment(
+      user.userId,
+      dto.otpCode,
+    );
+    if (!enrollment) {
+      throw new UnauthorizedException('Invalid TOTP code');
+    }
 
-    // Store the secret for the user (this will be verified on the next step)
-    await this.authService.mfaService.storeSecret(user.userId, secret);
-
-    return { secret, provisioningUri };
+    return enrollment;
   }
 
   @Post('mfa-verify')
