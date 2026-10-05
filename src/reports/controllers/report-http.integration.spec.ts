@@ -1,23 +1,37 @@
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import {
   BadRequestException,
   ConflictException,
+  ExecutionContext,
   ForbiddenException,
   HttpException,
   HttpStatus,
   NotFoundException,
 } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
+import { Reflector, APP_GUARD } from '@nestjs/core';
+import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { Observable, firstValueFrom, from } from 'rxjs';
 import { createCache, type Cache } from 'cache-manager';
 import { redisStore } from 'cache-manager-redis-yet';
+import { Test } from '@nestjs/testing';
+import { request as httpRequest } from 'node:http';
 import { DataSource, Repository } from 'typeorm';
 import { AppDataSource } from '../../data-source';
 import { Organization } from '../../tenancy/entities/organization.entity';
 import { Branch } from '../../tenancy/entities/branch.entity';
 import { Member } from '../../members/entities/member.entity';
 import { IdentityPermission } from '../../identity/entities/identity-permissions.entity';
+import { IdentityUser } from '../../identity/entities/identity-users.entity';
+import { IdentityRole } from '../../identity/entities/identity-roles.entity';
+import { IdentityUserRole } from '../../identity/entities/identity-user-roles.entity';
+import { IdentityRolePermission } from '../../identity/entities/identity-role-permissions.entity';
+import { IdentityUserOrganization } from '../../identity/entities/identity-user-organizations.entity';
+import { IdentityService } from '../../identity/services/identity.service';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
+import { TenantContextInterceptor } from '../../shared/tenant/tenant-context.interceptor';
 import { PERMISSIONS_KEY, RequiredPermission } from '../../shared/auth/permissions.guard';
+import { JwtAuthGuard } from '../../shared/auth/jwt-auth.guard';
 import { ReportJob } from '../entities/report-job.entity';
 import { ReportSchema } from '../entities/report-schema.entity';
 import { ReportQueryValidator } from '../services/report-query-validator.service';
@@ -63,6 +77,7 @@ describeDb('Report API over HTTP (P6-04 piece 1)', () => {
   let jobsController: ReportJobsController;
   let jobRepository: Repository<ReportJob>;
   let schemaRepository: Repository<ReportSchema>;
+  let configService: ConfigService;
 
   const orgA = crypto.randomUUID();
   const orgB = crypto.randomUUID();
@@ -70,7 +85,15 @@ describeDb('Report API over HTTP (P6-04 piece 1)', () => {
 
   const reflector = new Reflector();
 
-  /** Run `fn` as if the request had been authorized for `orgId`. */
+  /**
+   * Run `fn` as if the request had been authorized for `orgId`.
+   *
+   * WARNING: this writes `organizationId` straight into the store — a value the real
+   * `TenantContextInterceptor` never sets (it records the header as
+   * `requestedOrganizationId`). It is fine for testing *business* behaviour, and it is
+   * exactly why this file could not see `resolveAuthorizedOrg()`'s missing requested-org
+   * fallback. Tenant resolution is pinned by the header-path cases at the bottom instead.
+   */
   const asOrg = <T>(orgId: string, fn: () => Promise<T>): Promise<T> =>
     tenantContext.runWithContext({}, async () => {
       await tenantContext.setCurrentOrganizationId(orgId);
@@ -117,7 +140,7 @@ describeDb('Report API over HTTP (P6-04 piece 1)', () => {
 
     // `MAX_PENDING_JOBS` is pinned to the documented default (2) rather than left to
     // whatever the environment sets, so the guard's cap is deterministic here.
-    const configService = {
+    configService = {
       get: (key: string) => (key === 'MAX_PENDING_JOBS' ? '2' : undefined),
     } as ConfigService;
 
@@ -684,6 +707,252 @@ describeDb('Report API over HTTP (P6-04 piece 1)', () => {
       'report:edit',
       'report:view',
     ]);
+  });
+
+  /**
+   * Tenant-resolution regression guard (P6-48).
+   *
+   * Every case above runs through `asOrg()`, which writes `organizationId` directly into the
+   * ALS store — a value the real `TenantContextInterceptor` NEVER sets (it records the
+   * `X-Organization-Id` header as `requestedOrganizationId` only). `resolveAuthorizedOrg()`
+   * therefore always took its first branch, and its missing requested-org fallback was never
+   * on any tested path: `GET /v1/report/jobs/{id}` answered 404 for every caller, legitimate
+   * ones included. These cases drive the REAL interceptor, a REAL signed JWT and the REAL
+   * membership table instead of the shortcut.
+   */
+  describe('tenant resolution from the real X-Organization-Id header path (P6-48)', () => {
+    let headerTenantContext: TenantContextService;
+    let headerInterceptor: TenantContextInterceptor;
+    let headerJobsController: ReportJobsController;
+    let identityUserRepository: Repository<IdentityUser>;
+    let membershipRepository: Repository<IdentityUserOrganization>;
+
+    const userId = crypto.randomUUID();
+    const jwtSecret = process.env.JWT_SECRET ?? 'dev-secret-change-me';
+    const token = new JwtService({ secret: jwtSecret }).sign({ sub: userId });
+
+    /**
+     * Drive the shipped interceptor with a real header + real bearer token, then run `fn`
+     * inside the context it establishes. `handle()` is invoked synchronously inside
+     * `runWithContext`, so `fn()` and every async continuation of it observe the request store.
+     */
+    const throughHeaderPath = <T>(
+      headers: Record<string, string>,
+      fn: () => Promise<T>,
+    ): Promise<T> => {
+      const context = {
+        switchToHttp: () => ({ getRequest: () => ({ headers }) }),
+      } as unknown as ExecutionContext;
+      return firstValueFrom(
+        headerInterceptor.intercept(context, { handle: () => from(fn()) }) as Observable<T>,
+      );
+    };
+
+    const authenticatedHeaders = (organizationId?: string): Record<string, string> => ({
+      authorization: `Bearer ${token}`,
+      ...(organizationId ? { 'x-organization-id': organizationId } : {}),
+    });
+
+    const seedCompletedJob = (organizationId: string): Promise<ReportJob> =>
+      jobRepository.save({
+        organization_id: organizationId,
+        status: 'completed',
+        progress_pct: 100,
+        parameters: {},
+        result_rows: 3,
+        result_format: 'json',
+      });
+
+    beforeAll(() => {
+      identityUserRepository = ds.getRepository(IdentityUser);
+      membershipRepository = ds.getRepository(IdentityUserOrganization);
+
+      // The REAL membership check against the REAL table, so the decision is made by shipped
+      // code reading seeded rows — not by a test-local stub that agrees with the assertion.
+      const identityService = new IdentityService(
+        identityUserRepository as never,
+        ds.getRepository(IdentityRole) as never,
+        ds.getRepository(IdentityPermission) as never,
+        ds.getRepository(IdentityUserRole) as never,
+        ds.getRepository(IdentityRolePermission) as never,
+        membershipRepository as never,
+      );
+
+      headerTenantContext = new TenantContextService(identityService, ds.getRepository(Branch));
+      headerInterceptor = new TenantContextInterceptor(
+        new JwtService({ secret: jwtSecret }),
+        headerTenantContext,
+      );
+
+      headerJobsController = new ReportJobsController(
+        new ReportJobsService(
+          jobRepository as never,
+          reportJobService,
+          new ReportSchemasService(
+            schemaRepository as never,
+            headerTenantContext,
+            new ReportQueryValidator(ds),
+          ),
+          headerTenantContext,
+          configService,
+        ),
+      );
+    });
+
+    beforeEach(async () => {
+      await identityUserRepository.save({
+        id: userId,
+        email: `${userId}@report-api.test`,
+        password_hash: 'not-a-real-hash',
+        first_name: 'Header',
+        last_name: 'Path',
+        is_active: true,
+        email_verified: true,
+      });
+      // ACTIVE membership in A only; B is deliberately absent.
+      await membershipRepository.save({ user_id: userId, organization_id: orgA, is_active: true });
+    });
+
+    afterEach(async () => {
+      await membershipRepository.delete({ user_id: userId });
+      await identityUserRepository.delete({ id: userId });
+    });
+
+    it('returns 200 for the caller own organization via the header (was 404 before the fix)', async () => {
+      const job = await seedCompletedJob(orgA);
+
+      const status = await throughHeaderPath(authenticatedHeaders(orgA), () =>
+        headerJobsController.findOne(job.id),
+      );
+      console.log(
+        `[report-api evidence] GET /v1/report/jobs/{id} X-Organization-Id=own response=${JSON.stringify(status)}`,
+      );
+
+      expect(status.id).toBe(job.id);
+      expect(status.status).toBe('completed');
+      expect(status.result_rows).toBe(3);
+    });
+
+    it('rejects a foreign organization header with 403 and discloses no job of that organization', async () => {
+      const foreignJob = await seedCompletedJob(orgB);
+
+      const refused = await catchHttp(() =>
+        throughHeaderPath(authenticatedHeaders(orgB), () =>
+          headerJobsController.findOne(foreignJob.id),
+        ),
+      );
+      console.log(
+        `[report-api evidence] GET /v1/report/jobs/{id} X-Organization-Id=foreign response=${JSON.stringify(refused)}`,
+      );
+
+      expect(refused.status).toBe(HttpStatus.FORBIDDEN);
+      expect(await jobRepository.count({ where: { organization_id: orgB } })).toBe(1);
+    });
+
+    it('scopes the read to the authorized organization: another organization job id is a 404', async () => {
+      const foreignJob = await seedCompletedJob(orgB);
+
+      const notFound = await catchHttp(() =>
+        throughHeaderPath(authenticatedHeaders(orgA), () =>
+          headerJobsController.findOne(foreignJob.id),
+        ),
+      );
+      console.log(
+        `[report-api evidence] GET /v1/report/jobs/{id} own header + foreign job id response=${JSON.stringify(notFound)}`,
+      );
+
+      expect(notFound.status).toBe(HttpStatus.NOT_FOUND);
+    });
+
+    it('requires an organization context: no header is a 403, not a 404', async () => {
+      const job = await seedCompletedJob(orgA);
+
+      const refused = await catchHttp(() =>
+        throughHeaderPath(authenticatedHeaders(), () => headerJobsController.findOne(job.id)),
+      );
+      console.log(
+        `[report-api evidence] GET /v1/report/jobs/{id} no org header response=${JSON.stringify(refused)}`,
+      );
+
+      expect(refused.status).toBe(HttpStatus.FORBIDDEN);
+    });
+
+    it('the real global JwtAuthGuard answers 401 when no Authorization header is sent', async () => {
+      // Every case above calls the controller directly, which cannot reach a global
+      // `APP_GUARD` at all. This one boots a real HTTP listener with the shipped
+      // `JwtAuthGuard` registered the way `AuthModule` registers it, so the 401 below is
+      // produced by the guard's own `canActivate()` on a real request. `PermissionsGuard`
+      // is deliberately not registered: it is registered *after* `JwtAuthGuard` in
+      // `AuthModule`, so an unauthenticated request can never reach it — the 401 is
+      // decided before any permission metadata is read.
+      const moduleRef = await Test.createTestingModule({
+        controllers: [ReportJobsController],
+        providers: [
+          // The real service the controller injects — the same one the P6-48 cases above build.
+          // The guard rejects the request long before this handler is reached, so its presence
+          // here is about honest DI (nothing in this file is stubbed), not about the assertion.
+          {
+            provide: ReportJobsService,
+            useValue: new ReportJobsService(
+              jobRepository as never,
+              reportJobService,
+              new ReportSchemasService(
+                schemaRepository as never,
+                headerTenantContext,
+                new ReportQueryValidator(ds),
+              ),
+              headerTenantContext,
+              configService,
+            ),
+          },
+          { provide: Reflector, useValue: reflector },
+          { provide: JwtService, useValue: new JwtService({ secret: jwtSecret }) },
+          { provide: ConfigService, useValue: configService },
+          { provide: CACHE_MANAGER, useValue: cache },
+          { provide: APP_GUARD, useClass: JwtAuthGuard },
+        ],
+      }).compile();
+
+      const app = moduleRef.createNestApplication({ logger: false });
+      await app.listen(0);
+      try {
+        const port = (app.getHttpServer().address() as { port: number }).port;
+        const response = await new Promise<{ statusCode: number; body: unknown }>(
+          (resolve, reject) => {
+            const req = httpRequest(
+              {
+                host: '127.0.0.1',
+                port,
+                path: `/v1/report/jobs/${crypto.randomUUID()}`,
+                method: 'GET',
+              },
+              (res) => {
+                let raw = '';
+                res.setEncoding('utf8');
+                res.on('data', (chunk: string) => {
+                  raw += chunk;
+                });
+                res.on('end', () =>
+                  resolve({ statusCode: res.statusCode ?? 0, body: JSON.parse(raw) as unknown }),
+                );
+              },
+            );
+            req.on('error', reject);
+            req.end();
+          },
+        );
+        console.log(
+          `[report-api evidence] GET /v1/report/jobs/{id} (real HTTP, no Authorization header) response=${JSON.stringify(response)}`,
+        );
+
+        expect(response.statusCode).toBe(HttpStatus.UNAUTHORIZED);
+        expect(response.body).toMatchObject({ statusCode: HttpStatus.UNAUTHORIZED });
+        expect((response.body as { message: string }).message).toContain('Authorization');
+      } finally {
+        // Close the listener so this case leaves no open handle behind.
+        await app.close();
+      }
+    });
   });
 
 });

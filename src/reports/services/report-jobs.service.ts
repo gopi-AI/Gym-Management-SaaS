@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -44,13 +44,25 @@ export class ReportJobsService {
     private readonly configService: ConfigService,
   ) {}
 
-  /** The AUTHORIZED organization for this request (never a client-supplied id). */
+  /**
+   * The AUTHORIZED organization for this request (never a client-supplied id).
+   *
+   * Deliberately identical to `ReportSchemasService.resolveAuthorizedOrg()`: the current
+   * context if one exists, otherwise the REQUESTED organization (the interceptor records the
+   * `X-Organization-Id` header there) validated against an ACTIVE membership. The previous
+   * body read only `getCurrentOrganizationId()` — a value `TenantContextInterceptor` never
+   * sets — so every request failed here with a 404, a legitimate caller included.
+   */
   private async resolveAuthorizedOrg(): Promise<string> {
-    const organizationId = await this.tenantContextService.getCurrentOrganizationId();
-    if (organizationId) {
-      return organizationId;
+    const currentOrgId = await this.tenantContextService.getCurrentOrganizationId();
+    if (currentOrgId) {
+      return currentOrgId;
     }
-    throw new NotFoundException('No authorized organization in the request context');
+    const requestedOrgId = await this.tenantContextService.getRequestedOrganizationId();
+    if (!requestedOrgId) {
+      throw new ForbiddenException('Organization context required');
+    }
+    return this.tenantContextService.requireOrganizationAccess(requestedOrgId);
   }
 
   /**
