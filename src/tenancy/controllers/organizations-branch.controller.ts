@@ -3,6 +3,7 @@ import { BranchesService } from '../services/branches.service';
 import { CreateBranchDto } from '../dto/create-branch.dto';
 import { Branch } from '../entities/branch.entity';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
+import { RequirePermissions } from '../../shared/auth/permissions.guard';
 
 @Controller('v1/organizations')
 export class OrganizationsBranchController {
@@ -13,6 +14,7 @@ export class OrganizationsBranchController {
 
   @Post(':orgId/branches')
   @HttpCode(HttpStatus.CREATED)
+  @RequirePermissions({ resource: 'branch', action: 'create' })
   async createBranchForOrganization(
     @Param('orgId', new ParseUUIDPipe({ version: '4' })) orgId: string,
     @Body() dto: CreateBranchDto,
@@ -25,6 +27,7 @@ export class OrganizationsBranchController {
 
   @Get(':orgId/branches')
   @HttpCode(HttpStatus.OK)
+  @RequirePermissions({ resource: 'branch', action: 'read' })
   async findBranchesByOrganization(
     @Param('orgId', new ParseUUIDPipe({ version: '4' })) orgId: string,
   ): Promise<Branch[]> {
