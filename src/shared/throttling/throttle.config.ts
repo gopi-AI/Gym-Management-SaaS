@@ -23,6 +23,14 @@ export const THROTTLE_DEFAULTS = {
   REGISTER_IP: { limit: 10, ttlMs: 60 * 60_000 },
   REFRESH_IP: { limit: 60, ttlMs: 60_000 },
   VERIFY_MFA_IP: { limit: 20, ttlMs: 60_000 },
+  // Owner ruling 2026-10-05, amending Q1 for these two routes only: the MFA
+  // writes are the first counters keyed by the AUTHENTICATED USER rather than by
+  // IP, so that one account's 6-digit guessing budget cannot be spent by many
+  // callers and one NAT cannot make a shared bucket of unrelated users. One
+  // counter per route (never a shared one), so exhausting `mfa-enable` cannot
+  // lock a user out of `mfa-disable`.
+  MFA_ENABLE_USER: { limit: 20, ttlMs: 60_000 },
+  MFA_DISABLE_USER: { limit: 20, ttlMs: 60_000 },
   // Q6: a high per-IP ceiling on the webhook and nothing else — a validly signed
   // event must never be rejected by anything except this ceiling.
   WEBHOOK_IP: { limit: 600, ttlMs: 60_000 },
@@ -125,6 +133,43 @@ export const loginPairTracker: ThrottlerGetTrackerFunction = (req) =>
   loginPairKey(typeof req.ip === 'string' ? req.ip : undefined, (req.body as Record<string, unknown>)?.email);
 
 /**
+ * Longest user-id component kept. The value is this app's own JWT `sub` claim
+ * and is read only after `JwtAuthGuard` has verified the signature, so it is
+ * bounded here for the same reason every other key component is — not hashed:
+ * unlike the login pair's email it is not caller-supplied text of arbitrary
+ * length, and hashing it would only make a counter unreadable to an operator.
+ */
+export const MAX_KEY_USER_CHARS = 64;
+
+/**
+ * The per-user key for the MFA write routes (owner ruling 2026-10-05): the
+ * authenticated user IS the whole key. There is deliberately no IP component
+ * and no fallback to one — adding `req.ip` would let a caller spend a victim's
+ * budget from elsewhere, which is the lockout the login pair counter exists to
+ * avoid; here the caller is authenticated, so the user alone identifies them.
+ *
+ * This is the app's first counter keyed by an authenticated identity, and the
+ * key is safe to derive at this point because the global `JwtAuthGuard` runs
+ * before any route-level guard and assigns `req.user` (`jwt-auth.guard.ts`):
+ * `DefThrottlerGuard` is applied per route, never app-wide, so it can never
+ * observe an authenticated route's request before that assignment.
+ *
+ * Anything that is not a non-empty string — missing, null, a number, an array,
+ * an object, `''` — collapses to ONE shared bucket, the rule `loginPairKey`
+ * already applies to its email half: a malformed request must not mint a fresh
+ * counter per shape, and sharing a bucket errs toward throttling too much
+ * rather than too little. That bucket is unreachable on these two routes; it is
+ * the fail-shut direction if the guard order above ever changes.
+ */
+export function mfaUserKey(userId: unknown): string {
+  return (typeof userId === 'string' ? userId.trim() : '').slice(0, MAX_KEY_USER_CHARS);
+}
+
+/** Throttler tracker for the MFA write counters — see `mfaUserKey`. */
+export const mfaUserTracker: ThrottlerGetTrackerFunction = (req) =>
+  mfaUserKey((req.user as { userId?: unknown } | undefined)?.userId);
+
+/**
  * Build the named throttlers for `ThrottlerModule`.
  *
  * `blockDuration: 0` selects fixed-window semantics: the counter is blocked only
@@ -147,6 +192,12 @@ export function buildThrottlers(config: ConfigService): ThrottlerOptions[] {
     { ...read('REGISTER_IP') },
     { ...read('REFRESH_IP') },
     { ...read('VERIFY_MFA_IP') },
+    // Two NAMES, one tracker: the library composes the Redis key from the
+    // controller, the handler AND the throttler name, so naming them separately
+    // is what gives `mfa-enable` and `mfa-disable` a bucket each (owner ruling
+    // 2026-10-05) without a second key function.
+    { ...read('MFA_ENABLE_USER'), getTracker: mfaUserTracker },
+    { ...read('MFA_DISABLE_USER'), getTracker: mfaUserTracker },
     { ...read('WEBHOOK_IP') },
   ];
 }

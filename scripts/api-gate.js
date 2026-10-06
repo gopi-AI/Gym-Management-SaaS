@@ -858,6 +858,98 @@ check({
   },
 });
 
+check({
+  id: 'auth-08',
+  group: 'auth',
+  title: 'the MFA write routes are throttled per authenticated user (owner ruling 2026-10-05)',
+  run: async (ctx) => {
+    // Two dedicated accounts: this check EXHAUSTS a whole counter (20/min by
+    // default), and the per-user keying under test is what keeps that
+    // exhaustion away from every other check (auth-07 also calls mfa-enable,
+    // as its own user).
+    const password = 'Gate-Mfa-Passw0rd!';
+    const emailA = `gate-mfa-throttle-a-${ctx.runId}@example.com`;
+    const emailB = `gate-mfa-throttle-b-${ctx.runId}@example.com`;
+    const register = (email) =>
+      call(ctx, {
+        method: 'POST',
+        path: '/v1/auth/register',
+        body: { email, password, first_name: 'Gate', last_name: 'MfaThrottle' },
+      });
+    const login = async (email) => {
+      const r = await call(ctx, { method: 'POST', path: '/v1/auth/login', body: { email, password } });
+      return r.body && r.body.accessToken;
+    };
+
+    const regA = await register(emailA);
+    const regB = await register(emailB);
+    const tokenA = await login(emailA);
+    const tokenB = await login(emailB);
+
+    // Spend user A's mfa-enable budget. MFA is off, so each call is a successful
+    // enrollment until the counter blocks. The cap is one whole window MORE than
+    // the limit: the window is a fixed 60 s one, so a rollover mid-loop (which
+    // the ~2 s loop makes unlikely, not impossible) restarts the budget and the
+    // first refusal lands at attempt k+limit+1 for a roll after call k ≤ limit.
+    // A 429 is required within the cap and no earlier call may be refused — that
+    // pair is the property; the exact (limit+1)-th is the no-rollover case.
+    // The limit is read from the same variable the app reads, so an operator's
+    // override cannot make this check expect a refusal the app will not send.
+    const configuredLimit = Number(process.env.THROTTLE_MFA_ENABLE_USER_LIMIT || 20);
+    const limit = Number.isInteger(configuredLimit) && configuredLimit > 0 ? configuredLimit : 20;
+    const cap = limit * 2 + 1;
+    const statuses = [];
+    let retryAfter;
+    for (let attempt = 0; attempt < cap && !statuses.includes(429); attempt += 1) {
+      const r = await call(ctx, { method: 'POST', path: '/v1/auth/mfa-enable', token: tokenA, body: {} });
+      statuses.push(r.status);
+      if (r.status === 429) retryAfter = r.headers['retry-after'];
+    }
+    const firstBlock = statuses.indexOf(429);
+    const budgetBites =
+      firstBlock > 0 &&
+      statuses.slice(0, firstBlock).every((status) => status === 200) &&
+      statuses.length <= cap &&
+      Number(retryAfter) > 0;
+
+    // The sibling route owns a DIFFERENT bucket: with user A's enable budget
+    // spent, mfa-disable must still REACH THE HANDLER — it refuses with 401
+    // ("Invalid TOTP code or MFA not enabled", the code being wrong by
+    // construction) because MFA is off for this user. A shared counter would
+    // have answered 429 without the handler ever running. The body is sent
+    // well-formed on purpose: an empty one is refused by the validation pipe
+    // with 400, which would prove less about where the request got to.
+    const disableA = await call(ctx, {
+      method: 'POST',
+      path: '/v1/auth/mfa-disable',
+      token: tokenA,
+      body: { otpCode: '000000' },
+    });
+
+    // And the counter is the USER's, not a shared bucket: if `req.user` were
+    // unset at guard time every caller would key to the same empty tracker, so
+    // user B's first call would be refused alongside user A's.
+    const enableB = await call(ctx, { method: 'POST', path: '/v1/auth/mfa-enable', token: tokenB, body: {} });
+
+    const ok =
+      regA.status === 201 &&
+      regB.status === 201 &&
+      Boolean(tokenA) &&
+      Boolean(tokenB) &&
+      budgetBites &&
+      disableA.status !== 429 &&
+      enableB.status === 200;
+
+    return verdict(
+      ok,
+      `mfa-enable x${statuses.length} (user A) -> ${statuses.join(',')}; ` +
+        `Retry-After=${retryAfter}; mfa-disable (user A, own bucket) -> ${disableA.status}; ` +
+        `mfa-enable (user B, own bucket) -> ${enableB.status}` +
+        `${ok ? '' : ` (${fragment(disableA)} | ${fragment(enableB)})`}`,
+    );
+  },
+});
+
 // ── tenancy ──────────────────────────────────────────────────────────────────
 check({
   id: 'ten-01',

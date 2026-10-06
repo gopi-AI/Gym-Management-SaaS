@@ -2789,6 +2789,8 @@ Recorded verbatim. These govern the `DEF-07` throttling work, delivered on branc
 
 - **Q1.** Throttle only `POST /v1/auth/register`, `/login`, `/refresh`, `/verify-mfa` and
   `POST /v1/webhooks/payment-gateway`. Authenticated routes are out of scope.
+  **Amended 2026-10-05 for `mfa-enable` and `mfa-disable` only — see DEF-22 below; no other
+  authenticated route is brought into scope.**
 - **Q2.** Limits, all overridable by environment variable with documented defaults (every number is
   a tunable default, not a measured value): `login` 30 requests/min per IP AND 10 requests per
   15 min per (IP, email) pair; `register` 10/hour per IP; `refresh` 60/min per IP; `verify-mfa`
@@ -2824,7 +2826,8 @@ Recorded verbatim. These govern the `DEF-07` throttling work, delivered on branc
 - **`TRUST_PROXY` must be set behind any reverse proxy** (`Q5`). Unset, every client shares the
   proxy's IP and the per-IP limits collapse into one global limit.
 - **Authenticated routes are unthrottled** (`Q1`). Only the five unauthenticated endpoints above
-  are covered.
+  are covered. **Amended 2026-10-05: the two MFA write routes now carry per-user counters — see
+  DEF-22 below. Every other authenticated route still reads exactly as this bullet does.**
 
 ## ESLINT-002 — `apps/web` lint (2026-10-03)
 
@@ -3287,6 +3290,9 @@ still be enrolled with only a live access token."
   states that authenticated routes are not throttled. With the re-auth gate in place a failed attempt costs
   one TOTP comparison; rate-limiting an endpoint whose failure mode is a 6-digit guess is a
   **RECOMMENDATION** for a future hardening pass, **not applied here** (this entry changes no throttling).
+  **Applied 2026-10-06 — see DEF-22 below:** both `mfa-enable` and `mfa-disable` now carry the
+  per-authenticated-user counters this RECOMMENDATION asked for (owner ruling 2026-10-05). The
+  paragraph above describes DEF-20 as it landed.
 - **Verification**: a real-Postgres spec (`src/identity/services/mfa-enable-reauth.integration.spec.ts`)
   asserts the ruled cases through a SECOND READ of `IDENTITY_MFA_SECRETS` and `IDENTITY_USERS` — the secret
   is byte-identical after a refusal, rotated after a success, and MFA-off enrollment is unchanged — and a
@@ -3391,3 +3397,171 @@ Facts, each re-derived by command on `main` at `e54dbd44` (file:line as read the
   operator-run path for the first account, its role, its memberships and the permission rows before the
   API is usable by anyone. That path does not exist in this repository; **onboarding is deferred** by
   the owner's instruction above, and `bootstrap:dev` is not a substitute for it.
+
+## DEF-22 — The two authenticated MFA write routes carried no throttle (2026-10-06)
+
+**Status: FIXED** — owner ruling, recorded here on 2026-10-06 from **owner-supplied wording**. The
+2026-10-05 original is **not in this repository**, so the text below is the owner's supplied
+statement of the ruling, not a quote of a document on disk:
+
+> Q1: YES. Throttle `mfa-enable` and `mfa-disable` only. This amends the earlier authenticated-route
+> exclusion for these two routes; it does not put all authenticated routes into scope.
+
+> Option A: YES. Use per-authenticated-user throttling, with a separate bucket for each route. Do
+> not add an IP fallback.
+
+> Scope: `mfa-enable` and `mfa-disable` only.
+
+> Do not throttle `mfa-verify` in this PR. Record it as a follow-up hardening finding.
+
+- **What it was**: `POST /v1/auth/mfa-enable` and `POST /v1/auth/mfa-disable`
+  (`src/identity/controllers/auth.controller.ts`) are the two authenticated routes that consume a
+  TOTP — `mfa-enable` verifies the CURRENT code before replacing an enabled secret (the DEF-20
+  rule) and `mfa-disable` verifies it before clearing one — and neither carried a throttle
+  decorator. A caller holding a live access token could submit 6-digit codes as fast as the server
+  answered, which is what made the failure mode of both gates a guess. DEF-20 filed rate limiting
+  as a **RECOMMENDATION, not applied here**; this entry applies it.
+- **What shipped**:
+  - **Key: the authenticated user, never the IP.** `mfaUserTracker`
+    (`src/shared/throttling/throttle.config.ts`) reads `req.user.userId`, and `mfaUserKey` trims it
+    and bounds it to `MAX_KEY_USER_CHARS = 64`. The value is this app's own JWT `sub` claim, read
+    only after `JwtAuthGuard` has verified the signature, so it is bounded but not hashed — unlike
+    the login pair's email it is not caller-supplied text of arbitrary length. **There is
+    deliberately no IP component and no fallback to one**: an IP component would let a caller spend
+    a victim's budget from elsewhere, the lockout the login pair counter exists to avoid, and here
+    the caller is authenticated, so the user alone identifies them.
+  - **One counter per route.** `THROTTLE_DEFAULTS.MFA_ENABLE_USER` and `MFA_DISABLE_USER` are two
+    names sharing one tracker; `@nestjs/throttler` composes the Redis key from the controller, the
+    handler and the throttler name, so the two routes get separate buckets and spending
+    `mfa-enable`'s budget leaves `mfa-disable` usable. The decorators (`ThrottleMfaEnable` /
+    `ThrottleMfaDisable`, `throttle.decorators.ts`) keep exactly one counter each through
+    `only(...)`, which skips the other seven names.
+  - **Limit: 20 attempts per 60 000 ms on each route** — tunable defaults, not measurements, via
+    `THROTTLE_MFA_ENABLE_USER_LIMIT` / `_TTL_MS` and the disable pair; a malformed value fails the
+    boot like every other `THROTTLE_*`. The storage's `isBlocked = hits > limit`
+    (`redis-throttler.storage.ts:210`) makes the **21st** call in a window the first 429.
+  - **429 shape**: the library's default body plus a plain `Retry-After` in seconds
+    (`DefThrottlerGuard.throwThrottlingException`, unchanged by this work).
+  - **Storage: inherited, unchanged.** The existing Redis `ThrottlerStorage` — one atomic Lua
+    `EVAL` for check + increment + expiry — now serves these two counters as well, and its
+    fail-open behaviour is unmodified: a client reporting `isReady === false` skips the round trip,
+    and an `EVAL` that does not answer within `THROTTLE_STORAGE_TIMEOUT_MS` (default 500 ms) is
+    abandoned; both log one rate-limited line and **allow** the request, deliberately the opposite
+    of the token blacklist's fail-closed read. This work adds no new storage path and no new
+    failure direction.
+- **Accepted behaviour — the empty-key bucket (INFERRED unreachable; not separately ruled).** Any
+  value that is not a non-empty string — missing, `null`, a number, an array, an object, `''`, a
+  whitespace-only string — collapses to ONE shared empty-string bucket rather than minting a
+  counter per shape, the rule `loginPairKey` already applies to its email half. A request that
+  somehow reached the guard with no authenticated user would therefore share that single bucket.
+  That state is **INFERRED unreachable**, not measured: the global `JwtAuthGuard`
+  (`src/shared/auth/auth.module.ts:23`, `APP_GUARD`) runs before any route-level guard and both
+  handlers additionally declare `@UseGuards(JwtAuthGuard)`, so an unauthenticated request is
+  refused before the throttler sees it. The owner did not rule on this case; it is recorded because
+  sharing a bucket errs toward throttling too much rather than too little, which is the direction
+  the ruling's "no IP fallback" requires.
+- **Tests**: `src/shared/throttling/throttle.config.spec.ts` pins both defaults (20 / 60 000) and
+  the override path — with `THROTTLE_MFA_ENABLE_USER_LIMIT='3'` / `_TTL_MS='45000'` the enable
+  entry reads 3 / 45 000 while the disable entry stays at 20 / 60 000 — plus the `mfaUserKey` /
+  `mfaUserTracker` matrix (trimming, bounding a 10 000-character id, distinct users in distinct
+  buckets, every unusable value into the shared bucket, no IP fallback). The new
+  `src/shared/throttling/mfa-route-throttle-coverage.spec.ts` reads the `THROTTLER_SKIP` map back
+  instead of only asserting the guard is present — a typo in a kept counter name leaves the guard
+  applied and skips all eight counters, silently unthrottling the route — and pins the neighbouring
+  authenticated routes as unthrottled, so the amendment cannot spread without a new ruling. The
+  gate check `auth-08` (`scripts/api-gate.js`) drives it over HTTP: it spends one user's budget to
+  the first 429 (cap `limit * 2 + 1`, with `limit` read from the same variable the app reads),
+  requires every earlier call to be 200 and a positive `Retry-After`, then proves the keying by
+  showing that a second user's first call still answers 200 and that the sibling route still
+  reaches its handler.
+- **Known residuals** (recorded, not fixed here):
+  1. **Nothing tests that `ThrottlerModule.forRootAsync` consumes `buildThrottlers()`'s output.**
+     `throttling.module.ts:30` passes it, but the only specs exercise `buildThrottlers` directly —
+     there is no `throttling.module.spec.ts` — so an edit that stopped feeding the factory would
+     not fail a hermetic test.
+  2. **`auth-08` is limit-agnostic.** It proves that *a* refusal arrives within `limit * 2 + 1`
+     calls, not that the limit is the configured one, so it passes for any deployed limit up to
+     roughly twice the configured value plus one. The exact default is pinned hermetically instead
+     (`throttle.config.spec.ts`), where a one-unit mutant fails.
+  3. **Enable and disable are separate buckets by design**, so an attacker can still spend 20
+     attempts on each per minute — 40 code-consuming attempts per minute, not 20. The split is what
+     stops one route's exhaustion from locking the other out; it was chosen deliberately in
+     Option A ("a separate bucket for each route").
+- **Files**: `src/shared/throttling/throttle.config.ts`, `throttle.decorators.ts`,
+  `src/identity/controllers/auth.controller.ts`, their specs plus the new coverage spec,
+  `scripts/api-gate.js` (`auth-08`), `.env.example`, `docs/api-plan.md`, `docs/security-plan.md`.
+- **Risks**: Low. The changed surface is two decorator lines and two counters; both routes keep
+  their existing auth, validation and handler behaviour, and 20/min is a tunable default rather
+  than a measured value.
+
+## DEF-23 — The authenticated `mfa-verify` route is an unthrottled TOTP oracle (2026-10-06)
+
+**Status: OPEN — filed; deliberately not fixed in this PR.** Owner ruling (owner-supplied wording,
+2026-10-06) for the authenticated `mfa-verify` route: **"ruling A: follow-up PR using the same
+per-user tracker; not throttled in this PR; record the finding."** DEF-22's own ruling names the
+same thing: "Do not throttle `mfa-verify` in this PR. Record it as a follow-up hardening finding."
+
+- **What it is**: `POST /v1/auth/mfa-verify` → `AuthController.verifyMfaSetup`
+  (`src/identity/controllers/auth.controller.ts:100-115`). It carries `@UseGuards(JwtAuthGuard)`
+  and **no throttle decorator**, and it answers `{ success: boolean }` at HTTP 200 either way — so
+  a caller can submit codes and learn, per attempt, whether the code was right.
+- **The oracle is over the ACTIVE secret.** `MfaService.verifyTotp` (`mfa.service.ts:120`) reads
+  the user's single `IDENTITY_MFA_SECRETS` row, decrypts it, and runs
+  `speakeasy.totp.verify({ window: 1 })` — the same call, the same ±1 step (30 s) window and the
+  same secret that `mfa-enable` (the DEF-20 re-auth gate) and `mfa-disable` check. On a valid code
+  the handler also flips MFA on (`enableMfa`).
+- **Why it matters next to DEF-22**: the two counters DEF-22 added are bypassable by sequencing —
+  find a valid code on the unthrottled `mfa-verify`, then spend ONE attempt of the throttled budget
+  on `mfa-disable` (or `mfa-enable`) with a code already known good. The throttle still caps blind
+  guessing at those two routes; it does not cap the oracle that makes the guessing unnecessary.
+  While a code is inside its ±1 step window it verifies on all three routes.
+- **Mechanism: MEASURED from code** (route, decorators, handler body, `verifyTotp`, the shared
+  secret row). **Exploitability: UNKNOWN** — no throughput was measured and no code enumeration was
+  attempted against a running instance.
+- **Consumers measured** (grep over `src/`, `apps/` and `scripts/`): exactly one — the D15 gate
+  check `auth-07` calls it once per run, on a fresh account, to flip MFA on
+  (`scripts/api-gate.js:811-816`). `apps/web` has no caller, the repository has no e2e directory,
+  and no spec calls it (the single hit in `mfa-enable-reauth.integration.spec.ts:240` is a comment).
+- **Named explicitly, to distinguish it from the public route**: this is NOT
+  `POST /v1/auth/verify-mfa` (`verifyMfa`, `auth.controller.ts:66-74`), the `@Public()`
+  login-completion route that consumes a challenge token. That one IS throttled, per IP, at 20/min
+  (`THROTTLE_VERIFY_MFA_IP_LIMIT`). The two names differ by one hyphen; their exposures do not.
+- **Not in this PR**: DEF-22's diff touches neither `src/identity/services/mfa.service.ts` (that
+  file's diff is empty) nor the `mfa-verify` handler in `auth.controller.ts` (no hunk lands on it).
+- **Acceptance criteria for the follow-up**: the same per-user tracker with a counter of its own
+  (never a shared bucket with `mfa-enable` / `mfa-disable`), a hermetic pin of its default, a
+  structural pin that it stays the only added authenticated counter, and a gate check that the
+  route refuses after the limit.
+- **Risks**: Medium if left unthrottled in production — an authenticated 6-digit oracle with no
+  rate limit. Low for this PR, which changes nothing about it and records it here.
+
+## DEF-24 — An exported `JWT_SECRET` breaks the gated DEF-15 spec locally (2026-10-06)
+
+**Status: OPEN — local-verification trap; no fix attempted, and no survey of the other specs.**
+
+- **What happens**: running the gated integration specs with `JWT_SECRET` exported makes
+  `src/shared/auth/def-15-cache-hang.integration.spec.ts` fail as `UnauthorizedException` in about
+  6 ms instead of the designed **503**. Recorded 2026-10-06 while working on DEF-22: with the
+  export removed the spec passes, and the failure reproduces on **pristine HEAD**, so it is not
+  caused by the change in flight.
+- **Why — the precedence is measured, not inferred.** `ConfigService.get()` in the installed
+  `@nestjs/config@3.3.0` resolves in this order: the validated env, then **`process.env`**
+  (`dist/config.service.js:91`, `getFromProcessEnv`), then the object passed to the constructor
+  (`:95`, `getFromInternalConfig`), then the default. An exported variable therefore silently
+  replaces the value a spec hands `new ConfigService({...})`. The spec builds its guard from
+  `new JwtService({ secret: JWT_SECRET })` and `new ConfigService({ JWT_SECRET })` with its own
+  `'def-15-spec-secret'` (`:69`, `:236`, `:239`); with the shell's secret winning, the guard fails
+  token verification **before** the bounded blacklist read under test ever runs, and the spec sees
+  a refusal instead of the 503 it asserts (`:265-276`).
+- **CI does not hit it** (`.github/workflows/ci.yml`, re-read 2026-10-06): the `integration` job's
+  `env:` block sets `DB_*`, `DEV_DB_PUBLISHED_PORT` and `REDIS_*` and **no** `JWT_SECRET`
+  (`:146-155`); `JWT_SECRET` appears only at `:198`, inside the heredoc that writes the throwaway
+  `$RUNNER_TEMP/ci.env` consumed by `--env-path`, never exported to a step; and the spec step
+  exports only `RUN_DB_INTEGRATION=1` and `DB_DATABASE` (`:248`).
+- **Not established**: whether any other spec is sensitive to an exported variable the same way.
+  The mechanism is generic — `ConfigService.get()` applies it to **any** variable the app reads —
+  but only this one spec has been observed failing, and the survey of the others has **not been
+  done (UNKNOWN)**.
+- **Workaround until then**: run the gated suites with only `DB_*` / `REDIS_*` exported, as CI does.
+- **Risks**: Low for CI, which is unaffected. Medium for a local session that reads the 401-shaped
+  failure as a real regression — the misreading this entry exists to prevent.

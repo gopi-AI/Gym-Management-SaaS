@@ -4,13 +4,15 @@ import { DefThrottlerGuard } from './def-throttler.guard';
 import { THROTTLE_NAMES } from './throttle.config';
 
 /**
- * Per-route throttling (DEF-07 Q1). Only the five unauthenticated endpoints are
- * throttled — the guard is applied per route, never globally — and each route
- * keeps exactly the counters that belong to it: a guarded route would otherwise
- * run every throttler the module defines.
+ * Per-route throttling (DEF-07 Q1). The guard is applied per route, never
+ * globally, and each route keeps exactly the counters that belong to it: a
+ * guarded route would otherwise run every throttler the module defines.
  *
- * `GET /v1/health` is therefore exempt by construction (Q10): it carries no
- * guard at all, as do all authenticated routes.
+ * `GET /v1/health` and the authenticated routes are exempt by construction
+ * (Q10): they carry no guard at all — except the two MFA write routes below,
+ * which the owner ruling of 2026-10-05 brought into scope by amending Q1 for
+ * them alone. That amendment is narrow: it is not a rule that authenticated
+ * routes are throttled.
  */
 const only = (...keep: string[]) =>
   SkipThrottle(
@@ -28,3 +30,16 @@ export const ThrottleVerifyMfa = () =>
   applyDecorators(UseGuards(DefThrottlerGuard), only('verify-mfa-ip'));
 
 export const ThrottleWebhook = () => applyDecorators(UseGuards(DefThrottlerGuard), only('webhook-ip'));
+
+/**
+ * The two authenticated MFA write routes (owner ruling 2026-10-05): 20/min per
+ * authenticated user, one bucket each. Each keeps its own counter and nothing
+ * else — the `only` filter skips the other seven names: the six IP-keyed
+ * counters, which would otherwise run against these callers, and the sibling
+ * route's user counter, so spending one route's budget leaves the other usable.
+ */
+export const ThrottleMfaEnable = () =>
+  applyDecorators(UseGuards(DefThrottlerGuard), only('mfa-enable-user'));
+
+export const ThrottleMfaDisable = () =>
+  applyDecorators(UseGuards(DefThrottlerGuard), only('mfa-disable-user'));
