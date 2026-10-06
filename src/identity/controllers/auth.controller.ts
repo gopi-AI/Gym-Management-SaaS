@@ -19,6 +19,8 @@ import { JwtAuthGuard } from '../../shared/auth/jwt-auth.guard';
 import { Public } from '../../shared/auth/public.decorator';
 import {
   ThrottleLogin,
+  ThrottleMfaDisable,
+  ThrottleMfaEnable,
   ThrottleRefresh,
   ThrottleRegister,
   ThrottleVerifyMfa,
@@ -71,6 +73,10 @@ export class AuthController {
     return this.authService.verifyMfaAndLogin(dto.challengeToken, dto.otpCode);
   }
 
+  // Throttled per authenticated user (owner ruling 2026-10-05): this route
+  // consumes a TOTP, so an unlimited caller can guess 6 digits. The bucket is
+  // this user's alone and is separate from `mfa-disable`'s.
+  @ThrottleMfaEnable()
   @Post('mfa-enable')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
@@ -108,6 +114,9 @@ export class AuthController {
     return { success: true };
   }
 
+  // Throttled per authenticated user (owner ruling 2026-10-05), on its own
+  // counter: spending `mfa-enable`'s budget leaves this route usable.
+  @ThrottleMfaDisable()
   @Post('mfa-disable')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)

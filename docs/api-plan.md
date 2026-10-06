@@ -31,7 +31,11 @@ This document outlines the API design for the Gym Management SaaS platform.
   Each is an environment variable (`THROTTLE_LOGIN_IP_LIMIT`, `THROTTLE_LOGIN_PAIR_LIMIT`,
   `THROTTLE_REGISTER_IP_LIMIT`, `THROTTLE_REFRESH_IP_LIMIT`, `THROTTLE_VERIFY_MFA_IP_LIMIT`,
   `THROTTLE_WEBHOOK_IP_LIMIT`, and a `_TTL_MS` window for each) with those values as tunable
-  defaults. Authenticated routes are not throttled; `GET /v1/health` is exempt.
+  defaults. **Exception (owner ruling 2026-10-05):** the two authenticated MFA write routes
+  (`POST /v1/auth/mfa-enable`, `/mfa-disable`) are throttled too — 20/min keyed by the
+  **authenticated user** rather than by IP, one bucket per route
+  (`THROTTLE_MFA_ENABLE_USER_LIMIT` / `THROTTLE_MFA_DISABLE_USER_LIMIT`, each with its own
+  `_TTL_MS`). No other authenticated route is throttled, and `GET /v1/health` is exempt.
 ## Endpoint Catalog (Representative Samples)
 
 ### Tenancy

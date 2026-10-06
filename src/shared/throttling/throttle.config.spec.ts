@@ -1,21 +1,105 @@
+import type { ExecutionContext } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
+import type { ThrottlerOptions } from '@nestjs/throttler';
 import {
+  MAX_KEY_USER_CHARS,
   MAX_LOGIN_PAIR_KEY_CHARS,
+  THROTTLE_DEFAULTS,
   THROTTLE_NAMES,
+  buildThrottlers,
   loginPairKey,
+  mfaUserKey,
+  mfaUserTracker,
   readThrottleNumber,
+  throttleName,
   validateThrottleEnv,
 } from './throttle.config';
 
 describe('throttle configuration', () => {
-  it('defines the six counters the routes use', () => {
+  it('defines the eight counters the routes use', () => {
     expect(THROTTLE_NAMES).toEqual([
       'login-ip',
       'login-pair',
       'register-ip',
       'refresh-ip',
       'verify-mfa-ip',
+      'mfa-enable-user',
+      'mfa-disable-user',
       'webhook-ip',
     ]);
+  });
+
+  // Owner ruling 2026-10-05: 20 attempts per minute per user, one counter per
+  // route. These read `THROTTLE_DEFAULTS` itself — the literal the app falls
+  // back to in `buildThrottlers` — rather than the throttle a `ConfigService`
+  // resolves, so no exported `THROTTLE_*` variable in the caller's shell can
+  // satisfy them (`gym-saas-throttling`: `ConfigService.get()` reads the real
+  // environment before the object a caller passes it).
+  describe('the per-user MFA write counters', () => {
+    it('defaults mfa-enable to 20 attempts per 60 s', () => {
+      expect(THROTTLE_DEFAULTS.MFA_ENABLE_USER.limit).toBe(20);
+      expect(THROTTLE_DEFAULTS.MFA_ENABLE_USER.ttlMs).toBe(60_000);
+    });
+
+    it('defaults mfa-disable to 20 attempts per 60 s', () => {
+      expect(THROTTLE_DEFAULTS.MFA_DISABLE_USER.limit).toBe(20);
+      expect(THROTTLE_DEFAULTS.MFA_DISABLE_USER.ttlMs).toBe(60_000);
+    });
+  });
+
+  // The pin above fixes the NUMBERS; these cases fix the WIRING — that
+  // `buildThrottlers` actually reads those two numbers (and the tracker) for the
+  // routes, since a counter that is pinned but never built throttles nothing.
+  describe('buildThrottlers wires the per-user MFA write counters', () => {
+    /**
+     * A ConfigService stand-in answering from a plain map. Deliberately NOT a
+     * real `ConfigService`: that class resolves the live environment before the
+     * object a caller passes it, so a shell with `THROTTLE_MFA_ENABLE_USER_LIMIT`
+     * exported could satisfy these assertions (the trap that made a gated spec
+     * fail in a runner that exported `JWT_SECRET`). `buildThrottlers` only calls
+     * `get`, so the stub needs nothing else.
+     */
+    const configOf = (values: Record<string, unknown> = {}): ConfigService =>
+      ({ get: (key: string) => values[key] }) as unknown as ConfigService;
+
+    const entryNamed = (throttlers: ThrottlerOptions[], name: string): ThrottlerOptions => {
+      const entry = throttlers.find((throttler) => throttler.name === name);
+
+      expect(entry).toBeDefined();
+      return entry!;
+    };
+
+    const ENABLE = throttleName('MFA_ENABLE_USER');
+    const DISABLE = throttleName('MFA_DISABLE_USER');
+
+    it('takes both counters from THROTTLE_DEFAULTS when nothing overrides them', () => {
+      const throttlers = buildThrottlers(configOf());
+      const enable = entryNamed(throttlers, ENABLE);
+      const disable = entryNamed(throttlers, DISABLE);
+
+      expect(enable.limit).toBe(20);
+      expect(enable.ttl).toBe(60_000);
+      expect(enable.blockDuration).toBe(0);
+      expect(enable.getTracker).toBe(mfaUserTracker);
+
+      expect(disable.limit).toBe(20);
+      expect(disable.ttl).toBe(60_000);
+      expect(disable.blockDuration).toBe(0);
+      expect(disable.getTracker).toBe(mfaUserTracker);
+    });
+
+    it('lets an override win for mfa-enable without disturbing mfa-disable', () => {
+      const throttlers = buildThrottlers(
+        configOf({ THROTTLE_MFA_ENABLE_USER_LIMIT: '3', THROTTLE_MFA_ENABLE_USER_TTL_MS: '45000' }),
+      );
+
+      expect(entryNamed(throttlers, ENABLE).limit).toBe(3);
+      expect(entryNamed(throttlers, ENABLE).ttl).toBe(45_000);
+      // The sibling counter is its own bucket WITH its own numbers: overriding
+      // one route must not retune the other.
+      expect(entryNamed(throttlers, DISABLE).limit).toBe(20);
+      expect(entryNamed(throttlers, DISABLE).ttl).toBe(60_000);
+    });
   });
 
   describe('loginPairKey', () => {
@@ -76,6 +160,67 @@ describe('throttle configuration', () => {
 
     it('treats a missing IP as unknown rather than as the empty string', () => {
       expect(loginPairKey(undefined, 'a@b.c').startsWith('unknown|')).toBe(true);
+    });
+  });
+
+  describe('mfaUserKey', () => {
+    /** Every value that is not a non-empty string shares this bucket. */
+    const EMPTY_BUCKET = '';
+    const UNUSABLE: ReadonlyArray<[unknown]> = [
+      [undefined],
+      [null],
+      [42],
+      [['user-1']],
+      [{ userId: 'user-1' }],
+      [true],
+      [''],
+    ];
+
+    it('is the user id itself, unhashed, so an operator can read the counter', () => {
+      expect(mfaUserKey('user-1')).toBe('user-1');
+    });
+
+    it('trims the id, so padded and unpadded callers share one bucket', () => {
+      expect(mfaUserKey('  user-1  ')).toBe(mfaUserKey('user-1'));
+    });
+
+    it('keeps distinct users in distinct buckets', () => {
+      expect(mfaUserKey('user-1')).not.toBe(mfaUserKey('user-2'));
+    });
+
+    it.each(UNUSABLE)('maps the unusable value %p to the shared empty bucket', (value) => {
+      expect(mfaUserKey(value)).toBe(EMPTY_BUCKET);
+    });
+
+    it.each(UNUSABLE)('never throws for %p', (value) => {
+      expect(() => mfaUserKey(value)).not.toThrow();
+    });
+
+    it('treats a whitespace-only id as the empty bucket, not as a bucket of its own', () => {
+      expect(mfaUserKey('   ')).toBe(EMPTY_BUCKET);
+    });
+
+    it('bounds a 10,000-character id instead of letting it become the key', () => {
+      expect(mfaUserKey('u'.repeat(10_000)).length).toBe(MAX_KEY_USER_CHARS);
+    });
+  });
+
+  describe('mfaUserTracker', () => {
+    const req = (user: unknown) => ({ user }) as Record<string, unknown>;
+    const ctx = {} as ExecutionContext;
+
+    it('reads the id the auth guard assigns to req.user', () => {
+      expect(mfaUserTracker(req({ userId: 'user-1' }), ctx)).toBe('user-1');
+    });
+
+    it('collapses a request with no authenticated user to the shared empty bucket', () => {
+      expect(mfaUserTracker(req(undefined), ctx)).toBe('');
+      expect(mfaUserTracker(req(null), ctx)).toBe('');
+      expect(mfaUserTracker({} as Record<string, unknown>, ctx)).toBe('');
+    });
+
+    it('ignores any other identity the request might carry (no IP fallback)', () => {
+      expect(mfaUserTracker({ ip: '203.0.113.7' } as Record<string, unknown>, ctx)).toBe('');
     });
   });
 
