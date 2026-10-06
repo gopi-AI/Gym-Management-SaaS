@@ -23,14 +23,17 @@ export const THROTTLE_DEFAULTS = {
   REGISTER_IP: { limit: 10, ttlMs: 60 * 60_000 },
   REFRESH_IP: { limit: 60, ttlMs: 60_000 },
   VERIFY_MFA_IP: { limit: 20, ttlMs: 60_000 },
-  // Owner ruling 2026-10-05, amending Q1 for these two routes only: the MFA
-  // writes are the first counters keyed by the AUTHENTICATED USER rather than by
-  // IP, so that one account's 6-digit guessing budget cannot be spent by many
-  // callers and one NAT cannot make a shared bucket of unrelated users. One
-  // counter per route (never a shared one), so exhausting `mfa-enable` cannot
-  // lock a user out of `mfa-disable`.
+  // Owner ruling 2026-10-05, amending Q1 for these routes only: the MFA routes
+  // are the first counters keyed by the AUTHENTICATED USER rather than by IP, so
+  // that one account's 6-digit guessing budget cannot be spent by many callers
+  // and one NAT cannot make a shared bucket of unrelated users. One counter per
+  // route (never a shared one), so exhausting `mfa-enable` cannot lock a user out
+  // of `mfa-disable`. `MFA_VERIFY_USER` is the follow-up DEF-23 carries: the
+  // ruling of 2026-10-05 deferred the authenticated `mfa-verify` route, and it
+  // gets the same tracker with a bucket of its own.
   MFA_ENABLE_USER: { limit: 20, ttlMs: 60_000 },
   MFA_DISABLE_USER: { limit: 20, ttlMs: 60_000 },
+  MFA_VERIFY_USER: { limit: 20, ttlMs: 60_000 },
   // Q6: a high per-IP ceiling on the webhook and nothing else — a validly signed
   // event must never be rejected by anything except this ceiling.
   WEBHOOK_IP: { limit: 600, ttlMs: 60_000 },
@@ -192,12 +195,13 @@ export function buildThrottlers(config: ConfigService): ThrottlerOptions[] {
     { ...read('REGISTER_IP') },
     { ...read('REFRESH_IP') },
     { ...read('VERIFY_MFA_IP') },
-    // Two NAMES, one tracker: the library composes the Redis key from the
+    // Three NAMES, one tracker: the library composes the Redis key from the
     // controller, the handler AND the throttler name, so naming them separately
-    // is what gives `mfa-enable` and `mfa-disable` a bucket each (owner ruling
-    // 2026-10-05) without a second key function.
+    // is what gives `mfa-enable`, `mfa-disable` and `mfa-verify` a bucket each
+    // (owner ruling 2026-10-05; DEF-23) without a second key function.
     { ...read('MFA_ENABLE_USER'), getTracker: mfaUserTracker },
     { ...read('MFA_DISABLE_USER'), getTracker: mfaUserTracker },
+    { ...read('MFA_VERIFY_USER'), getTracker: mfaUserTracker },
     { ...read('WEBHOOK_IP') },
   ];
 }

@@ -2082,6 +2082,9 @@ This document contains the implementation tasks broken down by phase, with depen
   current: the plumbing is wired and unused, so the cost is paid by whoever adds
   filtering rather than by anyone today (see Blast radius). A second
   `@Type(() => Boolean)` occurrence was the one this defect was found next to; it is
+  already fixed, and the acceptance criterion covers it. *(Sentence rejoined 2026-10-07: its tail
+  had been left at the end of the `DEF-08` entry below, where it read as a fragment with no
+  antecedent — commit `889448c4` added the sentence whole to this bullet.)*
 
 ---
 
@@ -2197,6 +2200,17 @@ This document contains the implementation tasks broken down by phase, with depen
   (api-plan.md:27) is the intent to match.
 
 ### DEF-08: Webhook hardening residuals (Low)
+
+**Status: (a) DROPPED — not a gap; (b), (c), (d) DEFERRED** — owner rulings, recorded 2026-10-07
+from **owner-supplied wording**. **(a)** is dropped because it is not a gap: the Stripe SDK applies
+its own default tolerance of 300 s when the caller passes none (`node_modules/stripe/cjs/Webhooks.js:8`
+`DEFAULT_TOLERANCE: 300`, applied at `:15`; the call site passes none —
+`src/finance/services/gateway-webhook.service.ts:29`). **(b)** rejection logging, **(c)** a
+retention/encryption policy for the raw `payload` jsonb, and **(d)** encryption of provider tokens and
+`card_last4` are **deferred**. Each sub-item is therefore answered by an explicit dated ruling rather
+than left silent, which is what the acceptance criterion below asks for; the finding text itself is
+unchanged.
+
 - **Objective**: Bundle of low-severity hardening items recorded by the D14 review:
   (a) pass an explicit `tolerance` to `constructEvent` (`gateway-webhook.service.ts:28` relies
   on Stripe's 300 s default); (b) log rejections (the service logs nothing); (c) decide a
@@ -2208,7 +2222,6 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Acceptance criteria**: each sub-item is either implemented or explicitly waived with a
   one-line rationale in this entry.
 - **Risks**: Low.
-  already fixed, and the acceptance criterion covers it.
 
 ### DEF-09: Jest teardown leak — `A worker process has failed to exit gracefully`
 - **Status**: **OPEN — unattributed, low priority.** Owner ruling (owner, 2026-10-05, IST), recorded
@@ -3248,7 +3261,15 @@ unless NODE_ENV is development or test."
   test2@example.com not found. Register it first via POST /v1/auth/register."
 - **DEPLOYMENT PRECONDITION**: a real `JWT_SECRET` is required wherever `NODE_ENV` is not exactly
   `development` or `test` — including an unset `NODE_ENV`. Onboarding beyond this precondition is
-  **deferred**; nothing about onboarding is ruled here.
+  **deferred**; nothing about onboarding is ruled here. The same precondition, recorded as the
+  onboarding deployment gate, is in "Deployment preconditions — onboarding deferred" at the end of
+  this file.
+- **`.env.example` residual (owner ruling, owner-supplied wording; recorded 2026-10-07)**: there is
+  **no special-case rejection** of the development default. `.env.example` ships
+  `NODE_ENV=development` (`:9`) with the literal
+  `JWT_SECRET=dev-only-secret-change-me-0123456789abcdef` (`:41`) plus the comment that states the
+  real rule (`:39-40`) — no marker, warning or extra boot guard is added for that value. The
+  residual belongs here, in DEF-19, and is not a `.env.example` change.
 - **Tests**: a `NODE_ENV` × secret matrix and the error-message contract in
   `src/shared/auth/jwt-secret.spec.ts`; boot-level cases through the real `validateEnv` in
   `src/app.module.spec.ts`; the `AuthService` signing path in
@@ -3302,6 +3323,17 @@ still be enrolled with only a live access token."
 - **Replay, reported not redesigned**: `verifyTotp` keeps no one-time-use record — the same current code
   verifies repeatedly against an unchanged secret inside its ±1 step (30 s) window. Inside
   `startEnrollment` a replay is moot in any case, because a successful call rotates the secret.
+- **Accepted / deferred (owner rulings, owner-supplied wording; recorded 2026-10-07)**: two states
+  this entry's scope left open are now ruled on rather than left to be re-litigated.
+  **Concurrent valid-code MFA writes are ACCEPTED, no fix.** MEASURED from code: the code check and
+  the write are not one atomic step — `startEnrollment` verifies the current TOTP and only then
+  generates and stores, so two requests that each carry a valid code can both pass the check and both
+  write, the second overwriting the first. The ruling accepts that; nothing changes here.
+  **The missing MFA secret row is DEFERRED — investigation only.** `verifyTotp` answers `false` when
+  `IDENTITY_MFA_SECRETS` holds no row for the user (`src/identity/services/mfa.service.ts`, the
+  `if (!mfaSecret || !mfaSecret.secret) return false;` branch), which is the fail-shut answer; how far
+  that state is reachable is **not established**, and the ruling defers the investigation until
+  reachability is. No behaviour changes here either.
 - **Files**: `src/identity/services/mfa.service.ts`, `src/identity/controllers/auth.controller.ts`,
   `src/identity/dto/mfa-enable.dto.ts`, their specs, and one check in `scripts/api-gate.js`.
 - **Risks**: Low. The MFA-off flow is byte-for-byte the previous behaviour; the ENABLED flow now requires a
@@ -3496,10 +3528,30 @@ statement of the ruling, not a quote of a document on disk:
 
 ## DEF-23 — The authenticated `mfa-verify` route is an unthrottled TOTP oracle (2026-10-06)
 
-**Status: OPEN — filed; deliberately not fixed in this PR.** Owner ruling (owner-supplied wording,
-2026-10-06) for the authenticated `mfa-verify` route: **"ruling A: follow-up PR using the same
-per-user tracker; not throttled in this PR; record the finding."** DEF-22's own ruling names the
-same thing: "Do not throttle `mfa-verify` in this PR. Record it as a follow-up hardening finding."
+**Status: FIXED (2026-10-07)** — the follow-up PR this entry was filed for. The ruling it carries is
+unchanged (owner-supplied wording, 2026-10-06): **"ruling A: follow-up PR using the same per-user
+tracker; not throttled in this PR; record the finding."** DEF-22's own ruling named the same thing:
+"Do not throttle `mfa-verify` in this PR. Record it as a follow-up hardening finding." As filed this
+entry read *"OPEN — filed; deliberately not fixed in this PR"*; it is this PR that fixes it.
+
+**What shipped (2026-10-07)**: a third named counter, `MFA_VERIFY_USER`, defaulting to **20 attempts
+per 60 000 ms** and tunable through `THROTTLE_MFA_VERIFY_USER_LIMIT` / `_TTL_MS`. It is built in
+`buildThrottlers` with `getTracker: mfaUserTracker` and applied to the authenticated `mfa-verify`
+handler by `@ThrottleMfaVerify()`, keeping its **own** bucket — never shared with `mfa-enable` or
+`mfa-disable` — with no IP fallback. **The separate bucket and the 20/min limit are the reviewer's
+RECOMMENDATION, not an owner ruling**; what the owner ruled is the tracker ("the same per-user
+tracker") and the absence of an IP fallback. Pinned by the defaults and wiring cases in
+`throttle.config.spec.ts` and by `mfa-route-throttle-coverage.spec.ts`, whose `verifyMfaSetup`
+assertion this PR deliberately flips from "unthrottled" to "keeps exactly `mfa-verify-user`".
+**Residual (recorded, not fixed)**: three separate buckets — enable, disable, verify — mean an
+attacker can spend **20 attempts per route per minute**, i.e. 60 code-consuming attempts per minute in
+total rather than 20. Merging them was declined: a shared counter would let one route's exhaustion
+lock a user out of the others. **Unchanged**: `MfaService.verifyTotp`, the handler's response body,
+and the public `POST /v1/auth/verify-mfa` route, which keeps its own per-IP counter
+(`THROTTLE_VERIFY_MFA_IP_LIMIT`).
+
+The bullets below are the finding **as filed on 2026-10-06**; their present tense describes the state
+this PR changes.
 
 - **What it is**: `POST /v1/auth/mfa-verify` → `AuthController.verifyMfaSetup`
   (`src/identity/controllers/auth.controller.ts:100-115`). It carries `@UseGuards(JwtAuthGuard)`

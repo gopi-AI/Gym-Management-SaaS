@@ -21,6 +21,7 @@ import {
   ThrottleLogin,
   ThrottleMfaDisable,
   ThrottleMfaEnable,
+  ThrottleMfaVerify,
   ThrottleRefresh,
   ThrottleRegister,
   ThrottleVerifyMfa,
@@ -97,6 +98,12 @@ export class AuthController {
     return enrollment;
   }
 
+  // Throttled per authenticated user (DEF-23): the same `mfaUserTracker` the two
+  // MFA write routes use, on its own counter. This route answers a boolean for a
+  // submitted code, so without a limit it is an oracle over the active secret —
+  // and it is the oracle that made DEF-22's two counters bypassable by
+  // sequencing. A legitimate enrollment costs one call.
+  @ThrottleMfaVerify()
   @Post('mfa-verify')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)

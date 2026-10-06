@@ -9,10 +9,10 @@ import { THROTTLE_NAMES } from './throttle.config';
  * guarded route would otherwise run every throttler the module defines.
  *
  * `GET /v1/health` and the authenticated routes are exempt by construction
- * (Q10): they carry no guard at all — except the two MFA write routes below,
- * which the owner ruling of 2026-10-05 brought into scope by amending Q1 for
- * them alone. That amendment is narrow: it is not a rule that authenticated
- * routes are throttled.
+ * (Q10): they carry no guard at all — except the MFA routes below, which the
+ * owner ruling of 2026-10-05 brought into scope by amending Q1 for them alone
+ * (the third, `mfa-verify`, is the follow-up DEF-23 carries). That amendment is
+ * narrow: it is not a rule that authenticated routes are throttled.
  */
 const only = (...keep: string[]) =>
   SkipThrottle(
@@ -32,14 +32,18 @@ export const ThrottleVerifyMfa = () =>
 export const ThrottleWebhook = () => applyDecorators(UseGuards(DefThrottlerGuard), only('webhook-ip'));
 
 /**
- * The two authenticated MFA write routes (owner ruling 2026-10-05): 20/min per
- * authenticated user, one bucket each. Each keeps its own counter and nothing
- * else — the `only` filter skips the other seven names: the six IP-keyed
- * counters, which would otherwise run against these callers, and the sibling
- * route's user counter, so spending one route's budget leaves the other usable.
+ * The authenticated MFA routes (owner ruling 2026-10-05; `mfa-verify` is the
+ * follow-up DEF-23 carries): 20/min per authenticated user, one bucket each.
+ * Each keeps its own counter and nothing else — the `only` filter skips every
+ * other name: the six IP-keyed counters, which would otherwise run against these
+ * callers, and the sibling routes' user counters, so spending one route's budget
+ * leaves the others usable.
  */
 export const ThrottleMfaEnable = () =>
   applyDecorators(UseGuards(DefThrottlerGuard), only('mfa-enable-user'));
 
 export const ThrottleMfaDisable = () =>
   applyDecorators(UseGuards(DefThrottlerGuard), only('mfa-disable-user'));
+
+export const ThrottleMfaVerify = () =>
+  applyDecorators(UseGuards(DefThrottlerGuard), only('mfa-verify-user'));

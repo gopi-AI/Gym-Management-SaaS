@@ -16,7 +16,7 @@ import {
 } from './throttle.config';
 
 describe('throttle configuration', () => {
-  it('defines the eight counters the routes use', () => {
+  it('defines the nine counters the routes use', () => {
     expect(THROTTLE_NAMES).toEqual([
       'login-ip',
       'login-pair',
@@ -25,17 +25,21 @@ describe('throttle configuration', () => {
       'verify-mfa-ip',
       'mfa-enable-user',
       'mfa-disable-user',
+      'mfa-verify-user',
       'webhook-ip',
     ]);
   });
 
   // Owner ruling 2026-10-05: 20 attempts per minute per user, one counter per
-  // route. These read `THROTTLE_DEFAULTS` itself — the literal the app falls
-  // back to in `buildThrottlers` — rather than the throttle a `ConfigService`
-  // resolves, so no exported `THROTTLE_*` variable in the caller's shell can
-  // satisfy them (`gym-saas-throttling`: `ConfigService.get()` reads the real
-  // environment before the object a caller passes it).
-  describe('the per-user MFA write counters', () => {
+  // route. `MFA_VERIFY_USER` carries the same numbers for the third MFA route
+  // (DEF-23): the 2026-10-05 ruling deferred `mfa-verify`, and the follow-up
+  // ruling keeps it on the same per-user tracker with no IP fallback. These read
+  // `THROTTLE_DEFAULTS` itself — the literal the app falls back to in
+  // `buildThrottlers` — rather than the throttle a `ConfigService` resolves, so
+  // no exported `THROTTLE_*` variable in the caller's shell can satisfy them
+  // (`gym-saas-throttling`: `ConfigService.get()` reads the real environment
+  // before the object a caller passes it).
+  describe('the per-user MFA counters', () => {
     it('defaults mfa-enable to 20 attempts per 60 s', () => {
       expect(THROTTLE_DEFAULTS.MFA_ENABLE_USER.limit).toBe(20);
       expect(THROTTLE_DEFAULTS.MFA_ENABLE_USER.ttlMs).toBe(60_000);
@@ -45,12 +49,17 @@ describe('throttle configuration', () => {
       expect(THROTTLE_DEFAULTS.MFA_DISABLE_USER.limit).toBe(20);
       expect(THROTTLE_DEFAULTS.MFA_DISABLE_USER.ttlMs).toBe(60_000);
     });
+
+    it('defaults mfa-verify to 20 attempts per 60 s (DEF-23)', () => {
+      expect(THROTTLE_DEFAULTS.MFA_VERIFY_USER.limit).toBe(20);
+      expect(THROTTLE_DEFAULTS.MFA_VERIFY_USER.ttlMs).toBe(60_000);
+    });
   });
 
   // The pin above fixes the NUMBERS; these cases fix the WIRING — that
-  // `buildThrottlers` actually reads those two numbers (and the tracker) for the
+  // `buildThrottlers` actually reads those numbers (and the tracker) for the
   // routes, since a counter that is pinned but never built throttles nothing.
-  describe('buildThrottlers wires the per-user MFA write counters', () => {
+  describe('buildThrottlers wires the per-user MFA counters', () => {
     /**
      * A ConfigService stand-in answering from a plain map. Deliberately NOT a
      * real `ConfigService`: that class resolves the live environment before the
@@ -71,11 +80,13 @@ describe('throttle configuration', () => {
 
     const ENABLE = throttleName('MFA_ENABLE_USER');
     const DISABLE = throttleName('MFA_DISABLE_USER');
+    const VERIFY = throttleName('MFA_VERIFY_USER');
 
-    it('takes both counters from THROTTLE_DEFAULTS when nothing overrides them', () => {
+    it('takes all three counters from THROTTLE_DEFAULTS when nothing overrides them', () => {
       const throttlers = buildThrottlers(configOf());
       const enable = entryNamed(throttlers, ENABLE);
       const disable = entryNamed(throttlers, DISABLE);
+      const verify = entryNamed(throttlers, VERIFY);
 
       expect(enable.limit).toBe(20);
       expect(enable.ttl).toBe(60_000);
@@ -86,17 +97,43 @@ describe('throttle configuration', () => {
       expect(disable.ttl).toBe(60_000);
       expect(disable.blockDuration).toBe(0);
       expect(disable.getTracker).toBe(mfaUserTracker);
+
+      // The DEF-23 counter is built from the SAME tracker and its OWN name: a
+      // missing `getTracker` here would key the route by the library's default
+      // (the IP) instead of by the authenticated user.
+      expect(verify.limit).toBe(20);
+      expect(verify.ttl).toBe(60_000);
+      expect(verify.blockDuration).toBe(0);
+      expect(verify.getTracker).toBe(mfaUserTracker);
     });
 
-    it('lets an override win for mfa-enable without disturbing mfa-disable', () => {
+    it('lets an override win for mfa-enable without disturbing mfa-disable or mfa-verify', () => {
       const throttlers = buildThrottlers(
         configOf({ THROTTLE_MFA_ENABLE_USER_LIMIT: '3', THROTTLE_MFA_ENABLE_USER_TTL_MS: '45000' }),
       );
 
       expect(entryNamed(throttlers, ENABLE).limit).toBe(3);
       expect(entryNamed(throttlers, ENABLE).ttl).toBe(45_000);
-      // The sibling counter is its own bucket WITH its own numbers: overriding
-      // one route must not retune the other.
+      // Each sibling counter is its own bucket WITH its own numbers: overriding
+      // one route must not retune the others.
+      expect(entryNamed(throttlers, DISABLE).limit).toBe(20);
+      expect(entryNamed(throttlers, DISABLE).ttl).toBe(60_000);
+      expect(entryNamed(throttlers, VERIFY).limit).toBe(20);
+      expect(entryNamed(throttlers, VERIFY).ttl).toBe(60_000);
+    });
+
+    it('lets an override win for the mfa-verify counter alone', () => {
+      const throttlers = buildThrottlers(
+        configOf({ THROTTLE_MFA_VERIFY_USER_LIMIT: '7', THROTTLE_MFA_VERIFY_USER_TTL_MS: '15000' }),
+      );
+
+      expect(entryNamed(throttlers, VERIFY).limit).toBe(7);
+      expect(entryNamed(throttlers, VERIFY).ttl).toBe(15_000);
+      // The two earlier counters keep their own numbers, and the new one keeps
+      // the shared tracker.
+      expect(entryNamed(throttlers, VERIFY).getTracker).toBe(mfaUserTracker);
+      expect(entryNamed(throttlers, ENABLE).limit).toBe(20);
+      expect(entryNamed(throttlers, ENABLE).ttl).toBe(60_000);
       expect(entryNamed(throttlers, DISABLE).limit).toBe(20);
       expect(entryNamed(throttlers, DISABLE).ttl).toBe(60_000);
     });

@@ -1020,6 +1020,13 @@ Phase 1 already set the precedent for adding this column as a documented deviati
 
 Each question states its options, a recommended default where one exists, and the sections that depend on it.
 
+> **Numbering (2026-10-07):** the `Q1`–`Q23` below are **this plan's own series**.
+> `docs/phase3-status-report.md` §6 numbers its eleven questions independently (`Q1`–`Q11`), and the
+> two collide with different meanings — this section's `Q11` is *gateway provider selection* while
+> §6 `Q11` is **RLS** (ruled 2026-09-26); this section's `Q5` is *refund/credit-note lifecycle* while
+> §6 `Q5` is discount/tax ordering, which is this section's `Q9(a)`. New text cites the series
+> explicitly (`§15 Qn`, `§6 Qn`); existing references are left as written.
+
 ### A. Finance — Ledger & Refunds
 
 **Q1 — Ledger materialization strategy.** Should the ledger read model be (a) materialized views refreshed on a schedule, (b) a denormalized table maintained by event handlers, or (c) plain views with no caching?
