@@ -74,16 +74,18 @@ This document outlines the security architecture and measures for the Gym Manage
 - API security:
   - Rate limiting (`DEF-07`, implemented 2026-10-03): per-IP fixed windows on the five
     unauthenticated endpoints, plus a per-(IP, email) counter on login, answering 429 with
-    `Retry-After`. **Amended 2026-10-05 (owner ruling):** the two authenticated MFA write routes
-    (`POST /v1/auth/mfa-enable`, `/mfa-disable`) carry per-**user** counters — one bucket per route,
-    keyed by the authenticated user id and never by IP, so one account's 6-digit guessing budget
-    cannot be spent by many callers and one NAT cannot join unrelated users. Stored in Redis; fails **open** if Redis is unavailable (a line is logged,
+    `Retry-After`. **Amended 2026-10-05 (owner ruling) and extended by DEF-23:** the three
+    authenticated MFA routes (`POST /v1/auth/mfa-enable`, `/mfa-disable`, `/mfa-verify`) carry
+    per-**user** counters — one bucket per route, keyed by the authenticated user id and never by IP,
+    so one account's 6-digit guessing budget cannot be spent by many callers and one NAT cannot join
+    unrelated users. Separate buckets mean the three routes cost 20 attempts each per minute (60 in
+    total), not 20 shared. Stored in Redis; fails **open** if Redis is unavailable (a line is logged,
     deliberately unlike the token blacklist, which fails closed) — both when the client reports
     itself offline and when a counter read does not answer within `THROTTLE_STORAGE_TIMEOUT_MS`
     (default 500 ms), so a Redis socket that stops answering cannot hold a request open.
     Per-tenant limits and exponential backoff are **not** implemented. Limits and their
     `THROTTLE_*` environment variables are recorded in `docs/task-backlog.md` ("DEF-07 rulings",
-    Q2; the two MFA write counters under DEF-22) and `.env.example`; a distributed attack on one
+    Q2; the three MFA counters under DEF-22/DEF-23) and `.env.example`; a distributed attack on one
     account remains an accepted residual risk (Q2).
   - Bot detection and mitigation: CAPTCHA challenges for suspicious traffic
   - API abuse detection: anomaly detection for unusual request patterns

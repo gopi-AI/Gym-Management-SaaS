@@ -861,7 +861,7 @@ check({
 check({
   id: 'auth-08',
   group: 'auth',
-  title: 'the MFA write routes are throttled per authenticated user (owner ruling 2026-10-05)',
+  title: 'the MFA write routes are throttled per authenticated user (DEF-22)',
   run: async (ctx) => {
     // Two dedicated accounts: this check EXHAUSTS a whole counter (20/min by
     // default), and the per-user keying under test is what keeps that

@@ -3496,10 +3496,30 @@ statement of the ruling, not a quote of a document on disk:
 
 ## DEF-23 — The authenticated `mfa-verify` route is an unthrottled TOTP oracle (2026-10-06)
 
-**Status: OPEN — filed; deliberately not fixed in this PR.** Owner ruling (owner-supplied wording,
-2026-10-06) for the authenticated `mfa-verify` route: **"ruling A: follow-up PR using the same
-per-user tracker; not throttled in this PR; record the finding."** DEF-22's own ruling names the
-same thing: "Do not throttle `mfa-verify` in this PR. Record it as a follow-up hardening finding."
+**Status: FIXED (2026-10-07)** — the follow-up PR this entry was filed for. The ruling it carries is
+unchanged (owner-supplied wording, 2026-10-06): **"ruling A: follow-up PR using the same per-user
+tracker; not throttled in this PR; record the finding."** DEF-22's own ruling named the same thing:
+"Do not throttle `mfa-verify` in this PR. Record it as a follow-up hardening finding." As filed this
+entry read *"OPEN — filed; deliberately not fixed in this PR"*; it is this PR that fixes it.
+
+**What shipped (2026-10-07)**: a third named counter, `MFA_VERIFY_USER`, defaulting to **20 attempts
+per 60 000 ms** and tunable through `THROTTLE_MFA_VERIFY_USER_LIMIT` / `_TTL_MS`. It is built in
+`buildThrottlers` with `getTracker: mfaUserTracker` and applied to the authenticated `mfa-verify`
+handler by `@ThrottleMfaVerify()`, keeping its **own** bucket — never shared with `mfa-enable` or
+`mfa-disable` — with no IP fallback. **The separate bucket and the 20/min limit are the reviewer's
+RECOMMENDATION, not an owner ruling**; what the owner ruled is the tracker ("the same per-user
+tracker") and the absence of an IP fallback. Pinned by the defaults and wiring cases in
+`throttle.config.spec.ts` and by `mfa-route-throttle-coverage.spec.ts`, whose `verifyMfaSetup`
+assertion this PR deliberately flips from "unthrottled" to "keeps exactly `mfa-verify-user`".
+**Residual (recorded, not fixed)**: three separate buckets — enable, disable, verify — mean an
+attacker can spend **20 attempts per route per minute**, i.e. 60 code-consuming attempts per minute in
+total rather than 20. Merging them was declined: a shared counter would let one route's exhaustion
+lock a user out of the others. **Unchanged**: `MfaService.verifyTotp`, the handler's response body,
+and the public `POST /v1/auth/verify-mfa` route, which keeps its own per-IP counter
+(`THROTTLE_VERIFY_MFA_IP_LIMIT`).
+
+The bullets below are the finding **as filed on 2026-10-06**; their present tense describes the state
+this PR changes.
 
 - **What it is**: `POST /v1/auth/mfa-verify` → `AuthController.verifyMfaSetup`
   (`src/identity/controllers/auth.controller.ts:100-115`). It carries `@UseGuards(JwtAuthGuard)`
