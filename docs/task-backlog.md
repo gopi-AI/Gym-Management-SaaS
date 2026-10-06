@@ -2082,6 +2082,9 @@ This document contains the implementation tasks broken down by phase, with depen
   current: the plumbing is wired and unused, so the cost is paid by whoever adds
   filtering rather than by anyone today (see Blast radius). A second
   `@Type(() => Boolean)` occurrence was the one this defect was found next to; it is
+  already fixed, and the acceptance criterion covers it. *(Sentence rejoined 2026-10-07: its tail
+  had been left at the end of the `DEF-08` entry below, where it read as a fragment with no
+  antecedent — commit `889448c4` added the sentence whole to this bullet.)*
 
 ---
 
@@ -2197,6 +2200,17 @@ This document contains the implementation tasks broken down by phase, with depen
   (api-plan.md:27) is the intent to match.
 
 ### DEF-08: Webhook hardening residuals (Low)
+
+**Status: (a) DROPPED — not a gap; (b), (c), (d) DEFERRED** — owner rulings, recorded 2026-10-07
+from **owner-supplied wording**. **(a)** is dropped because it is not a gap: the Stripe SDK applies
+its own default tolerance of 300 s when the caller passes none (`node_modules/stripe/cjs/Webhooks.js:8`
+`DEFAULT_TOLERANCE: 300`, applied at `:15`; the call site passes none —
+`src/finance/services/gateway-webhook.service.ts:29`). **(b)** rejection logging, **(c)** a
+retention/encryption policy for the raw `payload` jsonb, and **(d)** encryption of provider tokens and
+`card_last4` are **deferred**. Each sub-item is therefore answered by an explicit dated ruling rather
+than left silent, which is what the acceptance criterion below asks for; the finding text itself is
+unchanged.
+
 - **Objective**: Bundle of low-severity hardening items recorded by the D14 review:
   (a) pass an explicit `tolerance` to `constructEvent` (`gateway-webhook.service.ts:28` relies
   on Stripe's 300 s default); (b) log rejections (the service logs nothing); (c) decide a
@@ -2208,7 +2222,6 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Acceptance criteria**: each sub-item is either implemented or explicitly waived with a
   one-line rationale in this entry.
 - **Risks**: Low.
-  already fixed, and the acceptance criterion covers it.
 
 ### DEF-09: Jest teardown leak — `A worker process has failed to exit gracefully`
 - **Status**: **OPEN — unattributed, low priority.** Owner ruling (owner, 2026-10-05, IST), recorded
@@ -3248,7 +3261,15 @@ unless NODE_ENV is development or test."
   test2@example.com not found. Register it first via POST /v1/auth/register."
 - **DEPLOYMENT PRECONDITION**: a real `JWT_SECRET` is required wherever `NODE_ENV` is not exactly
   `development` or `test` — including an unset `NODE_ENV`. Onboarding beyond this precondition is
-  **deferred**; nothing about onboarding is ruled here.
+  **deferred**; nothing about onboarding is ruled here. The same precondition, recorded as the
+  onboarding deployment gate, is in "Deployment preconditions — onboarding deferred" at the end of
+  this file.
+- **`.env.example` residual (owner ruling, owner-supplied wording; recorded 2026-10-07)**: there is
+  **no special-case rejection** of the development default. `.env.example` ships
+  `NODE_ENV=development` (`:9`) with the literal
+  `JWT_SECRET=dev-only-secret-change-me-0123456789abcdef` (`:41`) plus the comment that states the
+  real rule (`:39-40`) — no marker, warning or extra boot guard is added for that value. The
+  residual belongs here, in DEF-19, and is not a `.env.example` change.
 - **Tests**: a `NODE_ENV` × secret matrix and the error-message contract in
   `src/shared/auth/jwt-secret.spec.ts`; boot-level cases through the real `validateEnv` in
   `src/app.module.spec.ts`; the `AuthService` signing path in
@@ -3302,6 +3323,17 @@ still be enrolled with only a live access token."
 - **Replay, reported not redesigned**: `verifyTotp` keeps no one-time-use record — the same current code
   verifies repeatedly against an unchanged secret inside its ±1 step (30 s) window. Inside
   `startEnrollment` a replay is moot in any case, because a successful call rotates the secret.
+- **Accepted / deferred (owner rulings, owner-supplied wording; recorded 2026-10-07)**: two states
+  this entry's scope left open are now ruled on rather than left to be re-litigated.
+  **Concurrent valid-code MFA writes are ACCEPTED, no fix.** MEASURED from code: the code check and
+  the write are not one atomic step — `startEnrollment` verifies the current TOTP and only then
+  generates and stores, so two requests that each carry a valid code can both pass the check and both
+  write, the second overwriting the first. The ruling accepts that; nothing changes here.
+  **The missing MFA secret row is DEFERRED — investigation only.** `verifyTotp` answers `false` when
+  `IDENTITY_MFA_SECRETS` holds no row for the user (`src/identity/services/mfa.service.ts`, the
+  `if (!mfaSecret || !mfaSecret.secret) return false;` branch), which is the fail-shut answer; how far
+  that state is reachable is **not established**, and the ruling defers the investigation until
+  reachability is. No behaviour changes here either.
 - **Files**: `src/identity/services/mfa.service.ts`, `src/identity/controllers/auth.controller.ts`,
   `src/identity/dto/mfa-enable.dto.ts`, their specs, and one check in `scripts/api-gate.js`.
 - **Risks**: Low. The MFA-off flow is byte-for-byte the previous behaviour; the ENABLED flow now requires a

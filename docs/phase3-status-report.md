@@ -474,6 +474,13 @@ So the pattern is consistent and deliberate: **services, controllers and constan
 
 ## 6. Open questions requiring a ruling
 
+> **Numbering (2026-10-07):** the `Q1`–`Q11` in this section are **this report's own series**,
+> numbered independently of `docs/phase3-scoping-plan.md` §15 (`Q1`–`Q23`). The numbers collide with
+> different meanings — this section's `Q11` is RLS (ruled 2026-09-26) while plan §15 `Q11` is
+> *gateway provider selection*; this section's `Q5` (discount/tax ordering) is plan §15 `Q9(a)`,
+> while plan §15 `Q5` is *refund/credit-note lifecycle*. New text cites the series explicitly
+> (`§6 Qn`, `§15 Qn`); existing references are left as written.
+
 | # | Question | Where it bites |
 |---|----------|----------------|
 | Q1 | **Is `HEAD` the deliverable baseline, or must the 92 uncommitted files be committed?** *(As posed 2026-09-25; **CLOSED 2026-09-28** — the feature files were committed in `021dc160` and `e16c1118`; the last seven non-source paths also landed — the 3 contract/doc artifacts in `08978034`, the 4 Phase-3 docs in `bd19fca7` — so **0 paths remain uncommitted** (`git ls-files` resolves all seven; `git status --porcelain` is empty). See §0.)* | Determines whether Phase 3 is "4 items done" or "12 items done". Everything else is downstream. |
@@ -485,7 +492,7 @@ So the pattern is consistent and deliberate: **services, controllers and constan
 | Q7 | Is `PT_EVENT_VERSION = 'v1'` an intentional ruling or incidental churn? | **Intentional — documented in commit `e2d062c2` (2026-09-26)**, whose message states the rationale: `PT_EVENT_VERSION` "was the last event version constant still declaring `'1'`. Finance, CRM, inventory, memberships, attendance and loyalty all declare `'v1'` (FINANCE_EVENT_VERSION, CRM_EVENT_VERSION, INVENTORY_EVENT_VERSION, MEMBERSHIP_EVENT_VERSION, ATTENDANCE_EVENT_VERSION, LOYALTY_EVENT_VERSION), so PT was the outlier rather than a deliberate exception." Not incidental churn. The commit also records that it is inert at runtime — the dispatcher reads the version from the stored envelope, so rows already written under `'1'` keep dispatching under `'1'`, and no PT event handler is registered. Recorded from the commit message, **not** from an owner ruling: plan §15 carries no `Decision` line for it |
 | Q8 | Is an operator-triggered renewal route required for P3-09's acceptance criteria? | Renewal is currently service/worker-only. |
 | Q9 | What is the ruling on Q14(a)/(b) for dunning (attempt counter owner; fixed vs. exponential schedule)? | Implementation is unruled. |
-| Q10 | Does P3-10's S3 gap now need priority, given P3-05/P3-06 introduced the first non-document attachments? | §10 called it opportunistic; its premise has changed. |
+| Q10 | Does P3-10's S3 gap now need priority? | §10 called it opportunistic. **Corrected 2026-10-07: the "premise has changed" reading this row used to carry was wrong — neither P3-05 nor P3-06 has a file-attachment consumer.** The only `S3Service` consumer in `src/` is `src/members/services/documents.service.ts`; `S3Service.buildKey` is still hard-coded to the member-document prefix (`src/shared/storage/s3.service.ts:104`); and a grep over `src/crm` and `src/inventory` for `s3service\|upload\|attachment\|multipart\|file` matches no consumer. The CRM/inventory key builders remain deferred **until a consumer exists** (`docs/phase3-scoping-plan.md` §10, P3-10 **Decision (D1)**, 2026-10-01). What stays open is the priority question itself, not a changed premise. |
 | Q11 | Definitive position on RLS — implement `database-plan.md`'s policies, or amend the plan to accept app-level scoping permanently? | **RULED (2026-09-26): RLS formally deferred.** `database-plan.md` amended to record application-layer scoping as the accepted permanent mechanism (no per-request connection affinity for the session GUC; 6–11 week estimate); backlog/roadmap/domain-map/completion-summary updated to match. No longer blocking — see §4.3 |
 
 ---
