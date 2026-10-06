@@ -12,6 +12,37 @@ Node 24 (`.nvmrc`, CI matrix, and `Dockerfile` all pin it).
 
 Two long-lived sibling worktrees of this same repository exist at `../gym-saas-phase4` (branch `phase-4`) and `../gym-saas-phase6` (branch `phase-6`). `phase-6` contains `main`'s history but is **not** an ancestor of it; neither branch is checked out here. `main` is the deliverable baseline — leave those worktrees alone unless you are asked to work there.
 
+## Agent rules (always loaded)
+
+### Always
+1. Tag every claim MEASURED (directly supported by captured command output), INFERRED (reasoned from measured output) or UNKNOWN (cannot be supported). A check or command you could not run is reported UNVERIFIED. Derive file lists and counts by command, never from memory.
+2. Stage by explicit path only (`git status --porcelain` is the authoritative changed-file list because it includes untracked files). Never `git add -A`, `commit -a`, `reset --hard`, `clean -fd`, or checkout-to-restore. No force push. Never push to main. ONLY THE USER MERGES.
+3. New branch: `git worktree add --no-track -b <name> <disk-backed dir under $HOME, not /tmp> origin/main`. After the commit, `git write-tree` equals `git rev-parse HEAD^{tree}` and `git status --porcelain` shows nothing staged beyond it. Push with an explicit refspec; then a fresh `git ls-remote origin <branch>` equals `git rev-parse HEAD`.
+4. Edit only the ALLOWED FILES. A needed change outside them, or any behavior change the task does not list, means STOP and report options.
+5. A decision the owner has not made (a new limit, key scheme, policy) means STOP and report options. Do not choose.
+6. Do not create files outside the repo. Do not touch worktrees, branches, databases or /tmp files you did not create; the prompt names any specific exclusions.
+7. Run the prompt ONCE. If unsure whether a step already ran, report that instead of repeating it.
+8. Clean up at the end: remove only files and scratch databases you created (exact paths and names, no wildcards), with a proof for each.
+9. Never export JWT_SECRET for jest runs (it breaks src/shared/auth/def-15-cache-hang.integration.spec.ts locally; CI does not export it).
+10. Report one line per passing check; raw output only for failures and the key evidence the prompt asks for.
+
+### Base checks (every task)
+- `npm run typecheck` and `npm run lint` (plus the web typecheck if apps/web changed), and only the specs you touched or that cover the changed files.
+- Tests that are added or required go in the same commit as the code they test.
+- CI runs the full suite on the PR. Report per-job results: `ci (24)`, `web`, `integration`. `docker-image` runs on main pushes only, never on PRs.
+
+### Tiers
+- **Tier 1, low risk** (docs, comments, config text, small refactors with existing tests): base checks only. Do not run the full jest suite, the gated suites or `npm run api:gate` locally. No mutation proofs.
+- **Tier 2, high risk** (security, money, auth, tenancy, or anything that changes a response): the Tier 1 exclusions do not apply. Base checks, plus:
+  - Affected-module directories (hermetic, then with `RUN_DB_INTEGRATION=1` on a uniquely named scratch DB), and `npm run api:gate -- --env-path=<main checkout>/.env` ONCE at the end. State the expected check count; any other number is a STOP.
+  - Real-DB specs: no mocks of repository, EntityManager or DataSource; assert through a second read; no hard wall-clock lower bounds.
+  - Mutation proofs, capped at the mutants named in the prompt: sha256 before, restore by copy and verify sha256 after; each mutant must typecheck (EXIT=0) and fail by assertion, not timeout; STOP on a survivor.
+  - Redis db 15 `DBSIZE` is 0 before and after each heavy run. Heavy runs one at a time, polled about once a minute. If the harness stops you for repeated identical calls, change the poll command and continue; if still blocked, STOP and report the state of any detached run, scratch database and Redis keys.
+  - Process check from a script file (its command line must not contain the words jest or def15): `ps -ef | grep -E '[j]est|[d]ef15'`, proven on a live process first; never `grep -v grep`.
+
+### Escalation
+Start at Tier 1 if unsure. If the work turns out to affect a response, permission, security boundary or financial behavior, STOP and report the escalation. Do not switch tiers silently.
+
 ## Layout
 
 | Path | What it is |
@@ -193,7 +224,7 @@ Phase 3 added no frontend surface, so the UI covers Phase 0–2 scope only (auth
 - Follow the tenancy chain unchanged: Auth Identity → Tenant Context → RBAC → Scoped Service → Scoped DB Query.
 - No raw SQL unless the task or an existing migration/view mechanism requires it. No entity spreading (`...dto`) on sensitive updates.
 - **Never fake a test, build, typecheck, migration, or runtime result.** Run the command. If you cannot, report it as `UNVERIFIED`. Equally: never report a commit, push, or other git operation as complete by *describing* its result — paste the raw output of the verifying command, and for a push confirm against a fresh `git ls-remote` rather than the push's exit code.
-- Never `git reset --hard` or `git clean -fd`. Don't commit unless explicitly asked.
+- Never `git reset --hard` or `git clean -fd`. Don't commit unless explicitly asked; a prompt that includes a commit, push or PR step counts as asking.
 - Never present a prior analysis or artifact as already existing unless you can point to the exact file, commit, or quoted section it lives in. After a context or session boundary, treat your own earlier summary as a claim to re-verify against the repository, not a fact to build on.
 
 ## Gotchas
