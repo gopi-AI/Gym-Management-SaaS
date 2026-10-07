@@ -3617,3 +3617,9 @@ this PR changes.
 - **Workaround until then**: run the gated suites with only `DB_*` / `REDIS_*` exported, as CI does.
 - **Risks**: Low for CI, which is unaffected. Medium for a local session that reads the 401-shaped
   failure as a real regression — the misreading this entry exists to prevent.
+
+## DEF-25 — Branch cleanup (2026-10-07)
+
+**Status: done**
+
+Branch cleanup (2026-10-07): deleted 16 merged remote branches and 15 merged local branches after the PR #21 merge. Remaining: main, phase-6 (remote); main, phase-4, phase-6 and the foreign fix/def-15-bounded-cache-calls (local). Open PR: #1 (phase-6). No code or behavior change.
