@@ -639,10 +639,10 @@ recording them is the deliverable. Each item carries the command that shows it, 
    narrower claim: **`P3-13` … `P3-17` have no entries** — `grep -nE '^#{2,3} P3-1[3-7]'
    docs/task-backlog.md` → no match, and the only mentions of those IDs in `docs/` are the two
    false claims corrected by T7.6.
-7. ~~**P2-09 needs an owner decision — on the route, and on whether its tabs call the
-   existing per-domain endpoints.**~~ **RESOLVED 2026-10-01 by D17** (§15.2 D17): the
+7. ~~**P2-09 needs an owner decision — on the route, and on whether its tabs call the existing per-domain endpoints.**~~
+ **RESOLVED 2026-10-01 by D17** (§15.2 D17): the
    route is `apps/web/src/app/members/[id]/page.tsx` with tab child routes; the tabs call
-   **existing per-domain endpoints** plus `GET /v1/members/:memberId/360/header`
+   **per-domain endpoints already present** (memberships, PT) plus **per-domain endpoints added in this route layer** (workouts, diet, loyalty) plus `GET /v1/members/:memberId/360/header`
    (`src/members/controllers/member-360.controller.ts:23,37`); **no new 360 endpoints**. P2-09
    remains **carried over, unscheduled** — the ruling settles its shape, not its scheduling.
    The placeholder route still does not exist (`ls apps/web/src/app/members/` → `page.tsx`
