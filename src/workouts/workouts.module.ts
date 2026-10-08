@@ -8,6 +8,7 @@ import { WorkoutTemplateExercise } from './entities/workout-template-exercise.en
 import { WorkoutPlanAssignment } from './entities/workout-plan-assignment.entity';
 import { WorkoutSession } from './entities/workout-session.entity';
 import { WorkoutSessionExercise } from './entities/workout-session-exercise.entity';
+import { WorkoutsTabController } from './controllers/workouts-tab.controller';
 import { WorkoutsService } from './services/workouts.service';
 
 /**
@@ -36,6 +37,7 @@ import { WorkoutsService } from './services/workouts.service';
     OutboxModule,
     TenancyModule,
   ],
+  controllers: [WorkoutsTabController],
   providers: [WorkoutsService],
   exports: [WorkoutsService],
 })
