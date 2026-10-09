@@ -86,7 +86,7 @@ const WORKER_NAMES = [
   'CRM_SLA_MONITOR',
 ];
 
-const GROUPS = ['seed', 'boot', 'auth', 'tenancy', 'inventory', 'finance', 'crm', 'pt', 'webhook'];
+const GROUPS = ['seed', 'boot', 'auth', 'tenancy', 'inventory', 'finance', 'crm', 'pt', 'loyalty', 'webhook'];
 
 const EXIT = { OK: 0, CHECK_FAILED: 1, REFUSED: 2, CANT_RUN: 3, INTERNAL: 4, USAGE: 64 };
 
@@ -1952,6 +1952,120 @@ check({
     return verdict(
       r.status === 404,
       `POST /v1/pt/enrollments/<random>/cancel -> ${r.status} (${fragment(r)})`,
+    );
+  },
+});
+
+// ── loyalty (P2-08 route layer + its `loyalty:read` provisioning) ───────────
+// The route is guarded by `@RequirePermissions({ resource: 'loyalty', action:
+// 'read' })` and the guard fails closed, so before the provisioning migration
+// EVERY caller got 403. loyalty-03 keeps that causal claim honest: it removes
+// the row and re-requests with the same token, so a 200 here cannot be an
+// unguarded route passing for a provisioned one.
+check({
+  id: 'loyalty-01',
+  group: 'loyalty',
+  title: 'seed a loyalty account and one ledger entry for the member fixture',
+  requires: ['tokenA', 'orgA', 'memberA'],
+  run: async (ctx) => {
+    const accounts = await ctx.queryScratch(
+      `INSERT INTO "LOYALTY_ACCOUNTS"
+         (organization_id, member_id, balance, lifetime_points_earned, lifetime_points_redeemed)
+       VALUES ($1, $2, 120, 120, 0)
+       ON CONFLICT (organization_id, member_id)
+       DO UPDATE SET balance = EXCLUDED.balance
+       RETURNING id`,
+      [ctx.orgA, ctx.memberA],
+    );
+    if (accounts.length !== 1) {
+      return verdict(false, `LOYALTY_ACCOUNTS upsert returned ${accounts.length} rows`);
+    }
+    await ctx.queryScratch(
+      `INSERT INTO "LOYALTY_TRANSACTIONS"
+         (account_id, transaction_type, points, remaining_points, reference_type, description)
+       VALUES ($1, 'earn', 120, 120, 'check_in', 'gate fixture')`,
+      [accounts[0].id],
+    );
+    return verdict(true, `LOYALTY_ACCOUNTS id=${accounts[0].id} + 1 ledger row`);
+  },
+});
+
+check({
+  id: 'loyalty-02',
+  group: 'loyalty',
+  title: 'GET the loyalty tab with the provisioned permission -> 200, not 403',
+  requires: ['tokenA', 'orgA', 'memberA'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'GET',
+      path: `/v1/members/${ctx.memberA}/loyalty`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    const hasAccount = Boolean(r.body && r.body.account && r.body.account.id);
+    const ledger = r.body && r.body.transactions;
+    const hasLedger = Array.isArray(ledger) && ledger.length > 0;
+    return verdict(
+      r.status === 200 && hasAccount && hasLedger,
+      `GET /v1/members/:id/loyalty -> ${r.status}, account=${hasAccount}, ledger=${hasLedger}` +
+        (r.status === 403 ? ` (${fragment(r)})` : ''),
+    );
+  },
+});
+
+check({
+  id: 'loyalty-03',
+  group: 'loyalty',
+  title: 'without the permission row the same token gets 403; restoring it returns 200',
+  requires: ['tokenA', 'orgA', 'memberA'],
+  run: async (ctx) => {
+    const path = `/v1/members/${ctx.memberA}/loyalty`;
+    const removed = await ctx.queryScratch(
+      `DELETE FROM "IDENTITY_ROLE_PERMISSIONS" rp
+       USING "IDENTITY_ROLES" r, "IDENTITY_PERMISSIONS" p
+       WHERE rp.role_id = r."id"
+         AND rp.permission_id = p."id"
+         AND r."name" = 'owner'
+         AND p."resource" = 'loyalty'
+         AND p."action" = 'read'
+       RETURNING rp."id"`,
+    );
+
+    let denied;
+    try {
+      denied = await call(ctx, { method: 'GET', path, token: ctx.tokenA, org: ctx.orgA });
+    } finally {
+      // Restore unconditionally: a mid-check throw must not leave the scratch
+      // database without the row the rest of the run (and the fixture) expects.
+      await ctx.queryScratch(
+        `INSERT INTO "IDENTITY_ROLE_PERMISSIONS" ("role_id", "permission_id")
+         SELECT r."id", p."id" FROM "IDENTITY_ROLES" r, "IDENTITY_PERMISSIONS" p
+         WHERE r."name" = 'owner'
+           AND p."resource" = 'loyalty'
+           AND p."action" = 'read'
+           AND NOT EXISTS (
+             SELECT 1 FROM "IDENTITY_ROLE_PERMISSIONS" rp
+             WHERE rp."role_id" = r."id" AND rp."permission_id" = p."id"
+           )
+         RETURNING "id"`,
+      );
+    }
+
+    const deniesProperly =
+      denied.status === 403 && hasFragment(denied, 'Missing permission loyalty:read');
+    if (!deniesProperly) {
+      return verdict(
+        false,
+        `row removed=${removed.length}; without the row -> ${denied.status} "${fragment(denied)}" ` +
+          `(expected 403 "Missing permission loyalty:read")`,
+      );
+    }
+
+    const restored = await call(ctx, { method: 'GET', path, token: ctx.tokenA, org: ctx.orgA });
+    return verdict(
+      removed.length === 1 && restored.status === 200,
+      `row removed=${removed.length}; without -> 403 "Missing permission loyalty:read"; ` +
+        `restored -> ${restored.status}`,
     );
   },
 });
