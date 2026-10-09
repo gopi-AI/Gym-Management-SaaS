@@ -7,6 +7,7 @@ import { MealTemplate } from './entities/meal-template.entity';
 import { DietPlanAssignment } from './entities/diet-plan-assignment.entity';
 import { NutritionLog } from './entities/nutrition-log.entity';
 import { DietService } from './services/diet.service';
+import { DietTabController } from './controllers/diet-tab.controller';
 
 /**
  * Diet/Nutrition domain module (Phase 2, Module 5 of 8).
@@ -29,6 +30,7 @@ import { DietService } from './services/diet.service';
     OutboxModule,
     TenancyModule,
   ],
+  controllers: [DietTabController],
   providers: [DietService],
   exports: [DietService],
 })
