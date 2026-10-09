@@ -16,6 +16,32 @@ import { IsISO8601, IsOptional } from 'class-validator';
 import { Type } from 'class-transformer';
 
 /**
+ * Query DTO for the diet tab's date window.
+ *
+ * Declared ABOVE `DietTabController` deliberately. `emitDecoratorMetadata` is on
+ * (`tsconfig.json:17`), so TypeScript emits a `design:paramtypes` entry for
+ * `getDiet` that references this class, and that array is evaluated at
+ * module-load time inside the controller's `__decorate` call. A `class` binding
+ * sits in its temporal dead zone until its own declaration executes, so
+ * declaring this *below* the controller threw
+ * `ReferenceError: Cannot access 'ListDietTabQuery' before initialization` on
+ * import — which took down every suite that transitively imports this module,
+ * with `Tests: 0 total`. It is a declaration-order bug, not an import cycle:
+ * `diet.module.ts` is the only importer of this file.
+ */
+class ListDietTabQuery {
+  @IsISO8601()
+  @Type(() => String)
+  @IsOptional()
+  startDate?: string;
+
+  @IsISO8601()
+  @Type(() => String)
+  @IsOptional()
+  endDate?: string;
+}
+
+/**
  * Diet tab API (Phase 2, P2-06).
  *
  * Route layer only — wires the already-complete `DietService` read methods to
@@ -67,16 +93,4 @@ export class DietTabController {
       ),
     };
   }
-}
-
-class ListDietTabQuery {
-  @IsISO8601()
-  @Type(() => String)
-  @IsOptional()
-  startDate?: string;
-
-  @IsISO8601()
-  @Type(() => String)
-  @IsOptional()
-  endDate?: string;
 }
