@@ -10,6 +10,8 @@ import { LoyaltyRule } from './entities/loyalty-rule.entity';
 import { LoyaltyReward } from './entities/loyalty-reward.entity';
 import { Organization } from '../tenancy/entities/organization.entity';
 import { LoyaltyAccrualService } from './services/loyalty-accrual.service';
+import { LoyaltyReadService } from './services/loyalty-read.service';
+import { LoyaltyTabController } from './controllers/loyalty-tab.controller';
 import { LoyaltyExpiryService } from './services/loyalty-expiry.service';
 import { LoyaltyExpiryWorker } from './workers/loyalty-expiry.worker';
 import {
@@ -60,12 +62,14 @@ import {
     LoyaltyAccrualService,
     LoyaltyExpiryService,
     LoyaltyExpiryWorker,
+    LoyaltyReadService,
   ],
   exports: [
     LoyaltyAccrualService,
     LoyaltyExpiryService,
     TypeOrmModule,
   ],
+  controllers: [LoyaltyTabController],
 })
 export class LoyaltyModule implements OnModuleInit {
   private readonly logger = new Logger(LoyaltyModule.name);

@@ -11,6 +11,7 @@ import { LoyaltyRule } from './entities/loyalty-rule.entity';
 import { LoyaltyReward } from './entities/loyalty-reward.entity';
 import { Organization } from '../tenancy/entities/organization.entity';
 import { OutboxService } from '../shared/outbox/outbox.service';
+import { TenantContextService } from '../shared/tenant/tenant-context.service';
 import { TenancyModule } from '../tenancy/tenancy.module';
 import { OutboxModule } from '../shared/outbox/outbox.module';
 import { WorkersModule } from '../shared/workers/workers.module';
@@ -54,6 +55,35 @@ class EmptyModule {}
 })
 class StubOutboxModule {}
 
+/**
+ * `LoyaltyReadService` — the loyalty-tab route layer — injects
+ * `TenantContextService` at constructor index [2]. Swapping `TenancyModule` for
+ * `EmptyModule` removed the only provider of that token, so the whole module
+ * stopped compiling.
+ *
+ * `.overrideProvider(TenantContextService)` does NOT fix this: it can only
+ * substitute a provider that some module still declares, and after the
+ * `EmptyModule` swap nothing does — the override has no site to attach to and
+ * the same DI error returns. So this stub is a module that genuinely *exports*
+ * the token, exactly as `StubOutboxModule` above does for `OutboxService`.
+ *
+ * Only the three methods the read service calls are present.
+ */
+@Module({
+  providers: [
+    {
+      provide: TenantContextService,
+      useValue: {
+        getCurrentOrganizationId: jest.fn(),
+        getRequestedOrganizationId: jest.fn(),
+        requireOrganizationAccess: jest.fn(),
+      },
+    },
+  ],
+  exports: [TenantContextService],
+})
+class StubTenancyModule {}
+
 describe('LoyaltyModule (real DI container)', () => {
   let module: TestingModule;
 
@@ -62,7 +92,7 @@ describe('LoyaltyModule (real DI container)', () => {
       imports: [TypeOrmModule.forRoot({ type: 'postgres', retryAttempts: 0 }), LoyaltyModule, EventHandlerModule],
     })
       .overrideModule(TenancyModule)
-      .useModule(EmptyModule)
+      .useModule(StubTenancyModule)
       .overrideModule(WorkersModule)
       .useModule(EmptyModule)
       .overrideModule(OutboxModule)
