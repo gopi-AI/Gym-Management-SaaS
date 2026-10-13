@@ -22,6 +22,7 @@ import { WorkoutSession } from '../workouts/entities/workout-session.entity';
 import { Exercise } from '../workouts/entities/exercise.entity';
 import { PtEnrollmentsController } from './controllers/pt-enrollments.controller';
 import { CommissionPayoutsController } from './controllers/commission-payouts.controller';
+import { PtTabController } from './controllers/pt-tab.controller';
 import { CommissionPayoutsService } from './services/commission-payouts.service';
 import { CommissionPayoutRun } from './entities/commission-payout-run.entity';
 import { CommissionPayoutItem } from './entities/commission-payout-item.entity';
@@ -73,10 +74,11 @@ describe('PtModule', () => {
       ]);
     });
 
-    it('registers PT enrollment and commission payout controllers', () => {
+    it('registers the PT enrollment, commission payout and PT tab controllers', () => {
       expect(moduleMetadata('controllers', PtModule)).toEqual([
         PtEnrollmentsController,
         CommissionPayoutsController,
+        PtTabController,
       ]);
     });
 
