@@ -1681,6 +1681,10 @@ This document contains the implementation tasks broken down by phase, with depen
   - Shows workout assignments and progress
   - Session booking/cancellation history
 - **Risks**: Incomplete PT data, progress tracking gaps
+- PT tab ships trainer_id only on enrollments/sessions, not hydrated trainer identity. No relation exists on either entity and none is requested in the read path — P2-09’s frontend will need a separate lookup (e.g. via PersonalTrainersService) to render a trainer’s name.
+- No session-level cancellation exists, and sessions have no HTTP write path at all. PTSessionStatus.CANCELLED is declared but never written; book/completeSession/linkWorkoutSession have zero callers and no controller exposes them. Only enrollment-level cancellation (POST /v1/pt/enrollments/:id/cancel) is reachable — the P2-04 "booking/cancellation history" criterion is met as session history only.
+- PtTabController’s dual-permission gate (pt:read + workout:assignment-read) is a hard dependency on another module’s permission. Currently non-binding — every role in every checked database holds both, and there’s exactly one role (owner) system-wide. Re-verify if a second role is ever introduced.
+- No constraint anywhere (DB, entity, or service) prevents a duplicate owner role, and ensureRole’s first-match lookup would silently grant nothing to a second one. Currently unreachable — createRole has no HTTP route — but any future role-management feature needs to add the uniqueness guard itself rather than assume one exists.
   - Branch settings configurable
   - Settings properly inherited/overridden
   - Changes audited
