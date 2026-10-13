@@ -19,6 +19,7 @@ import { CommissionPayoutRun } from './entities/commission-payout-run.entity';
 import { CommissionPayoutItem } from './entities/commission-payout-item.entity';
 import { CommissionPayoutsService } from './services/commission-payouts.service';
 import { CommissionPayoutsController } from './controllers/commission-payouts.controller';
+import { PtTabController } from './controllers/pt-tab.controller';
 
 /**
  * Personal Training domain module (Phase 2, Module 4 of 8).
@@ -58,7 +59,11 @@ import { CommissionPayoutsController } from './controllers/commission-payouts.co
     forwardRef(() => MembersModule),
     WorkoutsModule,
   ],
-  controllers: [PtEnrollmentsController, CommissionPayoutsController],
+  controllers: [
+    PtEnrollmentsController,
+    CommissionPayoutsController,
+    PtTabController,
+  ],
   providers: [
     PtPackagesService,
     PersonalTrainersService,
