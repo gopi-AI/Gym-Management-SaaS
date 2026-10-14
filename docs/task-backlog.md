@@ -1601,6 +1601,14 @@ This document contains the implementation tasks broken down by phase, with depen
   - Balance updates in real-time
 - **Risks**: Points inflation, incorrect accrual rules
 
+
+### Rulings — Phase 2 backend gaps + D17 (2026-10-08)
+
+1. **P2-03 (Services tab) — DESCOPED.** No module, no entities, no service, and no controller will be created in Phase 2. P2-03 needs the Phase 3 Scheduling module and a service-bookings / booking data source that does not exist in this repo; it is a different order of work from the three route-tab tabs and is better delivered with the Scheduling work. See `docs/task-backlog.md` (P2-03).
+2. **P2-05 / P2-06 / P2-08 (Workouts, Diet, Loyalty points) — BUILD route layer.** Entities and read services are complete; the only missing piece is the HTTP controllers. Three controllers were wired to the existing services (workouts-tab, diet-tab, loyalty-tab) and registered in their modules. De-prioritized relative to P2-09 but not descoped.
+3. **D17 — FIXED.** Corrected the false claim that Member 360 tabs call "existing per-domain endpoints." Workouts, diet, and loyalty have no HTTP endpoints in Phase 2 yet; PT and memberships already do. See the corrected lines in `docs/phase3-completion-plan.md` (§15.2 loop) and `docs/phase3-scoping-plan.md` (D17).
+
+
 ### P2-09: Member 360 Tab UI with Lazy Loading
 - **Objective**: Create Member 360 page with tabs and lazy loading.
 - **Dependencies**: P2-01 through P2-08
@@ -1654,6 +1662,7 @@ This document contains the implementation tasks broken down by phase, with depen
   - Past bookings accessible
   - Filtering by status
 - **Risks**: Missing service data, incorrect scheduling
+- **Status: DESCOPED from Phase 2 (2026-10-08).** No module, entities, service, or controller will be created in Phase 2. P2-03 needs the Phase 3 Scheduling module and a service-bookings/booking data source that doesn't exist in this repo yet — a different order of work from the three route-tab tabs (P2-05/06/08), and better delivered alongside the Scheduling work.
 
 ### P2-04: Personal Training Tab API
 - **Objective**: Implement API for personal training tab.
