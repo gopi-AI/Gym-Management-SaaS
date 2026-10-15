@@ -639,3 +639,231 @@ export interface AiUsageResponse {
   limits: AiUsageLimits;
   by_request_type: AiUsageRequestType[];
 }
+
+/* ── Member 360 (P2-09) ────────────────────────────────────────────────── */
+
+/**
+ * Response of `GET /v1/members/:memberId/360/header` (P2-01).
+ *
+ * camelCase on the wire — the backend DTO is a plain interface, not an entity.
+ * `photo` is always null in Phase 2: the member table has no photo column.
+ */
+export interface Member360HeaderResponse {
+  member: {
+    id: string;
+    localId: number;
+    firstName: string;
+    lastName: string;
+    photo?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  };
+  membership: {
+    status: string | null;
+    planId: string | null;
+    endDate: string | null;
+    daysRemaining: number | null;
+  } | null;
+  accessStatus: {
+    /** `denied` is part of the contract but is not produced by the read path. */
+    today: 'granted' | 'denied' | 'not_checked_in';
+    lastCheckIn: string | null;
+  };
+  currentMeasurements: {
+    weight: string | null;
+    bodyFat: string | null;
+    height: string | null;
+  };
+  /** Machine-readable codes, e.g. `check_in`, `renew`, `book_pt`, `log_workout`, `log_meal`. */
+  quickActions: string[];
+  activePtEnrollmentCount: number;
+  hasRemainingPtSessions: boolean;
+}
+
+/* ── Personal training tab (P2-04) ─────────────────────────────────────── */
+
+export interface PtEnrollment {
+  id: string;
+  organization_id: string;
+  member_id: string;
+  package_id: string;
+  /** Bare id — the response carries no hydrated trainer identity. */
+  trainer_id: string;
+  commission_percent?: string | null;
+  start_date: string;
+  end_date?: string | null;
+  sessions_used: number;
+  session_count: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * NOTE: the entity's `sessions_remaining` getter is NOT part of the HTTP
+ * response — it lives on the prototype, so JSON serialisation drops it.
+ * Derive it as `session_count - sessions_used`.
+ */
+export interface PtSession {
+  id: string;
+  organization_id: string;
+  branch_id: string;
+  member_id: string;
+  trainer_id: string;
+  enrollment_id: string;
+  scheduled_start: string;
+  scheduled_end: string;
+  actual_start?: string | null;
+  actual_end?: string | null;
+  /** scheduled | completed | cancelled | no_show */
+  status: string;
+  notes?: string | null;
+  workout_session_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkoutsTabResponse {
+  assignments: WorkoutPlanAssignment[];
+  exercises: Exercise[];
+}
+
+export interface WorkoutPlanAssignment {
+  id: string;
+  organization_id: string;
+  member_id: string;
+  template_id: string;
+  assigned_by: string;
+  assigned_at: string;
+  start_date: string;
+  end_date?: string | null;
+  /** active | completed | expired */
+  status: string;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Exercise {
+  id: string;
+  organization_id: string;
+  name: string;
+  description?: string | null;
+  category?: string | null;
+  muscle_group?: string | null;
+  equipment_needed?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PtWorkoutProgress {
+  assignment: WorkoutPlanAssignment;
+  progress: {
+    completed: number;
+    prescribed: number;
+    /** 0–100, server-computed */
+    percentage: number;
+  };
+}
+
+export interface PtTabResponse {
+  enrollments: PtEnrollment[];
+  sessions: PtSession[];
+  workoutProgress: PtWorkoutProgress[];
+}
+
+/* ── Diet tab (P2-06) ──────────────────────────────────────────────────── */
+
+export interface DietPlanAssignment {
+  id: string;
+  organization_id: string;
+  member_id: string;
+  diet_plan_id: string;
+  assigned_by: string;
+  assigned_at: string;
+  start_date: string;
+  end_date?: string | null;
+  /** active | completed | expired */
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One logged meal. Macro columns are null when no macro data was submitted. */
+export interface NutritionLog {
+  id: string;
+  organization_id: string;
+  member_id: string;
+  assignment_id?: string | null;
+  /** Set for a templated meal; null for a free-text one. */
+  meal_template_id?: string | null;
+  meal_description?: string | null;
+  log_date: string;
+  servings: number;
+  logged_at: string;
+  calories?: number | null;
+  protein_g?: string | null;
+  carbs_g?: string | null;
+  fat_g?: string | null;
+  created_at: string;
+}
+
+/**
+ * One day of macro totals (the backend defaults the window to the last 30
+ * days). Null totals mean no meal that day carried macro data; those meals are
+ * counted in `mealsMissingMacros` and excluded from the sums.
+ */
+export interface DietDailyTotal {
+  log_date: string;
+  totalCalories: number | null;
+  totalProteinG: number | null;
+  totalCarbsG: number | null;
+  totalFatG: number | null;
+  mealsMissingMacros: number;
+  totalMeals: number;
+  /** Share of that day's meals with complete macros, 0–100. */
+  adherencePct: number;
+}
+
+export interface DietTabResponse {
+  dietPlans: DietPlanAssignment[];
+  nutritionLogs: NutritionLog[];
+  dailyTotals: DietDailyTotal[];
+}
+
+/* ── Loyalty tab (P2-08) ───────────────────────────────────────────────── */
+
+export interface LoyaltyAccount {
+  id: string;
+  organization_id: string;
+  member_id: string;
+  balance: number;
+  lifetime_points_earned: number;
+  /** Always 0 in Phase 2 — redemption is deferred to Phase 3. */
+  lifetime_points_redeemed: number;
+  /** Null in Phase 2 — no tier system yet. */
+  tier?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LoyaltyTransaction {
+  id: string;
+  account_id: string;
+  /** earn | adjust | expire | redeem (`redeem` is not produced in Phase 2). */
+  transaction_type: string;
+  points: number;
+  remaining_points: number;
+  reference_type?: string | null;
+  reference_id?: string | null;
+  description?: string | null;
+  expires_at?: string | null;
+  created_at: string;
+}
+
+/** `account` is present whenever this response exists — a 404 means "no account". */
+export interface LoyaltyTabResponse {
+  account: LoyaltyAccount;
+  transactions: LoyaltyTransaction[];
+}
