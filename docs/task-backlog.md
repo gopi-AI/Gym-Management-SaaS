@@ -1555,23 +1555,19 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Objective**: Implement API for body measurements tracking tab.
 - **Dependencies**: P2-01
 - **Files/modules affected**:
-  - src/members/ (service for measurement data)
+  - src/members/ (MeasurementLogsService, MeasurementLog entity, measurements controller, DTOs, migrations)
 - **Database changes**:
-  - measurement_logs table (new)
+  - MEMBERS_MEMBER_MEASUREMENTS table (migration 1788965263237)
+  - IDENTITY_ROLES / IDENTITY_PERMISSIONS updates (migration 1788965263238)
 - **API changes**:
   - GET /v1/members/{memberId}/measurements
   - POST /v1/members/{memberId}/measurements
 - **Frontend changes**: None
 - **Worker changes**: None
 - **Tests**:
-  - Measurement validation (ranges, types)
-  - Time series data storage
-  - Aggregation for charts
-- **Acceptance criteria**:
-  - Stores weight, height, body fat, etc.
-  - Time-stamped measurement records
-  - Validates input ranges
-  - Supports aggregation for trends
+  - MeasurementLogsService spec (7 tests: dual-write rollback A/B/C, validation, findAll)
+  - tsc, eslint, and jest all pass on this module
+- **Status: MERGED** (commit a772d46e, landed directly on main with no PR; no dedicated "p2-07" PR exists — shipped as a standalone commit).
 - **Risks**: Measurement fraud, inconsistent units
 
 ### P2-08: Loyalty Points and Transactions API
@@ -1613,32 +1609,24 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Objective**: Create Member 360 page with tabs and lazy loading.
 - **Dependencies**: P2-01 through P2-08
 - **Files/modules affected**:
-  - apps/web/src/app/members/[id]/page.tsx (to create)
+  - apps/web/src/app/members/[id]/page.tsx (shipped via PR #33)
   - Individual tab components
   - Lazy loading wrappers
   - Shared UI components
 - **Database changes**: None
 - **API changes**: None
 - **Frontend changes**:
-  - Member 360 route layout
+  - Member 360 route layout (lazy-loaded `[id]` tab routes)
   - Tab navigation component
   - Individual tab components (Memberships, Services, PT, etc.)
   - Lazy loading for heavy tabs
   - Loading and error states
 - **Worker changes**: None
 - **Tests**:
-  - E2E navigation between tabs
-  - Lazy loading works correctly
-  - Tab state preservation
-  - Responsive design
-- **Acceptance criteria**:
-  - Member 360 page accessible
-  - Tabs load content correctly
-  - Lazy loading defers non-critical tabs
-  - UI responsive and accessible
+  - Full `apps/web` + backend typecheck + eslint pass
+  - Backend route-layer specs (workouts-tab, diet-tab, loyalty-tab, measurements) pass
+- **Status: MERGED** (PR #33, `feat/p2-09-member-360-ui`, merged to origin/main at bdf57637). The `[id]/page.tsx` route is now present in `apps/web/src/app/members/`.
 - **Risks**: Poor tab performance, UI inconsistency
-  - Dates and plans correct
-  - Pagination works
 - **Risks**: Performance with long membership history
 
 ### P2-03: Services Tab API
