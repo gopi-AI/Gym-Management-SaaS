@@ -18,6 +18,11 @@ import { authApi } from './auth-api';
 import { branchesApi, organizationsApi, tenantSettingsApi } from './tenancy-api';
 import { membersApi } from './members-api';
 import { membershipPlansApi, membershipsApi } from './memberships-api';
+import { member360Api } from './member-360-api';
+import { ptApi } from './pt-api';
+import { workoutsApi } from './workouts-api';
+import { dietApi } from './diet-api';
+import { loyaltyApi } from './loyalty-api';
 import { attendanceApi } from './attendance-api';
 import { invoicesApi, paymentsApi } from './finance-api';
 import { aiApi } from './ai-api';
@@ -34,6 +39,7 @@ import type {
   CreateMembershipPlanRequest,
   CreateMembershipRequest,
   CreateOrganizationRequest,
+  DietTabResponse,
   Invoice,
   InvoiceDetail,
   InvoiceListItem,
@@ -41,7 +47,9 @@ import type {
   ListMembersParams,
   LoginRequest,
   LoginResponse,
+  LoyaltyTabResponse,
   Member,
+  Member360HeaderResponse,
   Membership,
   MembershipPlan,
   Organization,
@@ -49,6 +57,7 @@ import type {
   Payment,
   PlanPerformanceRequest,
   PlanPerformanceResponse,
+  PtTabResponse,
   QueryAccessDecisionParams,
   QueryAttendanceRecordsParams,
   QueryInvoiceParams,
@@ -68,6 +77,7 @@ import type {
   UpdateOrganizationRequest,
   UpdateTenantSettingsRequest,
   VerifyMfaRequest,
+  WorkoutsTabResponse,
   AuthTokens,
 } from './types';
 
@@ -98,6 +108,8 @@ export const queryKeys = {
     all: ['memberships'] as const,
     list: (params: QueryMembershipParams) => ['memberships', 'list', params] as const,
     detail: (id: string) => ['memberships', 'detail', id] as const,
+    byMember: (memberId: string, params: QueryMembershipParams) =>
+      ['memberships', 'member', memberId, params] as const,
   },
   ai: {
     all: ['ai'] as const,
@@ -124,6 +136,26 @@ export const queryKeys = {
     all: ['payments'] as const,
     list: (params: QueryPaymentParams) => ['payments', 'list', params] as const,
     detail: (id: string) => ['payments', 'detail', id] as const,
+  },
+  member360: {
+    all: ['member-360'] as const,
+    header: (memberId: string) => ['member-360', 'header', memberId] as const,
+  },
+  pt: {
+    all: ['pt'] as const,
+    tab: (memberId: string) => ['pt', 'tab', memberId] as const,
+  },
+  workouts: {
+    all: ['workouts'] as const,
+    tab: (memberId: string) => ['workouts', 'tab', memberId] as const,
+  },
+  diet: {
+    all: ['diet'] as const,
+    tab: (memberId: string) => ['diet', 'tab', memberId] as const,
+  },
+  loyalty: {
+    all: ['loyalty'] as const,
+    tab: (memberId: string) => ['loyalty', 'tab', memberId] as const,
   },
 };
 
@@ -761,6 +793,104 @@ export function useRecordPayment(
       queryClient.invalidateQueries({ queryKey: queryKeys.invoices.detail(variables.invoiceId) });
       options?.onSuccess?.(data, variables, onMutateResult, context);
     },
+  });
+}
+
+/* ── Member 360 (P2-09) ────────────────────────────────────────────────── */
+
+/** Aggregated Member 360 header (P2-01) — fetched on mount by the member page. */
+export function useMember360Header(
+  memberId: string,
+  options?: Omit<UseQueryOptions<Member360HeaderResponse, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<Member360HeaderResponse, Error>({
+    ...options,
+    queryKey: queryKeys.member360.header(memberId),
+    queryFn: () => member360Api.getHeader(memberId),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+/**
+ * The five queries below back the Member 360 tabs (P2-09).
+ *
+ * Each one is enabled only while its tab is selected — the page passes
+ * `enabled: activeTab === '<key>'` — and is then kept for the session:
+ * `staleTime` stops a revisit refetching, and `gcTime` keeps the entry even
+ * when the tab (or the whole page) is no longer mounted, which the default
+ * collection after 5 minutes would otherwise undo mid-session. These are
+ * read-only aggregates with no live-update requirement, so an unbounded
+ * lifetime is deliberate; either can still be overridden through `options`.
+ */
+
+export function useMemberMemberships(
+  memberId: string,
+  params: QueryMembershipParams = {},
+  options?: Omit<UseQueryOptions<Paginated<Membership>, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<Paginated<Membership>, Error>({
+    staleTime: Infinity,
+    gcTime: Infinity,
+    ...options,
+    queryKey: queryKeys.memberships.byMember(memberId, params),
+    queryFn: () => membershipsApi.findByMember(memberId, params),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+export function useMemberPtTab(
+  memberId: string,
+  options?: Omit<UseQueryOptions<PtTabResponse, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<PtTabResponse, Error>({
+    staleTime: Infinity,
+    gcTime: Infinity,
+    ...options,
+    queryKey: queryKeys.pt.tab(memberId),
+    queryFn: () => ptApi.getTab(memberId),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+export function useMemberWorkoutsTab(
+  memberId: string,
+  options?: Omit<UseQueryOptions<WorkoutsTabResponse, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<WorkoutsTabResponse, Error>({
+    staleTime: Infinity,
+    gcTime: Infinity,
+    ...options,
+    queryKey: queryKeys.workouts.tab(memberId),
+    queryFn: () => workoutsApi.getTab(memberId),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+export function useMemberDietTab(
+  memberId: string,
+  options?: Omit<UseQueryOptions<DietTabResponse, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<DietTabResponse, Error>({
+    staleTime: Infinity,
+    gcTime: Infinity,
+    ...options,
+    queryKey: queryKeys.diet.tab(memberId),
+    queryFn: () => dietApi.getTab(memberId),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+export function useMemberLoyaltyTab(
+  memberId: string,
+  options?: Omit<UseQueryOptions<LoyaltyTabResponse, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<LoyaltyTabResponse, Error>({
+    staleTime: Infinity,
+    gcTime: Infinity,
+    ...options,
+    queryKey: queryKeys.loyalty.tab(memberId),
+    queryFn: () => loyaltyApi.getTab(memberId),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
   });
 }
 
