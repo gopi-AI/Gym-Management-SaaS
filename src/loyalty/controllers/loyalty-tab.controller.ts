@@ -18,11 +18,10 @@ import { LoyaltyTransaction } from '../entities/loyalty-transaction.entity';
  * accrual/ledger logic were implemented in Phase 2; this controller adds no
  * writes.
  *
- * NOTE: `@RequirePermissions({ resource: 'loyalty', action: 'read' })` fails
- * closed (403) until the `loyalty:read` permission record is provisioned in the
- * RBAC store, mirroring the workout/diet `Provision*Permissions` migrations.
- * The wire is shipped without the permission record; provisioning it is a
- * separate, out-of-scope step for this PR.
+ * `@RequirePermissions({ resource: 'loyalty', action: 'read' })` is backed by
+ * the `loyalty:read` permission provisioned in migration
+ * `1788965263273-ProvisionLoyaltyPermission.ts`, mirroring the workout/diet
+ * `Provision*Permissions` migrations.
  *
  * The `POST /points/adjust` write path is intentionally out of scope: there is
  * no atomic adjust service operation yet, and adding one would be design, not

@@ -1,11 +1,14 @@
 /**
  * Loyalty domain constants.
  *
- * Mirrors the event contracts in packages/contracts/src/events/ and the
- * entity schema in docs/phase2-scoping-plan.md (§5, §12 Q16–Q22).
+ * The inbound event-name constants mirror the contracts package
+ * (`AttendanceEventRecorded` in attendance.events.ts, `WorkoutSessionLogged` in
+ * workouts.events.ts); the loyalty module's own outbound events are declared
+ * below. Entity schema references are in docs/phase2-scoping-plan.md (§5,
+ * §12 Q16–Q22).
  *
  * The backend deliberately does not import the contracts package at build time
- * (rootDir is ./src), so the names are mirrored here and MUST stay in lockstep.
+ * (rootDir is ./src), so mirrored names MUST stay in lockstep by hand.
  */
 
 // ---------------------------------------------------------------------------
