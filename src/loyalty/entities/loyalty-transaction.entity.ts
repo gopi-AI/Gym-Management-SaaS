@@ -63,6 +63,13 @@ export class LoyaltyTransaction {
   @Column({ type: 'text', nullable: true })
   description?: string | null;
 
+  /**
+   * Staff user id for a manual adjustment (`transaction_type = 'adjust'`).
+   * Null for every system-produced movement (earn, expire, redeem).
+   */
+  @Column({ type: 'uuid', nullable: true })
+  created_by?: string | null;
+
   /** Computed at earn time: created_at + org.points_expiry_days. Null for expire/redeem/adjust. */
   @Column({ type: 'timestamptz', nullable: true })
   expires_at?: Date | null;

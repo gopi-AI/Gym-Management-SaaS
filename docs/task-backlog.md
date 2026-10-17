@@ -1597,6 +1597,8 @@ This document contains the implementation tasks broken down by phase, with depen
   - Points awarded for configured activities
   - Balance updates in real-time
 - **Risks**: Points inflation, incorrect accrual rules
+- **Built (2026-10-17)**: `POST /v1/members/{memberId}/points/adjust` is implemented — admin-only (`loyalty:adjust`), idempotent via a required `idempotency_key` and the partial unique index `UQ_loyalty_admin_adjust_key`, actor-audited via `LOYALTY_TRANSACTIONS.created_by`, and emits `LoyaltyPointsAdjusted.v1` in the same transaction. Negative adjustments that would take the balance below zero are rejected with 409; a member with no loyalty account is a 404. The read tab remains `GET /v1/members/{memberId}/loyalty`.
+- **Deferred — workout-based accrual**: `WorkoutSessionLogged.v1` has no producer in `src/workouts/`, and `LoyaltyAccrualService.handleWorkoutLogged()` is implemented but not registered with `EventHandlerRegistry`. Revisit when the workout session lifecycle and earning rules are established.
 
 
 ### Rulings — Phase 2 backend gaps + D17 (2026-10-08)

@@ -317,6 +317,23 @@ transaction. A completed enrollment emits no cancellation/clawback event.
   }
   ```
 
+### Loyalty Events
+The loyalty contracts live in `packages/contracts/src/events/loyalty.events.ts`
+(the first contracts file for this domain); the backend mirror is
+`src/loyalty/loyalty.constants.ts`.
+
+- `LoyaltyPointsAwarded.v1`: `{ accountId, memberId, points, transactionId, referenceType, referenceId, description }`
+  Produced by `LoyaltyAccrualService.awardForTrigger()` in the same transaction
+  as the earn row and balance update.
+- `LoyaltyPointsExpired.v1`: `{ accountId, transactionId, expireTransactionId, pointsExpired }`
+  Produced by the expiry-sweep worker. `transactionId` is the earn row whose
+  `remaining_points` was zeroed; `expireTransactionId` is the new `expire` row.
+- `LoyaltyPointsAdjusted.v1`: `{ accountId, memberId, transactionId, points, balanceAfter, reason, adjustedBy }`
+  Produced by the admin adjustment route (`POST /v1/members/:memberId/points/adjust`)
+  in the same transaction as the `adjust` ledger row and balance update.
+  `points` is the SIGNED delta (positive credit, negative debit). No consumer is
+  registered yet — the outbox marks it processed by design.
+
 ### Notification Events
 - `NotificationSent.v1`
   ```json

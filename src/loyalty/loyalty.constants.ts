@@ -57,6 +57,7 @@ export const LOYALTY_REWARD_TYPE_VALUES: string[] = Object.values(LOYALTY_REWARD
 export const LOYALTY_EVENT_TYPES = {
   LOYALTY_POINTS_AWARDED: 'LoyaltyPointsAwarded',
   LOYALTY_POINTS_EXPIRED: 'LoyaltyPointsExpired',
+  LOYALTY_POINTS_ADJUSTED: 'LoyaltyPointsAdjusted',
 } as const;
 
 export const LOYALTY_EVENT_VERSION = 'v1';
@@ -85,6 +86,7 @@ export const LOYALTY_REFERENCE_TYPES = {
   CHECK_IN: 'check_in',
   WORKOUT_SESSION: 'workout_session',
   EXPIRY_SWEEP: 'expiry_sweep',
+  ADMIN_ADJUST: 'admin_adjust',
 } as const;
 
 // ---------------------------------------------------------------------------
