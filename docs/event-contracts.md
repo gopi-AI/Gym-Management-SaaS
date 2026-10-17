@@ -84,7 +84,7 @@ Events are versioned to allow for backward compatibility. Major version incremen
     "remainingDays": "integer" // days until the membership end date
   }
   ```
-- `MembershipTransferred.v1` (contract defined — **no producer yet**, see implementation note below)
+- `MembershipTransferred.v1`
   ```json
   {
     "membershipId": "uuid",
@@ -92,6 +92,18 @@ Events are versioned to allow for backward compatibility. Major version incremen
     "fromBranchId": "uuid",
     "toBranchId": "uuid",
     "transferDate": "timestamp"
+  }
+  ```
+- `MembershipExtended.v1`
+  ```json
+  {
+    "membershipId": "uuid",
+    "memberId": "uuid",
+    "previousEndDate": "date",
+    "newEndDate": "date",
+    "days": "integer", // signed delta applied
+    "reason": "string",
+    "extendedBy": "uuid or null" // staff user id; null only when unresolved
   }
   ```
 - `MembershipFreezeStarted.v1`
@@ -113,7 +125,7 @@ Events are versioned to allow for backward compatibility. Major version incremen
   }
   ```
 
-**Implementation note (verified against source 2026-09-14).** All five payloads above match the
+**Implementation note (verified against source 2026-10-18).** The payloads above match the
 committed interfaces in `packages/contracts/src/events/membership.events.ts` field for field.
 The resumed/freeze events are produced by `MembershipsService.buildLifecycleEventPayload`
 (`src/memberships/services/memberships.service.ts`). The counter fields `remainingDays` (resume)
@@ -122,8 +134,12 @@ membership's `end_date`; `actualEndDate` (unfreeze) carries the membership's (po
 end date in `YYYY-MM-DD` form while `freezeEndDate` carries the ISO-8601 unfreeze instant.
 `freezeDurationDays` remains a hard-coded `0` because no freeze-duration feature exists yet —
 freezes are currently open-ended, and `MembershipLifecycleDto` carries only a `reason`.
-**`MembershipTransferred.v1` is contract-only: there is no `transfer` transition, service method,
-DTO or HTTP endpoint in `src/memberships`, so nothing publishes it yet.**
+`MembershipTransferred.v1` is produced by `MembershipsService.transfer()`
+(`POST /v1/memberships/:id/transfer`) only when the branch actually changes; a repeat targeting
+the current branch is a no-op and emits nothing. `MembershipExtended.v1` is produced by
+`MembershipsService.extend()` (`POST /v1/memberships/:id/extend`); `previousEndDate` and
+`newEndDate` are `YYYY-MM-DD` date strings, and `extendedBy` is the staff user id (null only
+when no authenticated actor could be resolved).
 ### Finance Events
 - `PaymentSucceeded.v1`
   ```json

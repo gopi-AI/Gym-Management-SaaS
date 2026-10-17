@@ -16,6 +16,9 @@ import { CreateMembershipDto } from '../dto/create-membership.dto';
 import { UpdateMembershipDto } from '../dto/update-membership.dto';
 import { QueryMembershipDto } from '../dto/query-membership.dto';
 import { MembershipLifecycleDto } from '../dto/membership-lifecycle.dto';
+import { ExtendMembershipDto } from '../dto/extend-membership.dto';
+import { TransferMembershipDto } from '../dto/transfer-membership.dto';
+import { Branch } from '../../tenancy/entities/branch.entity';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
 import { InvoicesService } from '../../finance/services/invoices.service';
@@ -97,6 +100,16 @@ export type CheckInEligibility =
   | { eligible: true; membership: Membership }
   | { eligible: false; reason: string };
 
+/**
+ * Result of an extend call. `created` is false when the request replayed an
+ * existing `(membership_id, reference_type='extend', reference_id=key)` row —
+ * the same replay shape loyalty's manual adjustment returns.
+ */
+export interface ExtendMembershipResult {
+  membership: Membership;
+  created: boolean;
+}
+
 /** A membership is eligible only while `active` AND inside its date window. */
 export function isMembershipEligibleAt(
   membership: Pick<Membership, 'status' | 'start_date' | 'end_date'>,
@@ -165,6 +178,13 @@ function addDaysToDate(dateStr: string, days: number): string {
 const MEMBERSHIP_EVENT_VERSION = 'v1';
 
 /**
+ * `MembershipHistory.reference_type` value that scopes an extend idempotency
+ * key. The partial unique index `UQ_membership_history_extend_key` constrains
+ * only rows carrying this value.
+ */
+const EXTEND_REFERENCE_TYPE = 'extend';
+
+/**
  * Structural mirror of MembershipStartedPayload in
  * packages/contracts/src/events/membership.events.ts (lines 9-15).
  */
@@ -199,6 +219,20 @@ interface MembershipRenewedPayloadShape extends Record<string, unknown> {
   renewalDate: string;
   nextPaymentDate: string;
   renewalFee: string;
+}
+
+/**
+ * Structural mirror of MembershipExtendedPayload in
+ * packages/contracts/src/events/membership.events.ts.
+ */
+interface MembershipExtendedPayloadShape extends Record<string, unknown> {
+  membershipId: string;
+  memberId: string;
+  previousEndDate: string;
+  newEndDate: string;
+  days: number;
+  reason: string;
+  extendedBy: string | null;
 }
 
 @Injectable()
@@ -933,6 +967,238 @@ export class MembershipsService {
   async unfreeze(id: string, dto: MembershipLifecycleDto = {}): Promise<Membership> { return this.transitionState(id, MEMBERSHIP_STATUS.ACTIVE as MembershipStatus, dto); }
   async cancel(id: string, dto: MembershipLifecycleDto = {}): Promise<Membership> { return this.transitionState(id, MEMBERSHIP_STATUS.CANCELLED as MembershipStatus, dto); }
   async expire(id: string, dto: MembershipLifecycleDto = {}): Promise<Membership> { return this.transitionState(id, MEMBERSHIP_STATUS.EXPIRED as MembershipStatus, dto); }
+
+  /**
+   * Extend (or shorten) a membership's end date by a signed number of days.
+   *
+   * Extend deliberately sits outside `VALID_TRANSITIONS`: it changes
+   * `end_date`, not `status`, so it is not a state-machine edge. The write
+   * still follows the lifecycle pattern — one transaction, a history row, an
+   * outbox event, and the fresh membership returned.
+   *
+   * Idempotency: the replay read is
+   * `(membership_id, organization_id, reference_type='extend', reference_id=key)`
+   * and is backed by the partial unique index
+   * `UQ_membership_history_extend_key`. A same-key retry returns the current
+   * membership with `created: false` and writes nothing.
+   *
+   * The membership row is locked for the duration. That is not needed for the
+   * same-key case (the index covers it) but IS needed for two concurrent
+   * extends with DIFFERENT keys: without the lock both transactions read the
+   * same `end_date`, both compute the same new value, and one extension is
+   * lost. The module already uses `pessimistic_write` in `renewOne`,
+   * `expireOne` and `addDiscount`.
+   */
+  async extend(id: string, dto: ExtendMembershipDto): Promise<ExtendMembershipResult> {
+    const organizationId = await this.resolveAuthorizedOrg();
+    const userId = await this.tenantContextService.getCurrentUserId();
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const membershipRepo = manager.getRepository(Membership);
+        const historyRepo = manager.getRepository(MembershipHistory);
+        const membership = await membershipRepo.findOne({
+          where: { id, organization_id: organizationId } as any,
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!membership) throw new NotFoundException('Membership not found');
+
+        // Replay BEFORE the eligibility guards: a retry of an extension that
+        // already succeeded must return the original outcome even if the
+        // membership has since been cancelled or expired.
+        const existing = await historyRepo.findOne({
+          where: {
+            membership_id: id,
+            organization_id: organizationId,
+            reference_type: EXTEND_REFERENCE_TYPE,
+            reference_id: dto.idempotency_key,
+          } as any,
+        });
+        if (existing) return { membership, created: false };
+
+        this.assertExtendableStatus(membership, 'extend');
+        if (!membership.end_date) {
+          throw new BadRequestException('Membership has no end date to extend');
+        }
+        const previousEndDate = membership.end_date;
+        const newEndDate = addDaysToDate(previousEndDate, dto.days);
+        if (newEndDate < membership.start_date) {
+          throw new ConflictException(
+            'Extended end date would fall before the membership start date',
+          );
+        }
+
+        await membershipRepo.update(
+          { id, organization_id: organizationId } as any,
+          { end_date: newEndDate },
+        );
+        await historyRepo.save(historyRepo.create({
+          membership_id: id,
+          organization_id: organizationId,
+          member_id: membership.member_id,
+          from_status: membership.status,
+          to_status: membership.status,
+          transition: 'extend',
+          reason: dto.reason,
+          changed_by: userId || undefined,
+          reference_type: EXTEND_REFERENCE_TYPE,
+          reference_id: dto.idempotency_key,
+          metadata: {
+            previous_end_date: previousEndDate,
+            new_end_date: newEndDate,
+            days: dto.days,
+          },
+        }));
+        await this.outboxService.saveEventEnvelope(
+          'MembershipExtended',        // EVENT_TYPES.MEMBERSHIP_EXTENDED
+          MEMBERSHIP_EVENT_VERSION,    // EVENT_VERSIONS.V1
+          organizationId,              // authorized org, never client-supplied
+          {
+            membershipId: membership.id,
+            memberId: membership.member_id,
+            previousEndDate,
+            newEndDate,
+            days: dto.days,
+            reason: dto.reason,
+            extendedBy: userId ?? null,
+          } as MembershipExtendedPayloadShape,
+          membership.id,               // correlationId = membership id (existing convention)
+          undefined,                   // causationId: not used for this event
+          manager,                     // transaction-scoped: atomic with the date write
+        );
+
+        const fresh = await membershipRepo.findOne({
+          where: { id, organization_id: organizationId } as any,
+        });
+        if (!fresh) throw new NotFoundException('Membership not found');
+        return { membership: fresh, created: true };
+      });
+    } catch (error) {
+      // Backstop for a same-key request that raced past the replay read. The
+      // membership lock makes this unreachable in the normal path; it exists so
+      // the unique index is a correctness guarantee rather than a 500. A 23505
+      // here can only be UQ_membership_history_extend_key: the history PK is
+      // database-generated and the table has no other unique constraint. The
+      // transaction is already aborted, so the replay read happens outside it.
+      if (!isUniqueViolation(error)) throw error;
+      const existing = await this.historyRepository.findOne({
+        where: {
+          membership_id: id,
+          organization_id: organizationId,
+          reference_type: EXTEND_REFERENCE_TYPE,
+          reference_id: dto.idempotency_key,
+        } as any,
+      });
+      if (!existing) throw error;
+      const membership = await this.membershipRepository.findOne({
+        where: { id, organization_id: organizationId } as any,
+      });
+      if (!membership) throw new NotFoundException('Membership not found');
+      return { membership, created: false };
+    }
+  }
+
+  /**
+   * Move a membership to another branch in the same organization.
+   *
+   * Transfer changes only `branch_id`; pricing is locked in at signup
+   * (`price_at_signup`), and plans/discounts carry no branch, so nothing
+   * financial moves.
+   *
+   * Naturally idempotent: a repeat targeting the current branch is a no-op —
+   * no history row and no event. An actual change writes `MembershipHistory`
+   * (`transition = 'transfer'`) and emits `MembershipTransferred.v1` with the
+   * committed payload shape.
+   *
+   * The target lookup is organization-scoped, so a cross-tenant branch id is
+   * indistinguishable from a missing one (404) and cannot be used to probe
+   * another tenant's data.
+   */
+  async transfer(id: string, dto: TransferMembershipDto): Promise<Membership> {
+    const organizationId = await this.resolveAuthorizedOrg();
+    const userId = await this.tenantContextService.getCurrentUserId();
+    return this.dataSource.transaction(async (manager) => {
+      const membershipRepo = manager.getRepository(Membership);
+      const historyRepo = manager.getRepository(MembershipHistory);
+      const membership = await membershipRepo.findOne({
+        where: { id, organization_id: organizationId } as any,
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!membership) throw new NotFoundException('Membership not found');
+
+      this.assertExtendableStatus(membership, 'transfer');
+
+      if (membership.branch_id === dto.to_branch_id) return membership;
+
+      const fromBranchId = membership.branch_id;
+      if (!fromBranchId) {
+        // `MembershipTransferredPayload.fromBranchId` is a required string, so
+        // a membership with no branch has no representable transfer event.
+        throw new BadRequestException(
+          'Membership has no current branch to transfer from',
+        );
+      }
+
+      const target = await manager.getRepository(Branch).findOne({
+        where: { id: dto.to_branch_id, organization_id: organizationId },
+      });
+      if (!target) throw new NotFoundException('Branch not found');
+      if (!target.is_active) {
+        throw new ConflictException('Target branch is inactive');
+      }
+
+      await membershipRepo.update(
+        { id, organization_id: organizationId } as any,
+        { branch_id: dto.to_branch_id },
+      );
+      await historyRepo.save(historyRepo.create({
+        membership_id: id,
+        organization_id: organizationId,
+        member_id: membership.member_id,
+        from_status: membership.status,
+        to_status: membership.status,
+        transition: 'transfer',
+        reason: dto.reason || undefined,
+        changed_by: userId || undefined,
+        metadata: {
+          from_branch_id: fromBranchId,
+          to_branch_id: dto.to_branch_id,
+        },
+      }));
+      await this.outboxService.saveEventEnvelope(
+        'MembershipTransferred',     // EVENT_TYPES.MEMBERSHIP_TRANSFERRED
+        MEMBERSHIP_EVENT_VERSION,    // EVENT_VERSIONS.V1
+        organizationId,              // authorized org, never client-supplied
+        {
+          membershipId: membership.id,
+          memberId: membership.member_id,
+          fromBranchId,
+          toBranchId: dto.to_branch_id,
+          transferDate: new Date().toISOString(),
+        },
+        membership.id,               // correlationId = membership id (existing convention)
+        undefined,                   // causationId: not used for this event
+        manager,                     // transaction-scoped: atomic with the branch write
+      );
+
+      const fresh = await membershipRepo.findOne({
+        where: { id, organization_id: organizationId } as any,
+      });
+      if (!fresh) throw new NotFoundException('Membership not found');
+      return fresh;
+    });
+  }
+
+  /** Extend and transfer are legal only while the membership is still in force. */
+  private assertExtendableStatus(
+    membership: Membership,
+    action: 'extend' | 'transfer',
+  ): void {
+    if (!NON_TERMINAL_STATUSES.includes(membership.status as MembershipStatus)) {
+      throw new BadRequestException(
+        `Cannot ${action} a membership with status '${membership.status}'`,
+      );
+    }
+  }
 
   private calculateEndDate(startDate: string, durationDays: number): string {
     const start = new Date(startDate);

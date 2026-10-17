@@ -28,7 +28,9 @@ import type {
   MembershipFreezeStartedPayload,
   MembershipFreezeEndedPayload,
   MembershipTransferredPayload,
+  MembershipExtendedPayload,
 } from '../../../packages/contracts/src/events/membership.events';
+import { Branch } from '../../tenancy/entities/branch.entity';
 
 /**
  * Fixture end date for the lifecycle-event tests, as a `YYYY-MM-DD` string — the
@@ -69,6 +71,7 @@ describe('MembershipsService', () => {
   let mockOutboxService: Record<string, jest.Mock>;
   let mockInvoicesService: Record<string, jest.Mock>;
   let mockDiscountRepo: Record<string, jest.Mock>;
+  let mockBranchRepo: Record<string, jest.Mock>;
   let mockPaymentRepo: Record<string, jest.Mock>;
   let mockInvoiceRepo: Record<string, jest.Mock>;
   let mockInvoiceRenewalQuery: Record<string, jest.Mock>;
@@ -138,6 +141,10 @@ describe('MembershipsService', () => {
       update: jest.fn(),
     };
 
+    mockBranchRepo = {
+      findOne: jest.fn(),
+    };
+
     mockDataSource = {
       transaction: jest.fn().mockImplementation(async (cb: Function) => {
         const manager = {
@@ -146,6 +153,7 @@ describe('MembershipsService', () => {
             if (repo === MembershipHistory) return mockHistoryRepo;
             if (repo === MembershipPlan) return mockPlanRepo;
             if (repo === MembershipDiscount) return mockDiscountRepo;
+            if (repo === Branch) return mockBranchRepo;
             if (repo === Invoice) return mockInvoiceRepo;
             if (repo === InvoiceItem) return {};
             if (repo === Payment) return mockPaymentRepo;
@@ -924,6 +932,273 @@ describe('MembershipsService', () => {
     });
   });
 
+  describe('extend (P1-03)', () => {
+    const extendable = {
+      id: 'm-ext', organization_id: orgId, member_id: 'member-ext',
+      status: 'active', start_date: '2026-01-01', end_date: '2026-01-31',
+      branch_id: 'branch-1',
+    } as Membership;
+
+    const extendDto = {
+      days: 30,
+      reason: 'Service compensation',
+      idempotency_key: 'extend-key-1',
+    };
+
+    beforeEach(() => {
+      mockHistoryRepo.findOne.mockResolvedValue(null);
+      mockMembershipRepo.update.mockResolvedValue({});
+    });
+
+    it('applies a signed day delta, writes one history row and emits MembershipExtended', async () => {
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(extendable)
+        .mockResolvedValueOnce({ ...extendable, end_date: '2026-03-02' });
+
+      const result = await service.extend('m-ext', extendDto);
+
+      expect(result.created).toBe(true);
+      expect(result.membership.end_date).toBe('2026-03-02');
+      // Scoped by organization on the write itself, not just the read.
+      expect(mockMembershipRepo.update).toHaveBeenCalledWith(
+        { id: 'm-ext', organization_id: orgId },
+        { end_date: '2026-03-02' },
+      );
+      expect(mockHistoryRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        membership_id: 'm-ext',
+        organization_id: orgId,
+        member_id: 'member-ext',
+        from_status: 'active',
+        to_status: 'active',
+        transition: 'extend',
+        reason: 'Service compensation',
+        changed_by: userId,
+        reference_type: 'extend',
+        reference_id: 'extend-key-1',
+        metadata: {
+          previous_end_date: '2026-01-31',
+          new_end_date: '2026-03-02',
+          days: 30,
+        },
+      }));
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
+        'MembershipExtended', 'v1', orgId,
+        expect.objectContaining({
+          membershipId: 'm-ext', memberId: 'member-ext',
+          previousEndDate: '2026-01-31', newEndDate: '2026-03-02',
+          days: 30, reason: 'Service compensation', extendedBy: userId,
+        }),
+        'm-ext', undefined,
+        expect.objectContaining({ getRepository: expect.any(Function) }),
+      );
+    });
+
+    it('replays an existing idempotency key without writing or emitting', async () => {
+      const existing = { id: 'history-1', reference_type: 'extend', reference_id: 'extend-key-1' };
+      mockMembershipRepo.findOne.mockResolvedValue(extendable);
+      mockHistoryRepo.findOne.mockResolvedValue(existing);
+
+      const result = await service.extend('m-ext', extendDto);
+
+      expect(result).toEqual({ membership: extendable, created: false });
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+      expect(mockHistoryRepo.save).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+      // The replay lookup is the extend-scoped tuple, not just the membership.
+      expect(mockHistoryRepo.findOne).toHaveBeenCalledWith({
+        where: {
+          membership_id: 'm-ext',
+          organization_id: orgId,
+          reference_type: 'extend',
+          reference_id: 'extend-key-1',
+        },
+      });
+    });
+
+    it('turns a duplicate-key 23505 into the same replay instead of a 500', async () => {
+      mockDataSource.transaction.mockRejectedValueOnce({ code: '23505' });
+      mockHistoryRepo.findOne.mockResolvedValue({ id: 'history-1' });
+      mockMembershipRepo.findOne.mockResolvedValue({ ...extendable, end_date: '2026-03-02' });
+
+      const result = await service.extend('m-ext', extendDto);
+
+      expect(result.created).toBe(false);
+      expect(result.membership.end_date).toBe('2026-03-02');
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('rejects a cancelled membership with 400 and writes nothing', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue({ ...extendable, status: 'cancelled' });
+
+      await expect(service.extend('m-ext', extendDto)).rejects.toThrow(BadRequestException);
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+      expect(mockHistoryRepo.save).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('rejects an expired membership with 400', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue({ ...extendable, status: 'expired' });
+
+      await expect(service.extend('m-ext', extendDto)).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects a membership with no end date with 400', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue({ ...extendable, end_date: undefined });
+
+      await expect(service.extend('m-ext', extendDto)).rejects.toThrow(BadRequestException);
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects an extension that would end before the start date with 409', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue({
+        ...extendable, start_date: '2026-01-01', end_date: '2026-01-05',
+      });
+
+      await expect(service.extend('m-ext', { ...extendDto, days: -365 }))
+        .rejects.toThrow(ConflictException);
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('allows a shortening that leaves end_date after start_date (narrow default)', async () => {
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(extendable)
+        .mockResolvedValueOnce({ ...extendable, end_date: '2026-01-21' });
+
+      const result = await service.extend('m-ext', { ...extendDto, days: -10 });
+
+      expect(result.created).toBe(true);
+      expect(mockMembershipRepo.update).toHaveBeenCalledWith(
+        { id: 'm-ext', organization_id: orgId },
+        { end_date: '2026-01-21' },
+      );
+    });
+
+    it('returns 404 for an unknown membership and emits nothing', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.extend('missing', extendDto)).rejects.toThrow(NotFoundException);
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('transfer (P1-03)', () => {
+    const transferable = {
+      id: 'm-tr', organization_id: orgId, member_id: 'member-tr',
+      status: 'active', start_date: '2026-01-01', end_date: '2026-01-31',
+      branch_id: 'branch-1',
+    } as Membership;
+
+    beforeEach(() => {
+      mockHistoryRepo.findOne.mockResolvedValue(null);
+      mockMembershipRepo.update.mockResolvedValue({});
+      mockBranchRepo.findOne.mockResolvedValue({
+        id: 'branch-2', organization_id: orgId, is_active: true,
+      });
+    });
+
+    it('moves the membership, writes one history row and emits MembershipTransferred', async () => {
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(transferable)
+        .mockResolvedValueOnce({ ...transferable, branch_id: 'branch-2' });
+
+      const result = await service.transfer('m-tr', {
+        to_branch_id: 'branch-2', reason: 'Relocation',
+      });
+
+      expect(result.branch_id).toBe('branch-2');
+      expect(mockMembershipRepo.update).toHaveBeenCalledWith(
+        { id: 'm-tr', organization_id: orgId },
+        { branch_id: 'branch-2' },
+      );
+      expect(mockHistoryRepo.save).toHaveBeenCalledWith(expect.objectContaining({
+        membership_id: 'm-tr',
+        organization_id: orgId,
+        transition: 'transfer',
+        reason: 'Relocation',
+        changed_by: userId,
+        metadata: { from_branch_id: 'branch-1', to_branch_id: 'branch-2' },
+      }));
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
+        'MembershipTransferred', 'v1', orgId,
+        expect.objectContaining({
+          membershipId: 'm-tr', memberId: 'member-tr',
+          fromBranchId: 'branch-1', toBranchId: 'branch-2',
+          transferDate: expect.any(String),
+        }),
+        'm-tr', undefined,
+        expect.objectContaining({ getRepository: expect.any(Function) }),
+      );
+    });
+
+    it('is a no-op when the target is the current branch', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue(transferable);
+
+      const result = await service.transfer('m-tr', { to_branch_id: 'branch-1' });
+
+      expect(result).toBe(transferable);
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+      expect(mockHistoryRepo.save).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+      // The no-op short-circuits before the target lookup.
+      expect(mockBranchRepo.findOne).not.toHaveBeenCalled();
+    });
+
+    it('rejects a cancelled membership with 400 and writes nothing', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue({ ...transferable, status: 'cancelled' });
+
+      await expect(service.transfer('m-tr', { to_branch_id: 'branch-2' }))
+        .rejects.toThrow(BadRequestException);
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for an unknown or cross-org branch and writes nothing', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue(transferable);
+      mockBranchRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.transfer('m-tr', { to_branch_id: 'branch-other' }))
+        .rejects.toThrow(NotFoundException);
+
+      // The lookup is organization-scoped: a cross-tenant id is a miss, not a
+      // distinguishable "exists elsewhere" result.
+      expect(mockBranchRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'branch-other', organization_id: orgId },
+      });
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+      expect(mockHistoryRepo.save).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 for an inactive target branch and writes nothing', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue(transferable);
+      mockBranchRepo.findOne.mockResolvedValue({
+        id: 'branch-2', organization_id: orgId, is_active: false,
+      });
+
+      await expect(service.transfer('m-tr', { to_branch_id: 'branch-2' }))
+        .rejects.toThrow(ConflictException);
+      expect(mockMembershipRepo.update).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('rejects a membership with no current branch with 400', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue({ ...transferable, branch_id: null });
+
+      await expect(service.transfer('m-tr', { to_branch_id: 'branch-2' }))
+        .rejects.toThrow(BadRequestException);
+      expect(mockBranchRepo.findOne).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for an unknown membership', async () => {
+      mockMembershipRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.transfer('missing', { to_branch_id: 'branch-2' }))
+        .rejects.toThrow(NotFoundException);
+    });
+  });
+
   /**
    * `MembershipResumed.v1` / `MembershipTransferred.v1` / `MembershipFreezeStarted.v1` /
    * `MembershipFreezeEnded.v1` — the four membership events that had no entry in
@@ -952,6 +1227,7 @@ describe('MembershipsService', () => {
     const freezeStartedKeysMatchContract: Exact<keyof MembershipFreezeStartedPayload, 'membershipId' | 'freezeStartDate' | 'freezeEndDate' | 'freezeDurationDays'> = true;
     const freezeEndedKeysMatchContract: Exact<keyof MembershipFreezeEndedPayload, 'membershipId' | 'freezeEndDate' | 'actualEndDate' | 'daysRemaining'> = true;
     const transferredKeysMatchContract: Exact<keyof MembershipTransferredPayload, 'membershipId' | 'memberId' | 'fromBranchId' | 'toBranchId' | 'transferDate'> = true;
+    const extendedKeysMatchContract: Exact<keyof MembershipExtendedPayload, 'membershipId' | 'memberId' | 'previousEndDate' | 'newEndDate' | 'days' | 'reason' | 'extendedBy'> = true;
 
     /** Payload schema documented for `<eventName>` in docs/event-contracts.md. */
     function documentedSchema(eventName: string): { required: string[]; optional: string[] } {
@@ -1091,6 +1367,7 @@ describe('MembershipsService', () => {
       const inScope: Array<[string, string]> = [
         ['MembershipResumed.v1', 'MembershipResumedPayload'],
         ['MembershipTransferred.v1', 'MembershipTransferredPayload'],
+        ['MembershipExtended.v1', 'MembershipExtendedPayload'],
         ['MembershipFreezeStarted.v1', 'MembershipFreezeStartedPayload'],
         ['MembershipFreezeEnded.v1', 'MembershipFreezeEndedPayload'],
         ['MembershipExpired.v1', 'MembershipExpiredPayload'],
@@ -1108,29 +1385,77 @@ describe('MembershipsService', () => {
       expect(documentedSchema('MembershipTransferred.v1').required).toEqual([
         'fromBranchId', 'memberId', 'membershipId', 'toBranchId', 'transferDate',
       ]);
+      expect(documentedSchema('MembershipExtended.v1').required).toEqual([
+        'days', 'extendedBy', 'memberId', 'membershipId', 'newEndDate',
+        'previousEndDate', 'reason',
+      ]);
       expect(documentedSchema('MembershipFreezeEnded.v1').required).toEqual([
         'actualEndDate', 'daysRemaining', 'freezeEndDate', 'membershipId',
       ]);
     });
 
-    it('MembershipTransferred.v1 is documented but has no producer (flagged, not implemented)', async () => {
+    it('MembershipTransferred.v1 is produced by transfer() with the documented payload', async () => {
       expect(EVENT_TYPES.MEMBERSHIP_TRANSFERRED).toBe('MembershipTransferred');
       expect(transferredKeysMatchContract).toBe(true);
-      // No producer exists: there is no `transfer` service method/transition...
-      expect((service as any).transfer).toBeUndefined();
-      // ...and every lifecycle transition the service does expose emits a *different* event.
-      const transitions: Array<[string, string]> = [
-        ['pause', 'active'], ['resume', 'paused'], ['freeze', 'active'],
-        ['unfreeze', 'frozen'], ['cancel', 'active'], ['expire', 'active'],
-      ];
-      for (const [method, fromStatus] of transitions) {
-        mockMembershipRepo.findOne.mockResolvedValue({ ...membership, status: fromStatus } as Membership);
-        await (service as any)[method]('m1');
-      }
-      expect(mockOutboxService.saveEventEnvelope.mock.calls.map((c) => c[0])).toEqual([
-        'MembershipPaused', 'MembershipResumed', 'MembershipFreezeStarted',
-        'MembershipFreezeEnded', 'MembershipCancelled', 'MembershipExpired',
+      const transferable = { ...membership, branch_id: 'branch-1' } as Membership;
+      mockHistoryRepo.findOne.mockResolvedValue(null);
+      mockBranchRepo.findOne.mockResolvedValue({
+        id: 'branch-2', organization_id: orgId, is_active: true,
+      });
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(transferable)
+        .mockResolvedValueOnce({ ...transferable, branch_id: 'branch-2' });
+
+      await service.transfer('m1', { to_branch_id: 'branch-2' });
+
+      const payload = emittedPayload(EVENT_TYPES.MEMBERSHIP_TRANSFERRED);
+      expect(Object.keys(payload).sort()).toEqual(
+        documentedSchema('MembershipTransferred.v1').required,
+      );
+      expect(payload).toMatchObject({
+        membershipId: 'm1',
+        memberId: 'member-1',
+        fromBranchId: 'branch-1',
+        toBranchId: 'branch-2',
+      });
+      expect(payload.transferDate).toMatch(ISO_8601);
+    });
+
+    it('MembershipExtended.v1 is produced by extend() with the documented payload', async () => {
+      expect(EVENT_TYPES.MEMBERSHIP_EXTENDED).toBe('MembershipExtended');
+      expect(extendedKeysMatchContract).toBe(true);
+      const newEndDate = plusCalendarDays(FUTURE_END_DATE, 30);
+      mockHistoryRepo.findOne.mockResolvedValue(null);
+      mockMembershipRepo.findOne
+        .mockResolvedValueOnce(membership)
+        .mockResolvedValueOnce({ ...membership, end_date: newEndDate });
+
+      await service.extend('m1', {
+        days: 30,
+        reason: 'Service compensation',
+        idempotency_key: 'extend-key-1',
+      });
+
+      const payload = emittedPayload(EVENT_TYPES.MEMBERSHIP_EXTENDED);
+      expect(Object.keys(payload).sort()).toEqual([
+        'days', 'extendedBy', 'memberId', 'membershipId',
+        'newEndDate', 'previousEndDate', 'reason',
       ]);
+      expect(Object.keys(payload).sort()).toEqual(
+        documentedSchema('MembershipExtended.v1').required,
+      );
+      expect(payload).toMatchObject({
+        membershipId: 'm1',
+        memberId: 'member-1',
+        previousEndDate: FUTURE_END_DATE,
+        newEndDate,
+        days: 30,
+        reason: 'Service compensation',
+        extendedBy: userId,
+      });
+      // The inner payload has no envelope-outer fields — those live on the wrapper.
+      expect(payload).not.toHaveProperty('eventVersion');
+      expect(payload).not.toHaveProperty('eventId');
     });
   });
 
