@@ -2070,6 +2070,224 @@ check({
   },
 });
 
+// ── loyalty adjustment (P2-08) ─────────────────────────────────────────────
+check({
+  id: 'loyalty-04',
+  group: 'loyalty',
+  title: 'POST /points/adjust credits the balance and writes one adjust row',
+  requires: ['tokenA', 'orgA', 'memberA'],
+  provides: ['adjustTransactionA', 'adjustKeyA'],
+  run: async (ctx) => {
+    const before = await call(ctx, {
+      method: 'GET',
+      path: `/v1/members/${ctx.memberA}/loyalty`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    const beforeBalance = before.body && before.body.account && before.body.account.balance;
+    const key = `gate-adjust-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/members/${ctx.memberA}/points/adjust`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { points: 50, reason: 'gate positive adjustment', idempotency_key: key },
+    });
+    const txn = r.body && r.body.transaction;
+    const ok =
+      r.status === 200 &&
+      Boolean(txn) &&
+      txn.transaction_type === 'adjust' &&
+      txn.points === 50 &&
+      r.body.created === true &&
+      r.body.balance === beforeBalance + 50;
+    return verdict(
+      ok,
+      `POST .../points/adjust -> ${r.status}, before=${beforeBalance}, after=${r.body && r.body.balance}, created=${r.body && r.body.created}` +
+        (r.status !== 200 ? ` (${fragment(r)})` : ''),
+      ok ? { adjustTransactionA: txn.id, adjustKeyA: key } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'loyalty-05',
+  group: 'loyalty',
+  title: 'replaying the same idempotency key returns the original transaction and writes no second row',
+  requires: ['tokenA', 'orgA', 'memberA', 'adjustTransactionA', 'adjustKeyA'],
+  run: async (ctx) => {
+    const before = await call(ctx, {
+      method: 'GET',
+      path: `/v1/members/${ctx.memberA}/loyalty`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    const replay = await call(ctx, {
+      method: 'POST',
+      path: `/v1/members/${ctx.memberA}/points/adjust`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { points: 50, reason: 'gate positive adjustment', idempotency_key: ctx.adjustKeyA },
+    });
+    const rows = await ctx.queryScratch(
+      `SELECT "id" FROM "LOYALTY_TRANSACTIONS"
+       WHERE "reference_type" = 'admin_adjust' AND "reference_id" = $1`,
+      [ctx.adjustKeyA],
+    );
+    const after = await call(ctx, {
+      method: 'GET',
+      path: `/v1/members/${ctx.memberA}/loyalty`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    const ok =
+      replay.status === 200 &&
+      replay.body.created === false &&
+      replay.body.transaction &&
+      replay.body.transaction.id === ctx.adjustTransactionA &&
+      rows.length === 1 &&
+      after.body.account.balance === before.body.account.balance;
+    return verdict(
+      ok,
+      `replay -> ${replay.status}, created=${replay.body && replay.body.created}, ledger rows=${rows.length}, ` +
+        `balance unchanged=${after.body.account.balance === before.body.account.balance}`,
+    );
+  },
+});
+
+check({
+  id: 'loyalty-06',
+  group: 'loyalty',
+  title: 'a debit beyond the balance is rejected 409 and leaves the balance unchanged',
+  requires: ['tokenA', 'orgA', 'memberA'],
+  run: async (ctx) => {
+    const before = await call(ctx, {
+      method: 'GET',
+      path: `/v1/members/${ctx.memberA}/loyalty`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/members/${ctx.memberA}/points/adjust`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: {
+        points: -100000,
+        reason: 'gate overdraw attempt',
+        idempotency_key: `gate-overdraw-${Date.now()}`,
+      },
+    });
+    const after = await call(ctx, {
+      method: 'GET',
+      path: `/v1/members/${ctx.memberA}/loyalty`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    const unchanged = after.body.account.balance === before.body.account.balance;
+    return verdict(
+      r.status === 409 && unchanged,
+      `debit -100000 -> ${r.status}${r.status !== 409 ? ` (${fragment(r)})` : ''}, ` +
+        `balance ${before.body.account.balance} -> ${after.body.account.balance}`,
+    );
+  },
+});
+
+check({
+  id: 'loyalty-07',
+  group: 'loyalty',
+  title: 'tenant B cannot adjust a tenant A member (cross-org 404)',
+  requires: ['tokenB', 'orgB', 'memberA'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/members/${ctx.memberA}/points/adjust`,
+      token: ctx.tokenB,
+      org: ctx.orgB,
+      body: {
+        points: 1,
+        reason: 'cross-org probe',
+        idempotency_key: `gate-xorg-${Date.now()}`,
+      },
+    });
+    return verdict(
+      r.status === 404,
+      `POST as tenant B for tenant A member -> ${r.status}` +
+        (r.status !== 404 ? ` (${fragment(r)})` : ''),
+    );
+  },
+});
+
+check({
+  id: 'loyalty-08',
+  group: 'loyalty',
+  title: 'without loyalty:adjust the same token gets 403; restoring it returns 200',
+  requires: ['tokenA', 'orgA', 'memberA'],
+  run: async (ctx) => {
+    const path = `/v1/members/${ctx.memberA}/points/adjust`;
+    const removed = await ctx.queryScratch(
+      `DELETE FROM "IDENTITY_ROLE_PERMISSIONS" rp
+       USING "IDENTITY_ROLES" r, "IDENTITY_PERMISSIONS" p
+       WHERE rp.role_id = r."id"
+         AND rp.permission_id = p."id"
+         AND r."name" = 'owner'
+         AND p."resource" = 'loyalty'
+         AND p."action" = 'adjust'
+       RETURNING rp."id"`,
+    );
+
+    const key = `gate-perm-${Date.now()}`;
+    let denied;
+    try {
+      denied = await call(ctx, {
+        method: 'POST',
+        path,
+        token: ctx.tokenA,
+        org: ctx.orgA,
+        body: { points: 1, reason: 'permission probe', idempotency_key: key },
+      });
+    } finally {
+      // Restore unconditionally: a mid-check throw must not leave the scratch
+      // database without the row later checks expect.
+      await ctx.queryScratch(
+        `INSERT INTO "IDENTITY_ROLE_PERMISSIONS" ("role_id", "permission_id")
+         SELECT r."id", p."id" FROM "IDENTITY_ROLES" r, "IDENTITY_PERMISSIONS" p
+         WHERE r."name" = 'owner'
+           AND p."resource" = 'loyalty'
+           AND p."action" = 'adjust'
+           AND NOT EXISTS (
+             SELECT 1 FROM "IDENTITY_ROLE_PERMISSIONS" rp
+             WHERE rp."role_id" = r."id" AND rp."permission_id" = p."id"
+           )
+         RETURNING "id"`,
+      );
+    }
+
+    const deniesProperly =
+      denied.status === 403 && hasFragment(denied, 'Missing permission loyalty:adjust');
+    if (!deniesProperly) {
+      return verdict(
+        false,
+        `row removed=${removed.length}; without the row -> ${denied.status} "${fragment(denied)}" ` +
+          `(expected 403 "Missing permission loyalty:adjust")`,
+      );
+    }
+
+    const restored = await call(ctx, {
+      method: 'POST',
+      path,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { points: 1, reason: 'permission probe', idempotency_key: key },
+    });
+    return verdict(
+      removed.length === 1 && restored.status === 200,
+      `row removed=${removed.length}; without -> 403 "Missing permission loyalty:adjust"; ` +
+        `restored -> ${restored.status}`,
+    );
+  },
+});
+
 // ── webhook (P3-03) ─────────────────────────────────────────────────────────
 check({
   id: 'wh-01',
