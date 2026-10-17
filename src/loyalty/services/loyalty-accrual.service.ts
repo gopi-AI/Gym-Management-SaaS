@@ -60,12 +60,14 @@ export interface AccrualResult {
  * account balance update in ONE DB transaction, then emits `LoyaltyPointsAwarded.v1`
  * through the transactional outbox.
  *
- * WIRING GAP: this handler is NOT currently wired to fire automatically. The
- * outbox-to-consumer routing layer does not exist anywhere in this codebase (the
- * OutboxPoller only logs events and marks them processed; nothing dispatches them to
- * consumers). Every outbox event ever written by producer modules is persisted but
- * never consumed. Wiring this handler into a real event-delivery pipeline is a
- * foundational, project-wide follow-up task — not a Loyalty-module concern.
+ * WIRING: the outbox-to-consumer dispatch chain exists (`OutboxWorker` →
+ * `OutboxPoller` → `EventHandlerRegistry`), and `handleCheckIn()` is wired
+ * through it — `LoyaltyModule.onModuleInit()` registers this handler against
+ * `AttendanceEventRecorded.v1`.
+ *
+ * The `WorkoutSessionLogged.v1` accrual path is the dead one:
+ * `handleWorkoutLogged()` has no registration and no producer, because the
+ * Workouts module does not yet emit that event.
  */
 @Injectable()
 export class LoyaltyAccrualService {
