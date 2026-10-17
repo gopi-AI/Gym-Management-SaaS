@@ -8,6 +8,7 @@ import { Repository, DataSource } from 'typeorm';
 import { Exercise } from '../entities/exercise.entity';
 import { WorkoutTemplate } from '../entities/workout-template.entity';
 import { WorkoutPlanAssignment } from '../entities/workout-plan-assignment.entity';
+import { WorkoutSession } from '../entities/workout-session.entity';
 import { AssignPlanInput } from '../dto/assign-plan.input';
 import { CreateExerciseDto } from '../dto/create-exercise.dto';
 import { CreateWorkoutTemplateDto } from '../dto/create-workout-template.dto';
@@ -32,6 +33,8 @@ export class WorkoutsService {
     private readonly templateRepository: Repository<WorkoutTemplate>,
     @InjectRepository(WorkoutPlanAssignment)
     private readonly assignmentRepository: Repository<WorkoutPlanAssignment>,
+    @InjectRepository(WorkoutSession)
+    private readonly sessionRepository: Repository<WorkoutSession>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly tenantContextService: TenantContextService,
@@ -203,6 +206,24 @@ export class WorkoutsService {
       throw new NotFoundException('WorkoutPlanAssignment not found');
     }
     return assignment;
+  }
+
+  /**
+   * Workout session history for one member (P2-05).
+   *
+   * Read-only. No writer for `WorkoutSession` rows exists in this module yet
+   * (session logging is deferred — see the P2-05 backlog note), so this
+   * deliberately returns `[]` until a logger ships; it never fabricates rows.
+   * Org-scoped by `organization_id` like every other read in this service, and
+   * ordered newest-first.
+   */
+  async findAllSessions(memberId: string): Promise<WorkoutSession[]> {
+    const orgId = await this.getOrganizationId();
+    return this.sessionRepository.find({
+      where: { organization_id: orgId, member_id: memberId },
+      relations: ['session_exercises'],
+      order: { session_date: 'DESC', created_at: 'DESC' },
+    });
   }
 
   // ---------------------------------------------------------------------------

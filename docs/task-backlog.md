@@ -353,6 +353,7 @@ This document contains the implementation tasks broken down by phase, with depen
   - Exercise details available
   - Progress tracking per assignment
 - **Risks**: Workout data inconsistency, missing exercises
+- **Deferred — session logging (write path)**: `WorkoutSession`/`WorkoutSessionExercise` have no writer, no route, and no `WorkoutSessionLogged` event producer in `src/workouts/`. "Shows workout session history" is met as an always-correct-but-empty read path today. Revisit when session-lifecycle rules (who logs, editable vs. immutable, assignment linkage, duplicates policy, event version) are established.
 
 ### P2-06: Diet Tab API
 - **Objective**: Implement API for diet plans and nutrition tracking tab.

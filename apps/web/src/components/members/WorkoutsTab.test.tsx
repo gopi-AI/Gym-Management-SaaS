@@ -3,16 +3,22 @@
  */
 
 /**
- * WorkoutsTab — the Workouts Member 360 tab (P2-09).
+ * WorkoutsTab — the Workouts Member 360 tab (P2-09/P2-05).
  *
- * Two cards with different scopes: `assignments` is member-scoped, `exercises`
- * is the organization-wide library. Both empty states are asserted.
+ * Three cards: `assignments` and `sessions` are member-scoped, `exercises` is
+ * the organization-wide library. All empty states are asserted, and the
+ * per-assignment progress bar is pinned to the server-computed percentage.
  */
 
 import '@testing-library/jest-dom';
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
-import type { Exercise, WorkoutPlanAssignment, WorkoutsTabResponse } from '@/lib';
+import type {
+  Exercise,
+  WorkoutsTabAssignment,
+  WorkoutsTabResponse,
+  WorkoutSession,
+} from '@/lib';
 import WorkoutsTab from './WorkoutsTab';
 import {
   createTestQueryClient,
@@ -27,7 +33,7 @@ import {
 const MEMBER_ID = 'member-1';
 const ENDPOINT = `/v1/members/${MEMBER_ID}/workouts`;
 
-const ASSIGNMENT: WorkoutPlanAssignment = {
+const ASSIGNMENT: WorkoutsTabAssignment = {
   id: 'wa-1',
   organization_id: 'org-1',
   member_id: MEMBER_ID,
@@ -40,6 +46,23 @@ const ASSIGNMENT: WorkoutPlanAssignment = {
   notes: 'Knee-friendly',
   created_at: '2026-02-01T00:00:00.000Z',
   updated_at: '2026-02-01T00:00:00.000Z',
+  progress: { completed: 3, prescribed: 4, percentage: 75 },
+};
+
+const SESSION: WorkoutSession = {
+  id: 'ws-1',
+  organization_id: 'org-1',
+  member_id: MEMBER_ID,
+  template_id: 'tpl-5',
+  assignment_id: 'wa-1',
+  session_date: '2026-02-10',
+  started_at: '2026-02-10T09:00:00.000Z',
+  completed_at: '2026-02-10T09:45:00.000Z',
+  duration_minutes: 45,
+  notes: 'Felt strong',
+  mood: 8,
+  session_exercises: [],
+  created_at: '2026-02-10T09:45:00.000Z',
 };
 
 const EXERCISE: Exercise = {
@@ -54,7 +77,7 @@ const EXERCISE: Exercise = {
   updated_at: '2026-02-01T00:00:00.000Z',
 };
 
-const EMPTY: WorkoutsTabResponse = { assignments: [], exercises: [] };
+const EMPTY: WorkoutsTabResponse = { assignments: [], sessions: [], exercises: [] };
 
 let fetchMock: jest.Mock;
 
@@ -83,8 +106,12 @@ test('renders the loading state while the request is in flight', () => {
   expect(screen.getByText('Loading workouts…')).toBeInTheDocument();
 });
 
-test('renders the fetched assignments and exercise library', async () => {
-  const body: WorkoutsTabResponse = { assignments: [ASSIGNMENT], exercises: [EXERCISE] };
+test('renders the fetched assignments, session history and exercise library', async () => {
+  const body: WorkoutsTabResponse = {
+    assignments: [ASSIGNMENT],
+    sessions: [SESSION],
+    exercises: [EXERCISE],
+  };
   fetchMock.mockResolvedValueOnce(jsonResponse(body));
 
   renderTab(true);
@@ -99,6 +126,14 @@ test('renders the fetched assignments and exercise library', async () => {
   expect(screen.getByText('user-1')).toBeInTheDocument();
   expect(screen.getByText('Knee-friendly')).toBeInTheDocument();
 
+  // Per-assignment progress (server-computed percentage).
+  expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '75');
+
+  // Session history card.
+  expect(screen.getByText('2026-02-10')).toBeInTheDocument();
+  expect(screen.getByText('45 min')).toBeInTheDocument();
+  expect(screen.getByText('Felt strong')).toBeInTheDocument();
+
   // Exercise library card.
   expect(screen.getByText('Goblet squat')).toBeInTheDocument();
   expect(screen.getByText('Strength')).toBeInTheDocument();
@@ -107,12 +142,13 @@ test('renders the fetched assignments and exercise library', async () => {
   expect(screen.getByText('Active')).toBeInTheDocument();
 });
 
-test('renders an empty state for each of the two cards', async () => {
+test('renders an empty state for each of the three cards', async () => {
   fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
 
   renderTab(true);
 
   expect(await screen.findByText('No workout assignments')).toBeInTheDocument();
+  expect(screen.getByText('No workout sessions')).toBeInTheDocument();
   expect(screen.getByText('No exercises')).toBeInTheDocument();
 });
 

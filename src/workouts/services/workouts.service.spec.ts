@@ -9,6 +9,7 @@ import { WorkoutsService } from './workouts.service';
 import { Exercise } from '../entities/exercise.entity';
 import { WorkoutTemplate } from '../entities/workout-template.entity';
 import { WorkoutPlanAssignment } from '../entities/workout-plan-assignment.entity';
+import { WorkoutSession } from '../entities/workout-session.entity';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
 import { AssignmentStatus } from '../entities/assignment-status.enum';
@@ -19,6 +20,7 @@ describe('WorkoutsService', () => {
   let mockExerciseRepo!: Record<string, jest.Mock>;
   let mockTemplateRepo!: Record<string, jest.Mock>;
   let mockAssignmentRepo!: Record<string, jest.Mock>;
+  let mockSessionRepo!: Record<string, jest.Mock>;
   let mockDataSource!: Record<string, jest.Mock>;
   let mockTenantContext!: Record<string, jest.Mock>;
   let mockOutboxService!: Record<string, jest.Mock>;
@@ -63,6 +65,10 @@ describe('WorkoutsService', () => {
       findOne: jest.fn().mockResolvedValue(null),
     };
 
+    mockSessionRepo = {
+      find: jest.fn().mockResolvedValue([]),
+    };
+
     mockDataSource = {
       transaction: jest.fn().mockImplementation(async (cb: (mgr: EntityManager) => unknown) => {
         const manager = {
@@ -97,6 +103,7 @@ describe('WorkoutsService', () => {
         { provide: getRepositoryToken(Exercise), useValue: mockExerciseRepo },
         { provide: getRepositoryToken(WorkoutTemplate), useValue: mockTemplateRepo },
         { provide: getRepositoryToken(WorkoutPlanAssignment), useValue: mockAssignmentRepo },
+        { provide: getRepositoryToken(WorkoutSession), useValue: mockSessionRepo },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         { provide: TenantContextService, useValue: mockTenantContext },
         { provide: OutboxService, useValue: mockOutboxService },
@@ -374,6 +381,52 @@ describe('WorkoutsService', () => {
       await expect(
         service.getAssignmentProgress('assignment-other-org'),
       ).rejects.toThrow('WorkoutPlanAssignment not found');
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Session history (P2-05, read-only)
+  // --------------------------------------------------------------------------
+
+  describe('session history', () => {
+    it('returns the member sessions org-scoped, newest first, with exercises included', async () => {
+      const sessionFixture = {
+        id: 'session-1',
+        organization_id: orgId,
+        member_id: memberId,
+        session_date: '2026-09-20',
+        session_exercises: [{ id: 'wse-1', exercise_id: 'exercise-1' }],
+      } as unknown as WorkoutSession;
+      mockSessionRepo.find.mockResolvedValue([sessionFixture]);
+
+      const result = await service.findAllSessions(memberId);
+
+      expect(result).toEqual([sessionFixture]);
+      expect(mockSessionRepo.find).toHaveBeenCalledWith({
+        where: { organization_id: orgId, member_id: memberId },
+        relations: ['session_exercises'],
+        order: { session_date: 'DESC', created_at: 'DESC' },
+      });
+    });
+
+    it('returns [] when the member has no sessions (no writer exists yet)', async () => {
+      mockSessionRepo.find.mockResolvedValue([]);
+
+      await expect(service.findAllSessions(memberId)).resolves.toEqual([]);
+    });
+
+    it('scopes the query by the caller org, so a cross-org member returns []', async () => {
+      mockTenantContext.getCurrentOrganizationId.mockResolvedValue(otherOrgId);
+      mockSessionRepo.find.mockResolvedValue([]);
+
+      const result = await service.findAllSessions(memberId);
+
+      expect(result).toEqual([]);
+      expect(mockSessionRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { organization_id: otherOrgId, member_id: memberId },
+        }),
+      );
     });
   });
 });

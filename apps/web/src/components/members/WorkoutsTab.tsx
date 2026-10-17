@@ -23,9 +23,10 @@ interface WorkoutsTabProps {
 /**
  * Workouts tab — `GET /v1/members/:memberId/workouts`.
  *
- * `assignments` is member-scoped; `exercises` is the organization-wide
- * exercise library (the endpoint returns the whole catalogue), and its card
- * says so.
+ * `assignments` and `sessions` are member-scoped; `exercises` is the
+ * organization-wide exercise library (the endpoint returns the whole
+ * catalogue), and its card says so. `sessions` is empty until a workout-session
+ * logger ships — the empty state is the correct state, not a failure.
  */
 export default function WorkoutsTab({ memberId, active }: WorkoutsTabProps) {
   const { data, isPending, isError, error } = useMemberWorkoutsTab(memberId, { enabled: active });
@@ -43,6 +44,7 @@ export default function WorkoutsTab({ memberId, active }: WorkoutsTabProps) {
   }
 
   const assignments = data?.assignments ?? [];
+  const sessions = data?.sessions ?? [];
   const exercises = data?.exercises ?? [];
 
   return (
@@ -65,6 +67,7 @@ export default function WorkoutsTab({ memberId, active }: WorkoutsTabProps) {
                   <Th>Status</Th>
                   <Th>Start</Th>
                   <Th>End</Th>
+                  <Th>Progress</Th>
                   <Th>Assigned by</Th>
                   <Th>Notes</Th>
                 </THeadRow>
@@ -82,8 +85,66 @@ export default function WorkoutsTab({ memberId, active }: WorkoutsTabProps) {
                     </Td>
                     <Td>{assignment.start_date}</Td>
                     <Td>{assignment.end_date ?? '—'}</Td>
+                    <Td style={{ minWidth: 160 }}>
+                      <div
+                        className="progress progress-sm"
+                        role="progressbar"
+                        aria-valuenow={assignment.progress.percentage}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-label="Workout progress"
+                      >
+                        <div
+                          className="progress-bar"
+                          style={{ width: `${assignment.progress.percentage}%` }}
+                        />
+                      </div>
+                      <div className="text-secondary small">
+                        {assignment.progress.completed} / {assignment.progress.prescribed} (
+                        {assignment.progress.percentage}%)
+                      </div>
+                    </Td>
                     <Td>{assignment.assigned_by}</Td>
                     <Td>{assignment.notes ?? '—'}</Td>
+                  </TBodyRow>
+                ))}
+              </TBody>
+            </Table>
+          )}
+        </CardBody>
+      </Card>
+
+      <Card className="mb-3">
+        <CardHeader>
+          <CardTitle>Session history</CardTitle>
+        </CardHeader>
+        <CardBody>
+          {sessions.length === 0 ? (
+            <Empty
+              title="No workout sessions"
+              description="No workout sessions have been logged for this member."
+            />
+          ) : (
+            <Table striped hover responsive cardTable nowrap>
+              <THead>
+                <THeadRow>
+                  <Th>Date</Th>
+                  <Th>Duration</Th>
+                  <Th>Exercises</Th>
+                  <Th>Notes</Th>
+                </THeadRow>
+              </THead>
+              <TBody>
+                {sessions.map((session) => (
+                  <TBodyRow key={session.id}>
+                    <Td>{session.session_date}</Td>
+                    <Td>
+                      {session.duration_minutes != null
+                        ? `${session.duration_minutes} min`
+                        : '—'}
+                    </Td>
+                    <Td>{session.session_exercises?.length ?? 0}</Td>
+                    <Td>{session.notes ?? '—'}</Td>
                   </TBodyRow>
                 ))}
               </TBody>

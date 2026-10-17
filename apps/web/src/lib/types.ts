@@ -724,8 +724,51 @@ export interface PtSession {
 }
 
 export interface WorkoutsTabResponse {
-  assignments: WorkoutPlanAssignment[];
+  assignments: WorkoutsTabAssignment[];
+  /** Newest first; always empty until a workout-session logger ships. */
+  sessions: WorkoutSession[];
   exercises: Exercise[];
+}
+
+export interface WorkoutAssignmentProgress {
+  completed: number;
+  prescribed: number;
+  /** 0–100, server-computed */
+  percentage: number;
+}
+
+export interface WorkoutsTabAssignment extends WorkoutPlanAssignment {
+  progress: WorkoutAssignmentProgress;
+}
+
+export interface WorkoutSessionExercise {
+  id: string;
+  session_id: string;
+  exercise_id: string;
+  sets_completed?: number | null;
+  reps_completed?: number | null;
+  /** NUMERIC columns are returned by pg as strings. */
+  weight_used?: string | number | null;
+  rpe?: number | null;
+  notes?: string | null;
+  created_at: string;
+}
+
+export interface WorkoutSession {
+  id: string;
+  organization_id: string;
+  member_id: string;
+  template_id?: string | null;
+  assignment_id?: string | null;
+  /** ISO date (YYYY-MM-DD). */
+  session_date: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  duration_minutes?: number | null;
+  notes?: string | null;
+  mood?: number | null;
+  session_exercises?: WorkoutSessionExercise[];
+  created_at: string;
 }
 
 export interface WorkoutPlanAssignment {
