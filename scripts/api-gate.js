@@ -86,7 +86,7 @@ const WORKER_NAMES = [
   'CRM_SLA_MONITOR',
 ];
 
-const GROUPS = ['seed', 'boot', 'auth', 'tenancy', 'inventory', 'finance', 'crm', 'pt', 'loyalty', 'webhook'];
+const GROUPS = ['seed', 'boot', 'auth', 'tenancy', 'inventory', 'finance', 'crm', 'pt', 'loyalty', 'membership', 'webhook'];
 
 const EXIT = { OK: 0, CHECK_FAILED: 1, REFUSED: 2, CANT_RUN: 3, INTERNAL: 4, USAGE: 64 };
 
@@ -334,6 +334,12 @@ const fragment = (result) => {
 };
 const hasFragment = (result, needle) => fragment(result).includes(needle);
 const bodyHas = (result, needle) => JSON.stringify(result.body ?? '').includes(needle);
+/** `dateOnly` plus `days` calendar days, in YYYY-MM-DD form (extend assertions). */
+const addDays = (dateOnly, days) => {
+  const d = new Date(`${dateOnly}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
 
 async function call(ctx, { method, path: urlPath, token, org, body, rawBody, headers = {} }) {
   const h = { ...headers };
@@ -2284,6 +2290,374 @@ check({
       removed.length === 1 && restored.status === 200,
       `row removed=${removed.length}; without -> 403 "Missing permission loyalty:adjust"; ` +
         `restored -> ${restored.status}`,
+    );
+  },
+});
+
+// ── membership extend + transfer (P1-03) ───────────────────────────────────
+// The two new routes are guarded by `membership:extend` / `membership:transfer`,
+// provisioned by the `ProvisionMembershipExtendTransferPermission` migration —
+// bootstrap-dev does not seed either, so a 200 here is also the proof that the
+// migration ran. Extend is idempotent by key; transfer is idempotent by
+// no-op'ing on the current branch.
+check({
+  id: 'membership-01',
+  group: 'membership',
+  title: 'create a membership plan fixture',
+  requires: ['tokenA', 'orgA'],
+  provides: ['planA'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: '/v1/membership-plans',
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: {
+        name: `Gate Plan ${ctx.runId}`,
+        price: '100.00',
+        currency: 'USD',
+        billing_period: 'monthly',
+        duration_days: 30,
+      },
+    });
+    const id = r.body && r.body.id;
+    return verdict(
+      r.status === 201 && Boolean(id),
+      `POST /v1/membership-plans -> ${r.status}${id ? '' : ` (${fragment(r)})`}`,
+      id ? { planA: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'membership-02',
+  group: 'membership',
+  title: 'create the membership fixture (active, branch A, 30 days)',
+  requires: ['tokenA', 'orgA', 'memberA', 'planA', 'branchA'],
+  provides: ['membershipA', 'membershipAEndDate'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: '/v1/memberships',
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { member_id: ctx.memberA, plan_id: ctx.planA, branch_id: ctx.branchA },
+    });
+    const id = r.body && r.body.id;
+    const endDate = r.body && r.body.end_date;
+    return verdict(
+      r.status === 201 && Boolean(id) && Boolean(endDate),
+      `POST /v1/memberships -> ${r.status}${id && endDate ? '' : ` (${fragment(r)})`}`,
+      id && endDate ? { membershipA: id, membershipAEndDate: endDate } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'membership-03',
+  group: 'membership',
+  title: 'create a second active branch for the transfer target',
+  requires: ['tokenA', 'orgA'],
+  provides: ['branchA2'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: '/v1/branches',
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: {
+        organization_id: ctx.orgA,
+        name: `Gate Branch A2 ${ctx.runId}`,
+        address: '3 Gate Street',
+        phone: '+1-555-0300',
+      },
+    });
+    const id = r.body && r.body.id;
+    return verdict(
+      r.status === 201 && Boolean(id),
+      `POST /v1/branches (A2) -> ${r.status}${id ? '' : ` (${fragment(r)})`}`,
+      id ? { branchA2: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'membership-04',
+  group: 'membership',
+  title: 'seed a cancelled membership and an open-ended membership',
+  requires: ['orgA', 'memberA', 'planA', 'branchA'],
+  provides: ['membershipCancelled', 'membershipOpenEnded'],
+  run: async (ctx) => {
+    const cancelled = await ctx.queryScratch(
+      `INSERT INTO "MEMBERSHIPS_MEMBERSHIPS"
+         (organization_id, member_id, plan_id, branch_id, status, start_date, end_date)
+       VALUES ($1, $2, $3, $4, 'cancelled', CURRENT_DATE, CURRENT_DATE + 30)
+       RETURNING id`,
+      [ctx.orgA, ctx.memberA, ctx.planA, ctx.branchA],
+    );
+    const openEnded = await ctx.queryScratch(
+      `INSERT INTO "MEMBERSHIPS_MEMBERSHIPS"
+         (organization_id, member_id, plan_id, branch_id, status, start_date, end_date)
+       VALUES ($1, $2, $3, $4, 'active', CURRENT_DATE, NULL)
+       RETURNING id`,
+      [ctx.orgA, ctx.memberA, ctx.planA, ctx.branchA],
+    );
+    const ok = cancelled.length === 1 && openEnded.length === 1;
+    return verdict(
+      ok,
+      `cancelled=${cancelled.length} open-ended=${openEnded.length}`,
+      ok
+        ? { membershipCancelled: cancelled[0].id, membershipOpenEnded: openEnded[0].id }
+        : undefined,
+    );
+  },
+});
+
+check({
+  id: 'membership-05',
+  group: 'membership',
+  title: 'extend an active membership by +30 days (membership:extend)',
+  requires: ['tokenA', 'orgA', 'membershipA', 'membershipAEndDate'],
+  provides: ['membershipAEndDateExtended', 'extendKeyA'],
+  run: async (ctx) => {
+    const key = `gate-extend-${ctx.runId}`;
+    const expectedEnd = addDays(ctx.membershipAEndDate, 30);
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/memberships/${ctx.membershipA}/extend`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { days: 30, reason: 'Gate extension', idempotency_key: key },
+    });
+    const created = r.body && r.body.created;
+    const end = r.body && r.body.membership && r.body.membership.end_date;
+    return verdict(
+      r.status === 200 && created === true && end === expectedEnd,
+      `POST /extend -> ${r.status}, created=${created}, end=${end} (expected ${expectedEnd})` +
+        (r.status === 403 ? ` (${fragment(r)})` : ''),
+      created === true && end === expectedEnd
+        ? { membershipAEndDateExtended: end, extendKeyA: key }
+        : undefined,
+    );
+  },
+});
+
+check({
+  id: 'membership-06',
+  group: 'membership',
+  title: 'replaying the same extend key writes no second history row or event',
+  requires: ['tokenA', 'orgA', 'membershipA', 'membershipAEndDateExtended', 'extendKeyA'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/memberships/${ctx.membershipA}/extend`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { days: 30, reason: 'Gate extension', idempotency_key: ctx.extendKeyA },
+    });
+    const created = r.body && r.body.created;
+    const end = r.body && r.body.membership && r.body.membership.end_date;
+    const history = await ctx.queryScratch(
+      `SELECT count(*)::int AS n FROM "MEMBERSHIPS_MEMBERSHIP_HISTORY"
+       WHERE membership_id = $1 AND transition = 'extend'`,
+      [ctx.membershipA],
+    );
+    const outbox = await ctx.queryScratch(
+      `SELECT count(*)::int AS n FROM shared.outbox
+       WHERE "eventType" = 'MembershipExtended' AND "correlationId" = $1`,
+      [ctx.membershipA],
+    );
+    const historyCount = history[0] && history[0].n;
+    const outboxCount = outbox[0] && outbox[0].n;
+    return verdict(
+      r.status === 200 && created === false &&
+        end === ctx.membershipAEndDateExtended &&
+        historyCount === 1 && outboxCount === 1,
+      `replay -> ${r.status}, created=${created}, end=${end}; history=${historyCount}, outbox=${outboxCount}`,
+    );
+  },
+});
+
+check({
+  id: 'membership-07',
+  group: 'membership',
+  title: 'extend rejects a cancelled membership (400)',
+  requires: ['tokenA', 'orgA', 'membershipCancelled'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/memberships/${ctx.membershipCancelled}/extend`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { days: 30, reason: 'Gate', idempotency_key: `gate-cancelled-${ctx.runId}` },
+    });
+    return verdict(
+      r.status === 400,
+      `POST /extend (cancelled) -> ${r.status} "${fragment(r)}"`,
+    );
+  },
+});
+
+check({
+  id: 'membership-08',
+  group: 'membership',
+  title: 'extend rejects a membership with no end date (400)',
+  requires: ['tokenA', 'orgA', 'membershipOpenEnded'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/memberships/${ctx.membershipOpenEnded}/extend`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { days: 30, reason: 'Gate', idempotency_key: `gate-open-${ctx.runId}` },
+    });
+    return verdict(
+      r.status === 400 && hasFragment(r, 'no end date'),
+      `POST /extend (open-ended) -> ${r.status} "${fragment(r)}"`,
+    );
+  },
+});
+
+check({
+  id: 'membership-09',
+  group: 'membership',
+  title: 'extend rejects an end-before-start result (409)',
+  requires: ['tokenA', 'orgA', 'membershipA'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/memberships/${ctx.membershipA}/extend`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { days: -365, reason: 'Gate', idempotency_key: `gate-before-start-${ctx.runId}` },
+    });
+    return verdict(
+      r.status === 409,
+      `POST /extend (end < start) -> ${r.status} "${fragment(r)}"`,
+    );
+  },
+});
+
+check({
+  id: 'membership-10',
+  group: 'membership',
+  title: 'transfer the membership to branch A2 (membership:transfer)',
+  requires: ['tokenA', 'orgA', 'membershipA', 'branchA2'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/memberships/${ctx.membershipA}/transfer`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { to_branch_id: ctx.branchA2, reason: 'Gate transfer' },
+    });
+    const branch = r.body && r.body.branch_id;
+    const history = await ctx.queryScratch(
+      `SELECT count(*)::int AS n FROM "MEMBERSHIPS_MEMBERSHIP_HISTORY"
+       WHERE membership_id = $1 AND transition = 'transfer'`,
+      [ctx.membershipA],
+    );
+    const outbox = await ctx.queryScratch(
+      `SELECT count(*)::int AS n FROM shared.outbox
+       WHERE "eventType" = 'MembershipTransferred' AND "correlationId" = $1`,
+      [ctx.membershipA],
+    );
+    const historyCount = history[0] && history[0].n;
+    const outboxCount = outbox[0] && outbox[0].n;
+    return verdict(
+      r.status === 200 && branch === ctx.branchA2 && historyCount === 1 && outboxCount === 1,
+      `POST /transfer -> ${r.status}, branch=${branch}; history=${historyCount}, outbox=${outboxCount}` +
+        (r.status === 403 ? ` (${fragment(r)})` : ''),
+    );
+  },
+});
+
+check({
+  id: 'membership-11',
+  group: 'membership',
+  title: 'transferring to the current branch is a no-op (no row, no event)',
+  requires: ['tokenA', 'orgA', 'membershipA', 'branchA2'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/memberships/${ctx.membershipA}/transfer`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { to_branch_id: ctx.branchA2 },
+    });
+    const branch = r.body && r.body.branch_id;
+    const history = await ctx.queryScratch(
+      `SELECT count(*)::int AS n FROM "MEMBERSHIPS_MEMBERSHIP_HISTORY"
+       WHERE membership_id = $1 AND transition = 'transfer'`,
+      [ctx.membershipA],
+    );
+    const outbox = await ctx.queryScratch(
+      `SELECT count(*)::int AS n FROM shared.outbox
+       WHERE "eventType" = 'MembershipTransferred' AND "correlationId" = $1`,
+      [ctx.membershipA],
+    );
+    const historyCount = history[0] && history[0].n;
+    const outboxCount = outbox[0] && outbox[0].n;
+    return verdict(
+      r.status === 200 && branch === ctx.branchA2 && historyCount === 1 && outboxCount === 1,
+      `no-op transfer -> ${r.status}, branch=${branch}; history=${historyCount}, outbox=${outboxCount}`,
+    );
+  },
+});
+
+check({
+  id: 'membership-12',
+  group: 'membership',
+  title: 'transfer rejects an unknown branch (404)',
+  requires: ['tokenA', 'orgA', 'membershipA'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/memberships/${ctx.membershipA}/transfer`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { to_branch_id: crypto.randomUUID() },
+    });
+    return verdict(r.status === 404, `POST /transfer (unknown) -> ${r.status}`);
+  },
+});
+
+check({
+  id: 'membership-13',
+  group: 'membership',
+  title: 'transfer rejects a cancelled membership (400)',
+  requires: ['tokenA', 'orgA', 'membershipCancelled', 'branchA2'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/memberships/${ctx.membershipCancelled}/transfer`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { to_branch_id: ctx.branchA2 },
+    });
+    return verdict(
+      r.status === 400,
+      `POST /transfer (cancelled) -> ${r.status} "${fragment(r)}"`,
+    );
+  },
+});
+
+check({
+  id: 'membership-14',
+  group: 'membership',
+  title: 'transfer rejects a cross-org branch as a scoped 404',
+  requires: ['tokenA', 'orgA', 'membershipA', 'branchB'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/memberships/${ctx.membershipA}/transfer`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { to_branch_id: ctx.branchB },
+    });
+    return verdict(
+      r.status === 404 && hasFragment(r, 'Branch not found'),
+      `POST /transfer (cross-org) -> ${r.status} "${fragment(r)}"`,
     );
   },
 });

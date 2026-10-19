@@ -10,8 +10,13 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { MembershipsService } from '../services/memberships.service';
+import {
+  MembershipsService,
+  ExtendMembershipResult,
+} from '../services/memberships.service';
 import { CreateMembershipDto } from '../dto/create-membership.dto';
+import { ExtendMembershipDto } from '../dto/extend-membership.dto';
+import { TransferMembershipDto } from '../dto/transfer-membership.dto';
 import { UpdateMembershipDto } from '../dto/update-membership.dto';
 import { QueryMembershipDto } from '../dto/query-membership.dto';
 import { MembershipLifecycleDto } from '../dto/membership-lifecycle.dto';
@@ -124,5 +129,25 @@ export class MembershipsController {
     @Body() dto: MembershipLifecycleDto,
   ): Promise<Membership> {
     return this.membershipsService.cancel(id, dto);
+  }
+
+  @Post(':id/extend')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions({ resource: 'membership', action: 'extend' })
+  async extend(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: ExtendMembershipDto,
+  ): Promise<ExtendMembershipResult> {
+    return this.membershipsService.extend(id, dto);
+  }
+
+  @Post(':id/transfer')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermissions({ resource: 'membership', action: 'transfer' })
+  async transfer(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() dto: TransferMembershipDto,
+  ): Promise<Membership> {
+    return this.membershipsService.transfer(id, dto);
   }
 }

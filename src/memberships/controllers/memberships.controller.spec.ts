@@ -28,6 +28,8 @@ describe('MembershipsController', () => {
       freeze: jest.fn(),
       unfreeze: jest.fn(),
       cancel: jest.fn(),
+      extend: jest.fn(),
+      transfer: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -161,6 +163,36 @@ describe('GET /v1/memberships/member/:memberId', () => {
       const result = await controller.cancel('m1', dto);
       expect(result).toEqual(expected);
       expect(mockService.cancel).toHaveBeenCalledWith('m1', dto);
+    });
+  });
+
+  describe('POST /v1/memberships/:id/extend', () => {
+    it('should call extend with id and dto', async () => {
+      const dto = { days: 30, reason: 'Compensation', idempotency_key: 'key-1' };
+      const expected = { membership: { id: 'm1', end_date: '2026-03-02' }, created: true };
+      mockService.extend.mockResolvedValue(expected);
+      const result = await controller.extend('m1', dto);
+      expect(result).toEqual(expected);
+      expect(mockService.extend).toHaveBeenCalledWith('m1', dto);
+    });
+
+    it('requires membership:extend', () => {
+      expect(permissionsFor('extend')).toEqual([{ resource: 'membership', action: 'extend' }]);
+    });
+  });
+
+  describe('POST /v1/memberships/:id/transfer', () => {
+    it('should call transfer with id and dto', async () => {
+      const dto = { to_branch_id: 'branch-2', reason: 'Relocation' };
+      const expected = { id: 'm1', branch_id: 'branch-2' };
+      mockService.transfer.mockResolvedValue(expected);
+      const result = await controller.transfer('m1', dto);
+      expect(result).toEqual(expected);
+      expect(mockService.transfer).toHaveBeenCalledWith('m1', dto);
+    });
+
+    it('requires membership:transfer', () => {
+      expect(permissionsFor('transfer')).toEqual([{ resource: 'membership', action: 'transfer' }]);
     });
   });
 });

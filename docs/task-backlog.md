@@ -1776,18 +1776,26 @@ This document contains the implementation tasks broken down by phase, with depen
   - State machine logic (possibly using XState or custom)
   - Database already has status field
 - **Database changes**:
-  - membership_pauses table
-  - membership_cancellations table
-  - membership_extensions table
-  - membership_transfers table
-  - membership_discounts table
+  - state lives on `MEMBERSHIPS_MEMBERSHIPS` (`status` plus `paused_at`/`frozen_at`/
+    `cancelled_at`); every action is recorded in `MEMBERSHIPS_MEMBERSHIP_HISTORY`
+  - membership_extensions / membership_transfers tables were NOT built: extend and transfer
+    reuse `MEMBERSHIPS_MEMBERSHIP_HISTORY` (`transition = 'extend'` / `'transfer'`), with
+    `reference_type`/`reference_id` added for extend idempotency (P1-03, built 2026-10-18)
+  - membership_pauses / membership_cancellations tables were NOT built; the lifecycle columns
+    on `MEMBERSHIPS_MEMBERSHIPS` carry the same state
+  - membership_discounts table — MOVED to P3-04b (built there, not in P1-03)
 - **API changes**:
   - POST /v1/memberships/{id}/pause
   - POST /v1/memberships/{id}/resume
   - POST /v1/memberships/{id}/cancel
-  - POST /v1/memberships/{id}/extend
-  - POST /v1/memberships/{id}/transfer
+  - POST /v1/memberships/{id}/extend — BUILT (P1-03; `membership:extend`)
+  - POST /v1/memberships/{id}/transfer — BUILT (P1-03; `membership:transfer`)
   - POST /v1/memberships/{id}/discount
+- **Status**: extend and transfer built (2026-10-18) — service methods, DTOs, routes, a
+  `ProvisionMembershipExtendTransferPermission` migration for the two new authorities,
+  `MembershipExtended.v1`, unit/integration coverage and `membership` api-gate checks. The
+  pause/resume/freeze/cancel state machine is unchanged; the pre-existing eight `membership:*`
+  permissions are still seeded only by `bootstrap-dev.ts` (out of scope here).
 - **Frontend changes**: None
 - **Worker changes**:
   - Membership expiry checker (to update statuses)

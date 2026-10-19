@@ -65,6 +65,27 @@ export interface MembershipTransferredPayload {
   transferDate: string;
 }
 
+/**
+ * `MembershipExtended.v1`
+ *
+ * Emitted when an operator extends (or shortens) a membership's end date by a
+ * signed number of days. The membership stores dates, not instants, so
+ * `previousEndDate` and `newEndDate` are `YYYY-MM-DD` strings.
+ */
+export interface MembershipExtendedPayload {
+  membershipId: string;
+  memberId: string;
+  /** End date before the change (YYYY-MM-DD). */
+  previousEndDate: string;
+  /** End date after the change (YYYY-MM-DD). */
+  newEndDate: string;
+  /** Signed day delta that was applied. */
+  days: number;
+  reason: string;
+  /** Staff user id, or null when the caller could not be resolved. */
+  extendedBy: string | null;
+}
+
 export interface MembershipFreezeStartedPayload {
   membershipId: string;
   freezeStartDate: string;
@@ -90,6 +111,7 @@ export type MembershipResumedEvent = EventEnvelope<MembershipResumedPayload>;
 export type MembershipCancelledEvent = EventEnvelope<MembershipCancelledPayload>;
 export type MembershipExpiredEvent = EventEnvelope<MembershipExpiredPayload>;
 export type MembershipTransferredEvent = EventEnvelope<MembershipTransferredPayload>;
+export type MembershipExtendedEvent = EventEnvelope<MembershipExtendedPayload>;
 export type MembershipFreezeStartedEvent = EventEnvelope<MembershipFreezeStartedPayload>;
 export type MembershipFreezeEndedEvent = EventEnvelope<MembershipFreezeEndedPayload>;
 
@@ -102,6 +124,7 @@ export type MembershipEvent =
   | MembershipCancelledEvent
   | MembershipExpiredEvent
   | MembershipTransferredEvent
+  | MembershipExtendedEvent
   | MembershipFreezeStartedEvent
   | MembershipFreezeEndedEvent;
 
@@ -114,6 +137,7 @@ export const EVENT_TYPES = {
   MEMBERSHIP_CANCELLED: 'MembershipCancelled',
   MEMBERSHIP_EXPIRED: 'MembershipExpired',
   MEMBERSHIP_TRANSFERRED: 'MembershipTransferred',
+  MEMBERSHIP_EXTENDED: 'MembershipExtended',
   MEMBERSHIP_FREEZE_STARTED: 'MembershipFreezeStarted',
   MEMBERSHIP_FREEZE_ENDED: 'MembershipFreezeEnded',
 } as const;
