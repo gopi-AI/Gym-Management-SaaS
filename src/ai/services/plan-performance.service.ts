@@ -5,7 +5,8 @@ import { TenantContextService } from '../../shared/tenant/tenant-context.service
 import { Membership } from '../../memberships/entities/membership.entity';
 import { MembershipPlan } from '../../memberships/entities/membership-plan.entity';
 import { MembershipHistory } from '../../memberships/entities/membership-history.entity';
-import { TenantSettings } from '../../tenancy/entities/tenant-settings.entity';
+import { Branch } from '../../tenancy/entities/branch.entity';
+import { BranchSettingsService } from '../../tenancy/services/branch-settings.service';
 import { AiService, AI_REQUEST_TYPE_PLAN_PERFORMANCE } from './ai.service';
 import {
   PlanPerformancePeriodInfo,
@@ -65,8 +66,7 @@ export class PlanPerformanceService {
     private readonly planRepository: Repository<MembershipPlan>,
     @InjectRepository(MembershipHistory)
     private readonly historyRepository: Repository<MembershipHistory>,
-    @InjectRepository(TenantSettings)
-    private readonly tenantSettingsRepository: Repository<TenantSettings>,
+    private readonly branchSettingsService: BranchSettingsService,
   ) {}
 
   async analyze(
@@ -171,17 +171,15 @@ export class PlanPerformanceService {
       overall_churn_rate: ratio(cancelledMemberships, memberships.length),
     };
 
-    const settings = await this.tenantSettingsRepository.findOne({
-      where: { organization_id: authorizedOrgId },
-    });
+    const merged = await this.branchSettingsService.getEffective(authorizedOrgId, branchId);
 
     const payload: PlanPerformanceRequestPayload = {
       period,
       tenant: {
         organization_id: authorizedOrgId,
-        time_zone: settings?.time_zone ?? null,
-        locale: settings?.locale ?? null,
-        currency: settings?.currency ?? null,
+        time_zone: merged.effective.time_zone,
+        locale: merged.effective.locale,
+        currency: merged.effective.currency,
         branch_id: branchId,
         branch_name: branchName,
       },
