@@ -33,6 +33,6 @@ import { TenantContextInterceptor } from '../shared/tenant/tenant-context.interc
       useClass: TenantContextInterceptor,
     },
   ],
-  exports: [TenantContextService, OrganizationsService],
+  exports: [TenantContextService, OrganizationsService, BranchSettingsService],
 })
 export class TenancyModule {}
