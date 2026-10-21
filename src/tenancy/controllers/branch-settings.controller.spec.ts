@@ -1,7 +1,7 @@
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, ValidationPipe } from '@nestjs/common';
 import { Repository } from 'typeorm';
 import { BranchSettingsController } from './branch-settings.controller';
-import { BranchSettingsService } from '../services/branch-settings.service';
+import { BranchSettingsService, UpdateBranchSettingsDto } from '../services/branch-settings.service';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { AuthenticatedUser } from '../../shared/auth/current-user.decorator';
 import { Branch } from '../entities/branch.entity';
@@ -39,12 +39,19 @@ const ORG_SETTINGS = {
 };
 
 type BranchSettingsRow = Partial<BranchSettings> & {
+  id?: string;
   branch_id: string;
   organization_id: string;
 };
 
 function build(branchRow: BranchSettingsRow | null) {
-  let stored: BranchSettingsRow | null = branchRow;
+  // Use a Map to track rows by (branch_id, organization_id) so the fake
+  // distinguishes INSERT (no id) from UPDATE (id matches existing row).
+  const rows = new Map<string, BranchSettingsRow>();
+  if (branchRow) {
+    const key = `${branchRow.branch_id}:${branchRow.organization_id}`;
+    rows.set(key, { ...branchRow, id: branchRow.id ?? 'existing-id' });
+  }
 
   const tenantSettingsRepository = {
     findOne: jest.fn(
@@ -62,16 +69,24 @@ function build(branchRow: BranchSettingsRow | null) {
       }: {
         where: { branch_id: string; organization_id: string };
       }) => {
-        if (!stored) return null;
-        return where.branch_id === stored.branch_id &&
-          where.organization_id === stored.organization_id
-          ? stored
-          : null;
+        const key = `${where.branch_id}:${where.organization_id}`;
+        return rows.get(key) ?? null;
       },
     ),
     save: jest.fn(async (row: BranchSettingsRow) => {
-      stored = { ...row };
-      return stored;
+      const key = `${row.branch_id}:${row.organization_id}`;
+      const existing = rows.get(key);
+      if (existing && row.id && row.id === existing.id) {
+        // UPDATE: same id → overwrite
+        const updated = { ...existing, ...row };
+        rows.set(key, updated);
+        return updated;
+      }
+      // INSERT: new row (even if row exists but id doesn't match or is missing)
+      // This mimics TypeORM behavior: save() without id always inserts
+      const inserted = { ...row, id: row.id ?? `new-id-${Date.now()}` };
+      rows.set(key, inserted);
+      return inserted;
     }),
   } as unknown as Repository<BranchSettings>;
 
@@ -116,6 +131,8 @@ function build(branchRow: BranchSettingsRow | null) {
     findBranchSettings: branchSettingsRepository.findOne as jest.Mock,
     findBranch: branchRepository.findOne as jest.Mock,
     saveHistory: historyRepository.save as jest.Mock,
+    // Expose rows map for assertions on row count
+    getRows: () => rows,
   };
 }
 
@@ -207,5 +224,95 @@ describe('BranchSettingsController PATCH /v1/branches/:id/settings ownership', (
       where: { id: OTHER_BRANCH_ID, organization_id: ORG_ID, is_active: true },
     });
     expect(saveHistory).not.toHaveBeenCalled();
+  });
+});
+
+describe('BranchSettingsController PATCH /v1/branches/:id/settings upsert semantics', () => {
+  const user = { userId: 'user-1' } as AuthenticatedUser;
+
+  it('two sequential PATCH calls to the same branch produce exactly one row (update, not insert)', async () => {
+    const { controller, getRows } = build(null);
+
+    // First PATCH - creates the row
+    await controller.updateBranchSettings(BRANCH_ID, { time_zone: 'Asia/Tokyo' }, user);
+    // Second PATCH - should update the same row, not insert a new one
+    await controller.updateBranchSettings(BRANCH_ID, { locale: 'ja-JP' }, user);
+
+    const rows = getRows();
+    expect(rows.size).toBe(1);
+    const row = rows.get(`${BRANCH_ID}:${ORG_ID}`);
+    expect(row).toBeDefined();
+    expect(row?.time_zone).toBe('Asia/Tokyo');
+    expect(row?.locale).toBe('ja-JP');
+    expect(row?.currency).toBeUndefined();
+  });
+});
+
+describe('ValidationPipe integration for UpdateBranchSettingsDto (Fix 1)', () => {
+  it('preserves decorated DTO properties through ValidationPipe with whitelist: true', async () => {
+    const pipe = new ValidationPipe({ whitelist: true, transform: true });
+    const result = await pipe.transform(
+      { time_zone: 'Asia/Tokyo' },
+      { type: 'body', metatype: UpdateBranchSettingsDto },
+    );
+    expect(result.time_zone).toBe('Asia/Tokyo');
+    expect(result.locale).toBeUndefined();
+    expect(result.currency).toBeUndefined();
+  });
+
+  it('allows explicit null to clear an override', async () => {
+    const pipe = new ValidationPipe({ whitelist: true, transform: true });
+    const result = await pipe.transform(
+      { time_zone: null, locale: 'en-US' },
+      { type: 'body', metatype: UpdateBranchSettingsDto },
+    );
+    expect(result.time_zone).toBeNull();
+    expect(result.locale).toBe('en-US');
+  });
+
+  it('strips unknown properties', async () => {
+    const pipe = new ValidationPipe({ whitelist: true, transform: true });
+    const result = await pipe.transform(
+      { time_zone: 'Asia/Tokyo', unknown_field: 'should be stripped' },
+      { type: 'body', metatype: UpdateBranchSettingsDto },
+    );
+    expect(result.time_zone).toBe('Asia/Tokyo');
+    expect((result as Record<string, unknown>).unknown_field).toBeUndefined();
+  });
+});
+
+describe('BranchSettingsService getEffective overrides flags (Fix 3)', () => {
+  it('reports overrides: true only for non-null fields when branch row has explicit nulls', async () => {
+    const { branchSettingsService } = build({
+      branch_id: BRANCH_ID,
+      organization_id: ORG_ID,
+      time_zone: 'Asia/Tokyo',
+      locale: null,
+      currency: null,
+    });
+
+    const result = await branchSettingsService.getEffective(ORG_ID, BRANCH_ID);
+
+    expect(result.overrides).toEqual({
+      time_zone: true,
+      locale: false,
+      currency: false,
+    });
+    // Effective values should still merge correctly
+    expect(result.effective.time_zone).toBe('Asia/Tokyo');
+    expect(result.effective.locale).toBe('en-US'); // from org settings
+    expect(result.effective.currency).toBe('USD'); // from org settings
+  });
+
+  it('reports all overrides false when branch row does not exist', async () => {
+    const { branchSettingsService } = build(null);
+
+    const result = await branchSettingsService.getEffective(ORG_ID, BRANCH_ID);
+
+    expect(result.overrides).toEqual({
+      time_zone: false,
+      locale: false,
+      currency: false,
+    });
   });
 });

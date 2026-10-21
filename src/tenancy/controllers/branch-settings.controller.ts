@@ -8,7 +8,8 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { BranchSettingsService, EffectiveSettings, UpdateBranchSettingsDto } from '../services/branch-settings.service';
+import { BranchSettingsService, EffectiveSettings } from '../services/branch-settings.service';
+import { UpdateBranchSettingsDto } from '../dto/update-branch-settings.dto';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { RequirePermissions } from '../../shared/auth/permissions.guard';
 import { CurrentUser, AuthenticatedUser } from '../../shared/auth/current-user.decorator';
