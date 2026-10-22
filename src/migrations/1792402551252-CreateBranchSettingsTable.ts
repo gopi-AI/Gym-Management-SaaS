@@ -29,7 +29,7 @@ export class CreateBranchSettingsTable1792402551252 implements MigrationInterfac
     )`);
 
     await queryRunner.query(
-      `CREATE INDEX "IDX_branch_settings_branch_org"
+      `CREATE UNIQUE INDEX "IDX_branch_settings_branch_org"
        ON "TENANCY_BRANCH_SETTINGS" ("branch_id", "organization_id")`,
     );
   }
