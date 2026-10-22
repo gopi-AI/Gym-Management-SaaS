@@ -29,6 +29,7 @@ import { DataSource } from 'typeorm';
 import { ValidationPipe } from '@nestjs/common';
 import { BranchSettingsService } from './branch-settings.service';
 import { BranchSettings } from '../entities/branch-settings.entity';
+import { BranchSettingsHistory } from '../entities/branch-settings-history.entity';
 import { Branch } from '../entities/branch.entity';
 import { TenantSettings } from '../entities/tenant-settings.entity';
 import { Organization } from '../entities/organization.entity';
@@ -51,7 +52,7 @@ describeIntegration('BranchSettingsService upsert semantics (real DB)', () => {
     service = new BranchSettingsService(
       ds.getRepository(Branch),
       ds.getRepository(BranchSettings),
-      ds.getRepository(require('../entities/branch-settings-history.entity').BranchSettingsHistory),
+      ds.getRepository(BranchSettingsHistory),
       ds.getRepository(TenantSettings),
     );
 
@@ -62,13 +63,13 @@ describeIntegration('BranchSettingsService upsert semantics (real DB)', () => {
     otherBranchId = randomUUID();
 
     await ds.getRepository(Organization).save([
-      { id: orgId, name: 'Test Org A', slug: 'test-org-a', is_active: true },
-      { id: otherOrgId, name: 'Test Org B', slug: 'test-org-b', is_active: true },
+      { id: orgId, name: 'Test Org A', timezone: 'UTC', locale: 'en-US', currency: 'USD', is_active: true },
+      { id: otherOrgId, name: 'Test Org B', timezone: 'UTC', locale: 'en-US', currency: 'USD', is_active: true },
     ]);
 
     await ds.getRepository(Branch).save([
-      { id: branchId, organization_id: orgId, name: 'Branch A', is_active: true },
-      { id: otherBranchId, organization_id: otherOrgId, name: 'Branch B', is_active: true },
+      { id: branchId, organization_id: orgId, name: 'Branch A', address: '123 Test St', phone: '555-0001', is_active: true },
+      { id: otherBranchId, organization_id: otherOrgId, name: 'Branch B', address: '456 Test Ave', phone: '555-0002', is_active: true },
     ]);
 
     // Set org-level tenant settings for fallback
@@ -101,11 +102,19 @@ describeIntegration('BranchSettingsService upsert semantics (real DB)', () => {
     }
   });
 
+  beforeEach(async () => {
+    // Clean branch settings between tests to ensure isolation
+    await ds.getRepository(BranchSettings).delete({ organization_id: orgId });
+    await ds.getRepository(BranchSettings).delete({ organization_id: otherOrgId });
+    await ds.getRepository(BranchSettingsHistory).delete({ organization_id: orgId });
+    await ds.getRepository(BranchSettingsHistory).delete({ organization_id: otherOrgId });
+  });
+
   it('two sequential PATCH calls to the same branch produce exactly one row (update, not insert)', async () => {
     // First PATCH - creates the row
-    await service.update(orgId, branchId, { time_zone: 'Asia/Tokyo' }, 'user-1');
+    await service.update(orgId, branchId, { time_zone: 'Asia/Tokyo' }, randomUUID());
     // Second PATCH - should update the same row, not insert a new one
-    await service.update(orgId, branchId, { locale: 'ja-JP' }, 'user-1');
+    await service.update(orgId, branchId, { locale: 'ja-JP' }, randomUUID());
 
     const rows = await ds.getRepository(BranchSettings).find({
       where: { branch_id: branchId, organization_id: orgId },
@@ -122,11 +131,13 @@ describeIntegration('BranchSettingsService upsert semantics (real DB)', () => {
       id: anotherBranchId,
       organization_id: orgId,
       name: 'Branch A2',
+      address: '789 Test Blvd',
+      phone: '555-0003',
       is_active: true,
     });
 
-    await service.update(orgId, branchId, { time_zone: 'Asia/Tokyo' }, 'user-1');
-    await service.update(orgId, anotherBranchId, { time_zone: 'Europe/London' }, 'user-1');
+    await service.update(orgId, branchId, { time_zone: 'Asia/Tokyo' }, randomUUID());
+    await service.update(orgId, anotherBranchId, { time_zone: 'Europe/London' }, randomUUID());
 
     const rows = await ds.getRepository(BranchSettings).find({
       where: { organization_id: orgId },
@@ -137,8 +148,8 @@ describeIntegration('BranchSettingsService upsert semantics (real DB)', () => {
   });
 
   it('PATCH to branch in different org produces separate row', async () => {
-    await service.update(orgId, branchId, { time_zone: 'Asia/Tokyo' }, 'user-1');
-    await service.update(otherOrgId, otherBranchId, { time_zone: 'Europe/Paris' }, 'user-2');
+    await service.update(orgId, branchId, { time_zone: 'Asia/Tokyo' }, randomUUID());
+    await service.update(otherOrgId, otherBranchId, { time_zone: 'Europe/Paris' }, randomUUID());
 
     const orgARows = await ds.getRepository(BranchSettings).find({
       where: { organization_id: orgId },
@@ -154,13 +165,13 @@ describeIntegration('BranchSettingsService upsert semantics (real DB)', () => {
 
   it('explicit null clears override back to inherited value', async () => {
     // First set an override
-    await service.update(orgId, branchId, { time_zone: 'Asia/Tokyo' }, 'user-1');
+    await service.update(orgId, branchId, { time_zone: 'Asia/Tokyo' }, randomUUID());
     let effective = await service.getEffective(orgId, branchId);
     expect(effective.effective.time_zone).toBe('Asia/Tokyo');
     expect(effective.overrides.time_zone).toBe(true);
 
     // Then clear it with explicit null
-    await service.update(orgId, branchId, { time_zone: null }, 'user-1');
+    await service.update(orgId, branchId, { time_zone: null }, randomUUID());
     effective = await service.getEffective(orgId, branchId);
     expect(effective.effective.time_zone).toBe('UTC'); // falls back to org setting
     expect(effective.overrides.time_zone).toBe(false);
