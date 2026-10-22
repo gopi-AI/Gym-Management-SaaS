@@ -6,7 +6,7 @@ import { Member } from '../../members/entities/member.entity';
 import { Membership } from '../../memberships/entities/membership.entity';
 import { MembershipPlan } from '../../memberships/entities/membership-plan.entity';
 import { Branch } from '../../tenancy/entities/branch.entity';
-import { TenantSettings } from '../../tenancy/entities/tenant-settings.entity';
+import { BranchSettingsService } from '../../tenancy/services/branch-settings.service';
 import { AiService, AI_REQUEST_TYPE_RETENTION } from './ai.service';
 import {
   RetentionAnalysisRequestDto,
@@ -53,8 +53,7 @@ export class RetentionService {
     private readonly planRepository: Repository<MembershipPlan>,
     @InjectRepository(Branch)
     private readonly branchRepository: Repository<Branch>,
-    @InjectRepository(TenantSettings)
-    private readonly tenantSettingsRepository: Repository<TenantSettings>,
+    private readonly branchSettingsService: BranchSettingsService,
   ) {}
 
   async analyze(
@@ -134,17 +133,15 @@ export class RetentionService {
       };
     }
 
-    const settings = await this.tenantSettingsRepository.findOne({
-      where: { organization_id: authorizedOrgId },
-    });
+    const merged = await this.branchSettingsService.getEffective(authorizedOrgId, branchId);
 
     const payload: RetentionAnalysisRequestPayload = {
       period,
       tenant: {
         organization_id: authorizedOrgId,
-        time_zone: settings?.time_zone ?? null,
-        locale: settings?.locale ?? null,
-        currency: settings?.currency ?? null,
+        time_zone: merged.effective.time_zone,
+        locale: merged.effective.locale,
+        currency: merged.effective.currency,
         branch_id: branchId,
         branch_name: branchName,
       },

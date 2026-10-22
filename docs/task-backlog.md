@@ -288,6 +288,12 @@ This document contains the implementation tasks broken down by phase, with depen
   - Inheritance (org -> branch override)
   - Setting change auditing
 - **Acceptance criteria**:
+  - Branch settings configurable
+  - Settings properly inherited/overridden
+  - Changes audited
+  - Default values provided
+- **Risks**: Configuration drift, inconsistent settings
+
 ## Phase 2: Member 360
 
 ### P2-01: Member 360 Header API

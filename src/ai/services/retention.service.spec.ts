@@ -7,6 +7,7 @@ import { Membership } from '../../memberships/entities/membership.entity';
 import { MembershipPlan } from '../../memberships/entities/membership-plan.entity';
 import { Branch } from '../../tenancy/entities/branch.entity';
 import { TenantSettings } from '../../tenancy/entities/tenant-settings.entity';
+import { BranchSettingsService } from '../../tenancy/services/branch-settings.service';
 import { RetentionService } from './retention.service';
 import { AiExecutionRequest, AiService } from './ai.service';
 import { RetentionAnalysisRequestDto } from '../dto/retention-request.dto';
@@ -80,6 +81,7 @@ describe('RetentionService', () => {
   let planRepository: Record<string, jest.Mock>;
   let branchRepository: Record<string, jest.Mock>;
   let tenantSettingsRepository: Record<string, jest.Mock>;
+  let branchSettingsService: Record<string, jest.Mock>;
 
   const executeArgs = () =>
     aiService.execute.mock.calls[0][0] as AiExecutionRequest<ValidatedRetentionModelOutput>;
@@ -105,6 +107,14 @@ describe('RetentionService', () => {
         currency: 'USD',
       }),
     };
+    // Branch-level settings inherit from the org TenantSettings when the
+    // branch has no override, so the effective values match the org settings.
+    branchSettingsService = {
+      getEffective: jest.fn().mockResolvedValue({
+        effective: { time_zone: 'UTC', locale: 'en-US', currency: 'USD' },
+        overrides: { time_zone: false, locale: false, currency: false },
+      }),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -116,6 +126,7 @@ describe('RetentionService', () => {
         { provide: getRepositoryToken(MembershipPlan), useValue: planRepository },
         { provide: getRepositoryToken(Branch), useValue: branchRepository },
         { provide: getRepositoryToken(TenantSettings), useValue: tenantSettingsRepository },
+        { provide: BranchSettingsService, useValue: branchSettingsService },
       ],
     }).compile();
 
@@ -158,6 +169,9 @@ describe('RetentionService', () => {
       await analyze({ branch_id: BRANCH_ID });
 
       expect(tenantContext.requireBranchAccess).toHaveBeenCalledWith(ORG_ID, BRANCH_ID);
+      // Branch settings resolve against the authorized organization, never a
+      // client-supplied organization id.
+      expect(branchSettingsService.getEffective).toHaveBeenCalledWith(ORG_ID, BRANCH_ID);
       expect(membershipRepository.find).toHaveBeenCalledWith({
         where: { organization_id: ORG_ID, branch_id: BRANCH_ID },
         order: { created_at: 'DESC' },
@@ -170,6 +184,7 @@ describe('RetentionService', () => {
 
       await expect(analyze({ branch_id: BRANCH_ID })).rejects.toBeInstanceOf(ForbiddenException);
       expect(membershipRepository.find).not.toHaveBeenCalled();
+      expect(branchSettingsService.getEffective).not.toHaveBeenCalled();
       expect(aiService.execute).not.toHaveBeenCalled();
     });
 
@@ -177,6 +192,8 @@ describe('RetentionService', () => {
       await analyze();
 
       expect(tenantContext.requireBranchAccess).not.toHaveBeenCalled();
+      // Org-wide analyses resolve org settings only (branchId = null).
+      expect(branchSettingsService.getEffective).toHaveBeenCalledWith(ORG_ID, null);
     });
 
     it('ignores the organization passed in the client body', async () => {
