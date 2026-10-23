@@ -5,17 +5,8 @@ import { Branch } from '../entities/branch.entity';
 import { TenantSettings } from '../entities/tenant-settings.entity';
 import { BranchSettings } from '../entities/branch-settings.entity';
 import { BranchSettingsHistory } from '../entities/branch-settings-history.entity';
-
-export class UpdateBranchSettingsDto {
-  /**
-   * All three fields are optional (PATCH semantics):
-   * - omitted → override is cleared/ignored (left untouched, don't null the row)
-   * - explicitly `null` → clear this override back to inherited from org
-   */
-  time_zone?: string | null;
-  locale?: string | null;
-  currency?: string | null;
-}
+import { UpdateBranchSettingsDto } from '../dto/update-branch-settings.dto';
+export { UpdateBranchSettingsDto } from '../dto/update-branch-settings.dto';
 
 export interface EffectiveSettings {
   time_zone: string | null;
@@ -79,9 +70,9 @@ export class BranchSettingsService {
     };
 
     const overrides = {
-      time_zone: branchRow?.time_zone !== undefined,
-      locale: branchRow?.locale !== undefined,
-      currency: branchRow?.currency !== undefined,
+      time_zone: branchRow?.time_zone != null,
+      locale: branchRow?.locale != null,
+      currency: branchRow?.currency != null,
     };
 
     return { effective, overrides };
@@ -117,7 +108,8 @@ export class BranchSettingsService {
     if (dto.currency !== undefined) partial.currency = dto.currency;
 
     const updated = await this.branchSettingsRepository.save({
-      // A brand-new row (no previous override) is created here on first call.
+      // Carry the previous row's id so TypeORM updates instead of inserting.
+      ...(previous ? { id: previous.id } : {}),
       branch_id: branchId,
       organization_id: orgId,
       ...partial,

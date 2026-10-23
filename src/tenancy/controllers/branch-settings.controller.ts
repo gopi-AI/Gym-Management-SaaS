@@ -8,7 +8,8 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { BranchSettingsService, EffectiveSettings, UpdateBranchSettingsDto } from '../services/branch-settings.service';
+import { BranchSettingsService, EffectiveSettings } from '../services/branch-settings.service';
+import { UpdateBranchSettingsDto } from '../dto/update-branch-settings.dto';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { RequirePermissions } from '../../shared/auth/permissions.guard';
 import { CurrentUser, AuthenticatedUser } from '../../shared/auth/current-user.decorator';
@@ -43,9 +44,13 @@ export class BranchSettingsController {
     const authorizedOrgId = await this.tenantContextService.requireOrganizationAccess(
       branchId,
     );
-    // org-wide reports (branchId null) have no branch override, so pass null
-    // and let getEffective fall through to the org tenant settings.
-    const merged = await this.branchSettingsService.getEffective(authorizedOrgId, null);
+    // Read the REQUESTED branch's view: getEffective merges the branch override
+    // over the org settings. Passing null here would silently skip the branch
+    // lookup and return the org-level values for every branch.
+    const merged = await this.branchSettingsService.getEffective(
+      authorizedOrgId,
+      branchId,
+    );
     return {
       effective: merged.effective,
       overrides: merged.overrides,
