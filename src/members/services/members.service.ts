@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
-import { Repository, Like, DataSource } from 'typeorm';
+import { Repository, ILike, DataSource } from 'typeorm';
 import { Member } from '../entities/member.entity';
 import { MemberProfile } from '../entities/member-profile.entity';
 import { OutboxEntity } from '../../shared/outbox/outbox.entity';
@@ -52,17 +52,43 @@ export class MembersService {
     }
 
     if (query.search) {
-      where.first_name = Like(`%${query.search}%`);
+      const searchPattern = `%${query.search}%`;
+      const searchConditions = [
+        { ...where, first_name: ILike(searchPattern) },
+        { ...where, last_name: ILike(searchPattern) },
+        { ...where, email: ILike(searchPattern) },
+        { ...where, phone: ILike(searchPattern) },
+      ];
+      const [data, total] = await this.memberRepository.findAndCount({
+        where: searchConditions,
+        order: this.buildOrder(query),
+        take: limit,
+        skip,
+      });
+
+      return { data, total, page, limit };
     }
 
     const [data, total] = await this.memberRepository.findAndCount({
       where,
-      order: { created_at: 'DESC' },
+      order: this.buildOrder(query),
       take: limit,
       skip,
     });
 
     return { data, total, page, limit };
+  }
+
+  private buildOrder(query: ListMembersDto): Record<string, 'ASC' | 'DESC'> {
+    // Omitting both sort_by and sort_dir preserves the current default:
+    // created_at DESC.
+    if (!query.sort_by && !query.sort_dir) {
+      return { created_at: 'DESC' };
+    }
+
+    const sortBy = query.sort_by || 'created_at';
+    const sortDir = (query.sort_dir || 'asc') === 'desc' ? 'DESC' : 'ASC';
+    return { [sortBy]: sortDir };
   }
 
   async findOne(id: string): Promise<Member> {

@@ -1,4 +1,4 @@
-import { IsOptional, IsInt, Min, IsString } from 'class-validator';
+import { IsOptional, IsInt, Min, IsString, IsIn } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class ListMembersDto {
@@ -21,4 +21,14 @@ export class ListMembersDto {
   @IsString()
   @IsOptional()
   branch_id?: string;
+
+  @IsString()
+  @IsOptional()
+  @IsIn(['created_at', 'first_name', 'last_name', 'local_id'])
+  sort_by?: string;
+
+  @IsString()
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  sort_dir?: string;
 }

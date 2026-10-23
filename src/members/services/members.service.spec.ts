@@ -193,6 +193,100 @@ describe('MembersService', () => {
       expect(result.page).toBe(1);
       expect(result.limit).toBe(20);
     });
+
+    it('searches first_name, last_name, email and phone with ILike (case-insensitive)', async () => {
+      mockMemberRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.findAll({ search: 'john' });
+
+      const whereArg = mockMemberRepo.findAndCount.mock.calls[0][0].where as any[];
+
+      // Exactly four OR conditions, one per searchable field.
+      expect(whereArg).toHaveLength(4);
+
+      const searchableFields = ['first_name', 'last_name', 'email', 'phone'];
+      for (const field of searchableFields) {
+        const branch = whereArg.find((cond) => Object.prototype.hasOwnProperty.call(cond, field));
+        // `branch` must be defined for every searchable field; a missing field
+        // means that field was dropped from the search OR conditions.
+        expect(branch).toBeDefined();
+        // Each field must use ILike (case-insensitive), not Like.
+        expect(branch[field]).toMatchObject({ _type: 'ilike', _value: '%john%' });
+        // Every OR condition must preserve org and active-member scoping.
+        expect(branch.organization_id).toBe(orgId);
+        expect(branch.is_active).toBe(true);
+      }
+
+      // Order is applied on the search path too (defaults to created_at DESC).
+      expect(mockMemberRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ order: { created_at: 'DESC' } }),
+      );
+    });
+
+    it('applies branch_id scope to every search OR condition when provided', async () => {
+      mockMemberRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.findAll({ search: 'john', branch_id: 'branch-1' });
+
+      const whereArg = mockMemberRepo.findAndCount.mock.calls[0][0].where as any[];
+
+      expect(whereArg).toHaveLength(4);
+      for (const branch of whereArg) {
+        expect(branch.organization_id).toBe(orgId);
+        expect(branch.is_active).toBe(true);
+        expect(branch.branch_id).toBe('branch-1');
+      }
+    });
+
+    it('defaults to created_at DESC when sort_by and sort_dir are both omitted', async () => {
+      mockMemberRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.findAll({});
+
+      expect(mockMemberRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ order: { created_at: 'DESC' } }),
+      );
+    });
+
+    it('sorts by sort_by and sort_dir when both are provided', async () => {
+      mockMemberRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.findAll({ sort_by: 'first_name', sort_dir: 'asc' });
+
+      expect(mockMemberRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ order: { first_name: 'ASC' } }),
+      );
+    });
+
+    it('sorts descending when sort_dir is desc', async () => {
+      mockMemberRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.findAll({ sort_by: 'last_name', sort_dir: 'desc' });
+
+      expect(mockMemberRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ order: { last_name: 'DESC' } }),
+      );
+    });
+
+    it('defaults sort_dir to asc when only sort_by is provided', async () => {
+      mockMemberRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.findAll({ sort_by: 'local_id' });
+
+      expect(mockMemberRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ order: { local_id: 'ASC' } }),
+      );
+    });
+
+    it('uses created_at with the provided sort_dir when only sort_dir is provided', async () => {
+      mockMemberRepo.findAndCount.mockResolvedValue([[], 0]);
+
+      await service.findAll({ sort_dir: 'asc' });
+
+      expect(mockMemberRepo.findAndCount).toHaveBeenCalledWith(
+        expect.objectContaining({ order: { created_at: 'ASC' } }),
+      );
+    });
   });
 
   describe('findOne', () => {
