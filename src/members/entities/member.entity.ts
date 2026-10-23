@@ -7,9 +7,9 @@ import { MemberDocument } from './member-document.entity';
 
 @Entity('MEMBERS_MEMBERS')
 @Index(['organization_id', 'local_id'], { unique: true })
-@Index(['organization_id'])
-@Index(['organization_id', 'email'])
-@Index(['organization_id', 'phone'])
+@Index('IDX_members_members_organization_id', ['organization_id'])
+@Index('IDX_members_members_organization_id_email', ['organization_id', 'email'])
+@Index('IDX_members_members_organization_id_phone', ['organization_id', 'phone'])
 export class Member {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
