@@ -281,10 +281,10 @@ describe('MembersService', () => {
     it('uses created_at with the provided sort_dir when only sort_dir is provided', async () => {
       mockMemberRepo.findAndCount.mockResolvedValue([[], 0]);
 
-      await service.findAll({ sort_dir: 'desc' });
+      await service.findAll({ sort_dir: 'asc' });
 
       expect(mockMemberRepo.findAndCount).toHaveBeenCalledWith(
-        expect.objectContaining({ order: { created_at: 'DESC' } }),
+        expect.objectContaining({ order: { created_at: 'ASC' } }),
       );
     });
   });
