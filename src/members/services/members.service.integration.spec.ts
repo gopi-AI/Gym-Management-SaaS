@@ -53,10 +53,16 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
   const FORBIDDEN_DATABASES = new Set(['gym_management']);
 
   // Only an explicitly created scratch/test database may be targeted. This is an
-  // allowlist, not a blocklist: a name that does not carry a scratch/test marker
-  // is refused before any connection is opened, so a typo cannot reach a real
-  // database (e.g. `gym_management`, `postgres`, or a developer's own database).
-  const ALLOWED_DATABASE_PATTERN = /^gym_[a-z0-9_]*(?:scratch|gate|test|verify)[a-z0-9_]*$/i;
+  // allowlist, not a blocklist: a name whose `_`-separated segments carry no
+  // scratch marker is refused before any connection is opened, so a typo cannot
+  // reach a real database (`gym_management`, `postgres`, a developer's own
+  // database). Every scratch name this repository actually uses still passes:
+  // `gym_scratch_*`, `gym_gate_*` (api:gate), `gym_ci_<run>_<attempt>` (the CI
+  // integration job) and the marker-in-the-middle forms such as
+  // `gym_branch_settings_scratch`. Markers must be whole segments, so the `ci`
+  // inside `specific` does not qualify a name on its own.
+  const ALLOWED_DATABASE_PATTERN =
+    /^gym_(?:[a-z0-9]+_)*(?:scratch|gate|test|verify|ci)(?:_[a-z0-9]+)*$/i;
 
   function requireDbConfig(): void {
     const missing = REQUIRED_DB_ENV.filter((k) => !process.env[k]);
@@ -80,7 +86,7 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
       throw new Error(
         `[members.service.integration.spec] Refusing to run integration tests against database '${database}': ` +
           `it does not match the scratch/test allowlist ${ALLOWED_DATABASE_PATTERN}. ` +
-          'Create a dedicated scratch database (e.g. gym_scratch_p107_tier2 or gym_gate_<runid>) and point DB_DATABASE at it.',
+          'Create a dedicated scratch database (e.g. gym_scratch_p107_tier2, gym_gate_<runid> or gym_ci_<run>_<attempt>) and point DB_DATABASE at it.',
       );
     }
   }
