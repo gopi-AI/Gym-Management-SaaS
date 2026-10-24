@@ -6,11 +6,11 @@ Per Tier 2 policy (CLAUDE.md:36–40), mutation proofs are capped at mutants **e
 
 | # | Mutant Name | File:Line | Surgical Change | Existing Assertion Expected to Kill |
 |---|-------------|-----------|-----------------|-------------------------------------|
-| **M1** | `org-scope-guard` | `members.service.ts:48` | Remove `organization_id: organizationId` from base `where` | Integration: `search scoped to requesting organization only` (cross-org member `mEve` must not appear) |
-| **M2** | `active-only-guard` | `members.service.ts:48` | Remove `is_active: true` from base `where` | Integration: `search scoped to active members only` (inactive `mDan` must not appear) |
-| **M3** | `search-field-first_name` | `members.service.ts:57` | Delete `{ ...where, first_name: ILike(searchPattern) }` from `searchConditions` | Integration: `ILike search on first_name` (case-insensitive match on first_name) |
+| **M1** | `org-scope-guard` | `members.service.ts:48` | Remove `organization_id: organizationId` from base `where` | Integration: `applies org scoping to every OR branch (excludes other tenants)` — cross-org member `mEve` must not appear |
+| **M2** | `active-only-guard` | `members.service.ts:48` | Remove `is_active: true` from base `where` | Integration: `applies is_active scoping to every OR branch (excludes inactive)` — inactive `mDan` must not appear |
+| **M3** | `search-field-first_name` | `members.service.ts:57` | Delete `{ ...where, first_name: ILike(searchPattern) }` from `searchConditions` | Integration: `matches case-insensitively across first_name` — searches the isolated `ZaraUnique` token |
 | **M8** | `sort-default-dir-asc` | `members.service.ts:90` | Change `(query.sort_dir || 'asc')` → `'desc'` | Hermetic: `defaults sort_dir to asc when only sort_by is provided` (expects `ASC`, mutant produces `DESC`) |
-| **M10** | `branch-scope-guard` | `members.service.ts:50–52` | Remove entire `if (query.branch_id) { where.branch_id = query.branch_id; }` block | Integration: `search scoped to branch when branch_id provided` |
+| **M10** | `branch-scope-guard` | `members.service.ts:50–52` | Remove entire `if (query.branch_id) { where.branch_id = query.branch_id; }` block | Integration: `applies branch scoping to every OR branch` |
 
 ---
 
@@ -430,7 +430,8 @@ Per CLAUDE.md:37–41, the following must run and pass:
 5. **Process check** from script file: `ps -ef | grep -E '[j]est|[d]ef15'`
 6. **API gate** ONCE: `npm run api:gate -- --env-path=<main checkout>/.env`
 
-**Expected check count:** State the expected number; any other number is a STOP.
+**Expected check count:** 101. The gate printed `TOTAL pass 101 fail 0 skip 0`; any other
+number is a STOP.
 
 ---
 
@@ -455,13 +456,13 @@ Added in `src/members/controllers/members.controller.spec.ts` (11 tests):
 |------|---------|
 | `rejects invalid sort_by column` | `@IsIn` whitelist on DTO |
 | `rejects invalid sort_by with valid sort_dir` | Combined validation |
-| `accepts valid sort_by values` | 4 allowed columns pass |
+| `accepts valid sort_by values (sort_dir undefined until service applies default)` | 4 allowed columns pass |
 | `rejects invalid sort_dir value` | `@IsIn` whitelist on DTO |
-| `rejects uppercase sort_dir` | Case-sensitive match |
-| `accepts valid sort_dir values` | `asc`/`desc` pass |
+| `rejects uppercase sort_dir (case-sensitive)` | Case-sensitive match |
+| `accepts valid sort_dir values (sort_by undefined until service applies default)` | `asc`/`desc` pass |
 | `accepts valid sort_by and sort_dir together` | Full valid input |
-| `accepts valid sort_by alone` | Service applies `sort_dir` default |
-| `accepts valid sort_dir alone` | Service applies `sort_by` default |
+| `accepts valid sort_by alone (sort_dir undefined until service applies default)` | Service applies `sort_dir` default |
+| `accepts valid sort_dir alone (sort_by undefined until service applies default)` | Service applies `sort_by` default |
 | `strips unknown properties` | `whitelist: true` behavior |
 | `preserves all valid DTO properties` | Full DTO round-trip |
 
