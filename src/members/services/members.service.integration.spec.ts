@@ -27,6 +27,7 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
     mCarol: randomUUID(),
     mDan: randomUUID(), // inactive
     mEve: randomUUID(), // lives in orgB
+    mZara: randomUUID(), // unique first_name for isolated search test
     // Dedicated volume fixture for the index-eligibility EXPLAINs, so the
     // planner's choice between the org-prefixed indexes is driven by the
     // email/phone predicates instead of tie-breaking on a tiny table.
@@ -227,6 +228,21 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
         created_at: day(0),
       }),
     );
+    await memberRepo.save(
+      memberRepo.create({
+        id: ids.mZara,
+        organization_id: ids.organization,
+        branch_id: ids.branchA,
+        global_uuid: randomUUID(),
+        local_id: 5,
+        first_name: 'ZaraUnique',
+        last_name: 'TestLast',
+        email: 'zara.unique@test.com',
+        phone: '+9999999999',
+        is_active: true,
+        created_at: day(4),
+      }),
+    );
 
     // Volume fixture for the index-eligibility tests. `ANALYZE` is required:
     // without column statistics Postgres falls back to default selectivities
@@ -295,9 +311,9 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
 
   describe('findAll search (ILike across first_name/last_name/email/phone)', () => {
     it('matches case-insensitively across first_name', async () => {
-      const { data, total } = await service.findAll({ search: 'ALICE' });
+      const { data, total } = await service.findAll({ search: 'ZARAUNIQUE' });
       expect(total).toBe(1);
-      expect(data[0].id).toBe(ids.mAlice);
+      expect(data[0].id).toBe(ids.mZara);
     });
 
     it('matches case-insensitively across last_name', async () => {
@@ -343,9 +359,9 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
   describe('findAll org / active scoping (non-search branch)', () => {
     it('lists only active members of the authorized organization', async () => {
       const { data, total } = await service.findAll({});
-      expect(total).toBe(3);
+      expect(total).toBe(4);
       expect(new Set(data.map((m) => m.id))).toEqual(
-        new Set([ids.mAlice, ids.mBob, ids.mCarol]),
+        new Set([ids.mAlice, ids.mBob, ids.mCarol, ids.mZara]),
       );
       // Dan (inactive, orgA) and Eve (orgB) are both excluded.
       expect(data.some((m) => m.id === ids.mDan)).toBe(false);
@@ -356,33 +372,35 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
   describe('findAll sort_by / sort_dir', () => {
     it('defaults to created_at DESC when neither sort param is given', async () => {
       const { data } = await service.findAll({});
-      expect(data.map((m) => m.id)).toEqual([ids.mCarol, ids.mBob, ids.mAlice]);
+      expect(data.map((m) => m.id)).toEqual([ids.mZara, ids.mCarol, ids.mBob, ids.mAlice]);
     });
 
     it('sorts by first_name ASC', async () => {
       const { data } = await service.findAll({ sort_by: 'first_name', sort_dir: 'asc' });
-      expect(data.map((m) => m.id)).toEqual([ids.mAlice, ids.mBob, ids.mCarol]);
+      expect(data.map((m) => m.id)).toEqual([ids.mAlice, ids.mBob, ids.mCarol, ids.mZara]);
     });
 
     it('sorts by last_name DESC (Smiths first, Jones last)', async () => {
       const { data } = await service.findAll({ sort_by: 'last_name', sort_dir: 'desc' });
-      expect(data[0].last_name).toBe('Smith');
+      // TestLast > Smith > Jones alphabetically
+      expect(data[0].last_name).toBe('TestLast');
+      expect(data[0].id).toBe(ids.mZara);
       expect(data[data.length - 1].id).toBe(ids.mBob);
     });
 
     it('sorts by local_id ASC', async () => {
       const { data } = await service.findAll({ sort_by: 'local_id', sort_dir: 'asc' });
-      expect(data.map((m) => m.id)).toEqual([ids.mAlice, ids.mBob, ids.mCarol]);
+      expect(data.map((m) => m.id)).toEqual([ids.mAlice, ids.mBob, ids.mCarol, ids.mZara]);
     });
 
     it('sorts by created_at ASC', async () => {
       const { data } = await service.findAll({ sort_by: 'created_at', sort_dir: 'asc' });
-      expect(data.map((m) => m.id)).toEqual([ids.mAlice, ids.mBob, ids.mCarol]);
+      expect(data.map((m) => m.id)).toEqual([ids.mAlice, ids.mBob, ids.mCarol, ids.mZara]);
     });
 
     it('sort_dir defaults to asc when sort_by is given alone', async () => {
       const { data } = await service.findAll({ sort_by: 'first_name' });
-      expect(data.map((m) => m.id)).toEqual([ids.mAlice, ids.mBob, ids.mCarol]);
+      expect(data.map((m) => m.id)).toEqual([ids.mAlice, ids.mBob, ids.mCarol, ids.mZara]);
     });
   });
 
@@ -518,7 +536,7 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
           [ids.organization, true],
         );
         const returnedIds = new Set(rows.map((r: { id: string }) => r.id));
-        expect(returnedIds).toEqual(new Set([ids.mCarol, ids.mBob, ids.mAlice]));
+        expect(returnedIds).toEqual(new Set([ids.mZara, ids.mCarol, ids.mBob, ids.mAlice]));
       } finally {
         await queryRunner.release();
       }
