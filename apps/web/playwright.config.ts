@@ -16,9 +16,10 @@ import { defineConfig } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './tests/e2e',
-  // Root jest ignores apps/web/tests/e2e (see the repository jest.config.js),
-  // so Playwright's conventional *.spec.ts names are safe to use here.
-  testMatch: '**/*.spec.ts',
+  // Root jest uses testMatch: ['**/*.spec.ts'] (repo root jest.config.js).
+  // apps/web uses testMatch: ['**/*.test.ts', '**/*.test.tsx'] (apps/web/jest.config.js).
+  // Neither collects *.e2e.ts, so Playwright can safely use both *.spec.ts and *.e2e.ts.
+  testMatch: ['**/*.spec.ts', '**/*.e2e.ts'],
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,
