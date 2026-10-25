@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import AuthGuard from '@/components/auth/AuthGuard';
 import AppLayout from '@/components/layout/AppLayout';
 import { Card, CardBody } from '@/components/ui/Card';
 import { useBranches, useMembers, useOrganizations } from '@/lib';
@@ -26,7 +27,7 @@ function StatCard({ label, value, hint }: StatCardProps) {
 /**
  * Dashboard overview — quick counters for the key resources.
  */
-export default function DashboardPage() {
+function DashboardContent() {
   const members = useMembers({ page: 1, limit: 1 });
   const branches = useBranches();
   const organizations = useOrganizations();
@@ -84,5 +85,13 @@ export default function DashboardPage() {
         </div>
       </div>
     </AppLayout>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <AuthGuard>
+      <DashboardContent />
+    </AuthGuard>
   );
 }
