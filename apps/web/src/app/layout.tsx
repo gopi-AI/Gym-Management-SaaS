@@ -28,7 +28,7 @@ export default function RootLayout({
       <body className="layout-fluid">
         <Providers>{children}</Providers>
         <script
-          src="https://cdn.jsdelivr.net/npm/@tabler/core@latest/dist/js/tabler.min.js"
+          src="https://cdn.jsdelivr.net/npm/@tabler/core@1.5.1/dist/js/tabler.min.js"
           defer
         />
       </body>
