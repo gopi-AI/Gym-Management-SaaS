@@ -77,11 +77,15 @@ export class DietTabController {
       adherencePct: number;
     }>;
   }> {
-    const start = query.startDate
-      ? new Date(query.startDate)
-      : new Date();
-    start.setDate(start.getDate() - 30);
-    const end = query.endDate ? new Date(query.endDate) : new Date();
+    const now = new Date();
+    let start: Date;
+    if (query.startDate) {
+      start = new Date(query.startDate);
+    } else {
+      start = new Date(now);
+      start.setDate(start.getDate() - 30);
+    }
+    const end = query.endDate ? new Date(query.endDate) : now;
 
     return {
       dietPlans: await this.dietService.findAllAssignments(memberId),
