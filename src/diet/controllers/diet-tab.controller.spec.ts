@@ -104,14 +104,19 @@ describe('DietTabController', () => {
     );
   });
 
-  it('characterises explicit startDate handling: the 30-day default is still applied', async () => {
-    // NOTE (current behaviour, unchanged by this spec-only PR): `getDiet`
-    // applies `start.setDate(start.getDate() - 30)` unconditionally, so a
-    // caller-supplied `startDate` is shifted a further 30 days back instead of
-    // being used verbatim — e.g. `startDate=2026-09-06` yields a window start of
-    // 2026-08-07. This test pins the behaviour as it exists; it is flagged in
-    // the PR description as a likely-unintended window bug for the owner to rule
-    // on rather than silently "fixed" here.
+  it('uses an explicit startDate verbatim (no 30-day shift) with default endDate', async () => {
+    const { service, controller } = buildController();
+
+    await controller.getDiet(memberId, { startDate: '2026-09-06' });
+
+    expect(service.getDailyTotals).toHaveBeenCalledWith(
+      memberId,
+      '2026-09-06',
+      TODAY,
+    );
+  });
+
+  it('uses explicit startDate and endDate verbatim (no 30-day shift)', async () => {
     const { service, controller } = buildController();
 
     await controller.getDiet(memberId, {
@@ -121,7 +126,7 @@ describe('DietTabController', () => {
 
     expect(service.getDailyTotals).toHaveBeenCalledWith(
       memberId,
-      '2026-08-07',
+      '2026-09-06',
       '2026-10-10',
     );
   });
