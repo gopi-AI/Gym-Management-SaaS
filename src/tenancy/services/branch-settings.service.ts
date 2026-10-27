@@ -43,11 +43,34 @@ export class BranchSettingsService {
    * then merge: branch override wins, else org TenantSettings, else null.
    * Returns both the effective values and a per-field override flag so the
    * consumer can render "override" vs "inherited" in a settings UI.
+   *
+   * `branchId === null` is the org-wide path (AI reports pass null to mean
+   * "no single branch"): there is no branch to own, so no branch check runs.
    */
   async getEffective(
     authorizedOrgId: string,
     branchId: string | null,
   ): Promise<MergedBranchSettings> {
+    // Ownership, with the same predicate and the same answer as update() below:
+    // the branch must exist, be active, and belong to the AUTHORIZED
+    // organization. Before this check the org fallback answered 200 for a
+    // branch belonging to another tenant, and for a branch that does not exist,
+    // so GET and PATCH disagreed about which branches a caller may address.
+    if (branchId) {
+      const branch = await this.branchRepository.findOne({
+        where: {
+          id: branchId,
+          organization_id: authorizedOrgId,
+          is_active: true,
+        },
+      });
+      if (!branch) {
+        throw new NotFoundException(
+          'Branch not found or not owned by organization',
+        );
+      }
+    }
+
     // Fallback to the org-wide tenant settings when there is no authorized
     // context (legacy or unauthenticated callers). Strictly org-scoped and
     // never trusts the client-supplied branch/org ids for authorization.

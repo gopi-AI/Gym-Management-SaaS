@@ -26,7 +26,7 @@
  */
 import { randomUUID } from 'crypto';
 import { DataSource } from 'typeorm';
-import { ValidationPipe } from '@nestjs/common';
+import { NotFoundException, ValidationPipe } from '@nestjs/common';
 import { BranchSettingsService } from './branch-settings.service';
 import { BranchSettings } from '../entities/branch-settings.entity';
 import { BranchSettingsHistory } from '../entities/branch-settings-history.entity';
@@ -182,6 +182,72 @@ describeIntegration('BranchSettingsService upsert semantics (real DB)', () => {
     });
     expect(rows).toHaveLength(1);
     expect(rows[0].time_zone).toBeNull();
+  });
+
+  // Tenant isolation, both directions. These run against the real UNIQUE index
+  // and the real `where` clause, which is the only place a dropped
+  // `organization_id` predicate actually shows up.
+  it('refuses a branch owned by another organization in both directions', async () => {
+    // Org B's own override, written through the service, not a fixture.
+    await service.update(
+      otherOrgId,
+      otherBranchId,
+      { time_zone: 'Europe/Paris' },
+      randomUUID(),
+    );
+
+    // Org A reads org B's branch.
+    const read = service.getEffective(orgId, otherBranchId);
+    await expect(read).rejects.toBeInstanceOf(NotFoundException);
+    await expect(read).rejects.toThrow(
+      'Branch not found or not owned by organization',
+    );
+
+    // Org B's row is untouched and still carries its own value.
+    const otherOrgRows = await ds.getRepository(BranchSettings).find({
+      where: { organization_id: otherOrgId },
+    });
+    expect(otherOrgRows).toHaveLength(1);
+    expect(otherOrgRows[0].time_zone).toBe('Europe/Paris');
+
+    // Org B writes org A's branch: refused, and nothing is written.
+    await expect(
+      service.update(
+        otherOrgId,
+        branchId,
+        { time_zone: 'Asia/Tokyo' },
+        randomUUID(),
+      ),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    const orgARows = await ds.getRepository(BranchSettings).find({
+      where: { organization_id: orgId },
+    });
+    expect(orgARows).toHaveLength(0);
+  });
+
+  it('refuses an inactive or unknown branch instead of answering from the org defaults', async () => {
+    const inactiveBranchId = randomUUID();
+    await ds.getRepository(Branch).save({
+      id: inactiveBranchId,
+      organization_id: orgId,
+      name: 'Branch A (closed)',
+      address: '999 Test Rd',
+      phone: '555-0009',
+      is_active: false,
+    });
+
+    await expect(
+      service.getEffective(orgId, inactiveBranchId),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      service.getEffective(orgId, randomUUID()),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    const rows = await ds.getRepository(BranchSettings).find({
+      where: { branch_id: inactiveBranchId },
+    });
+    expect(rows).toHaveLength(0);
   });
 });
 
