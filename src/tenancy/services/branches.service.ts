@@ -26,8 +26,14 @@ export class BranchesService {
    *   1. If an org context was already authorized, use it.
    *   2. Otherwise use the requested org (route/header), which is still
    *      validated against ACTIVE membership before being accepted.
+   *
+   * Public because a route with only a branch id in its path — e.g.
+   * `GET|PATCH /v1/branches/:id/settings` — has no organization segment to read,
+   * and must resolve the AUTHORIZED org the same way `findOne()` does. Sharing
+   * this one implementation is what keeps the two routes from disagreeing about
+   * which organization a caller is acting for.
    */
-  private async resolveAuthorizedOrg(): Promise<string> {
+  async resolveAuthorizedOrg(): Promise<string> {
     const currentOrgId = await this.tenantContextService.getCurrentOrganizationId();
     if (currentOrgId) {
       return currentOrgId;

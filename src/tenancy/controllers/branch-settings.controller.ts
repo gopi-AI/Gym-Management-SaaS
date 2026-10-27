@@ -9,8 +9,8 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { BranchSettingsService, EffectiveSettings } from '../services/branch-settings.service';
+import { BranchesService } from '../services/branches.service';
 import { UpdateBranchSettingsDto } from '../dto/update-branch-settings.dto';
-import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { RequirePermissions } from '../../shared/auth/permissions.guard';
 import { CurrentUser, AuthenticatedUser } from '../../shared/auth/current-user.decorator';
 
@@ -29,8 +29,18 @@ import { CurrentUser, AuthenticatedUser } from '../../shared/auth/current-user.d
 export class BranchSettingsController {
   constructor(
     private readonly branchSettingsService: BranchSettingsService,
-    private readonly tenantContextService: TenantContextService,
+    private readonly branchesService: BranchesService,
   ) {}
+
+  /**
+   * The path carries only a BRANCH id, so the organization cannot come from the
+   * route. Resolve it exactly as `GET /v1/branches/:id` does — authorized
+   * context first, else the requested `X-Organization-Id` validated against
+   * active membership — and never pass the branch id to the org check.
+   */
+  private async resolveAuthorizedOrg(): Promise<string> {
+    return this.branchesService.resolveAuthorizedOrg();
+  }
 
   @Get(':id/settings')
   @HttpCode(HttpStatus.OK)
@@ -41,9 +51,7 @@ export class BranchSettingsController {
     effective: EffectiveSettings;
     overrides: { time_zone: boolean; locale: boolean; currency: boolean };
   }> {
-    const authorizedOrgId = await this.tenantContextService.requireOrganizationAccess(
-      branchId,
-    );
+    const authorizedOrgId = await this.resolveAuthorizedOrg();
     // Read the REQUESTED branch's view: getEffective merges the branch override
     // over the org settings. Passing null here would silently skip the branch
     // lookup and return the org-level values for every branch.
@@ -68,9 +76,7 @@ export class BranchSettingsController {
     effective: EffectiveSettings;
     overrides: { time_zone: boolean; locale: boolean; currency: boolean };
   }> {
-    const authorizedOrgId = await this.tenantContextService.requireOrganizationAccess(
-      branchId,
-    );
+    const authorizedOrgId = await this.resolveAuthorizedOrg();
     // @CurrentUser() is the canonical user source (changed_by nullable uuid).
     // Fall back to null when no user is attached so the audit row still writes.
     const changedBy = user?.userId ?? null;
