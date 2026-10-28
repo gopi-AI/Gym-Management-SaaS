@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -11,6 +12,7 @@ import { DietPlanAssignment } from '../entities/diet-plan-assignment.entity';
 import { NutritionLog } from '../entities/nutrition-log.entity';
 import { CreateDietPlanDto } from '../dto/create-diet-plan.dto';
 import { CreateMealTemplateDto } from '../dto/create-meal-template.dto';
+import { UpdateMealTemplateDto } from '../dto/update-meal-template.dto';
 import { AssignPlanInput } from '../dto/assign-plan.input';
 import { LogMealInput } from '../dto/log-meal.input';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
@@ -36,6 +38,25 @@ import { AssignmentStatus } from '../entities/assignment-status.enum';
  *      at log time and SNAPSHOTTED onto the row (immutable).
  *   5. Aggregation: null macros ARE EXCLUDED from totals, never treated as zero.
  */
+/**
+ * `DIET_MEAL_TEMPLATES` columns that are `NOT NULL` in
+ * `1788965263247-CreateDietTables`, named by the DTO field that writes them.
+ *
+ * `description` is absent on purpose: its column is nullable, so `null` is a
+ * legal "clear the description" PATCH value. Every field listed here must never
+ * receive an explicit `null`, which PostgreSQL would reject with `23502`.
+ */
+const NOT_NULL_TEMPLATE_FIELDS = [
+  'dietPlanId',
+  'name',
+  'mealType',
+  'calories',
+  'proteinG',
+  'carbsG',
+  'fatG',
+  'servingSize',
+] as const;
+
 @Injectable()
 export class DietService {
   constructor(
@@ -157,10 +178,53 @@ export class DietService {
     return template;
   }
 
+  /**
+   * Reject an explicit `null` for a NOT NULL column with 400.
+   *
+   * The global `ValidationPipe` already does this for HTTP callers
+   * (`UpdateMealTemplateDto` uses `@ValidateIf`, not `@IsOptional`), but this
+   * service is the single write path: the REST controller and any future
+   * consumer reach it directly, so the contract is enforced here as well instead
+   * of trusting every caller to have run a pipe. Without it an explicit `null`
+   * is forwarded verbatim into `UPDATE … SET "calories" = NULL`, which surfaces
+   * as a PostgreSQL `23502` → 500.
+   */
+  private assertNoExplicitNullUpdates(dto: UpdateMealTemplateDto): void {
+    const supplied = dto as unknown as Record<string, unknown>;
+    const nulled = NOT_NULL_TEMPLATE_FIELDS.filter(
+      (field) => supplied[field] === null,
+    );
+    if (nulled.length > 0) {
+      throw new BadRequestException(
+        `MealTemplate field(s) ${nulled.join(', ')} cannot be null; omit the field to leave it unchanged`,
+      );
+    }
+  }
+
+  /**
+   * Partial update of a template in the caller's organization.
+   *
+   * Order of checks:
+   *   1. Explicit `null` on a NOT NULL column → 400 (see
+   *      `assertNoExplicitNullUpdates`). `description: null` stays legal.
+   *   2. Load scoped by `{ id, organization_id }` → 404, so a foreign id is
+   *      indistinguishable from a missing one.
+   *   3. A changed `dietPlanId` must name a plan in the SAME organization; a
+   *      `null` plan id can never reach this point, so plan ownership is not
+   *      bypassable.
+   *   4. UPDATE scoped by BOTH `id` and `organization_id` — the same predicate
+   *      the delete uses — so the row cannot be re-pointed across tenants
+   *      between the read and the write.
+   *   5. Re-read scoped the same way. If the row disappeared between the UPDATE
+   *      and the re-read (`affected === 0`, or a concurrent delete won), the
+   *      answer is 404 — never a 200 carrying `null`.
+   */
   async updateMealTemplate(
     id: string,
-    dto: Partial<CreateMealTemplateDto>,
+    dto: UpdateMealTemplateDto,
   ): Promise<MealTemplate> {
+    this.assertNoExplicitNullUpdates(dto);
+
     const orgId = await this.getOrganizationId();
     const template = await this.mealTemplateRepository.findOne({
       where: { id, organization_id: orgId },
@@ -192,10 +256,94 @@ export class DietService {
     if (dto.servingSize !== undefined) updates.serving_size = dto.servingSize;
     if (dto.dietPlanId !== undefined) updates.diet_plan_id = dto.dietPlanId;
 
-    await this.mealTemplateRepository.update(id, updates);
-    return this.mealTemplateRepository.findOne({
+    if (Object.keys(updates).length === 0) {
+      // Nothing to write. TypeORM's `update()` throws `UpdateValuesMissingError`
+      // on an empty payload — a 500 for a legal empty PATCH — so an empty body
+      // is answered with the row exactly as loaded.
+      return template;
+    }
+
+    const result = await this.mealTemplateRepository.update(
+      { id, organization_id: orgId },
+      updates,
+    );
+    if (result.affected === 0) {
+      // The row left the organization (or was deleted) between the read above
+      // and this write.
+      throw new NotFoundException('MealTemplate not found');
+    }
+
+    const updated = await this.mealTemplateRepository.findOne({
       where: { id, organization_id: orgId },
-    }) as Promise<MealTemplate>;
+    });
+    if (!updated) {
+      // Deleted after the UPDATE committed; answering 200 with `null` would
+      // report a success for a row that no longer exists.
+      throw new NotFoundException('MealTemplate not found');
+    }
+    return updated;
+  }
+
+  /**
+   * Delete a meal template (hard delete, guarded by references).
+   *
+   * One transaction on a row-locked template:
+   *   1. Org-scoping — 404 when the template is not in the caller's org, so a
+   *      foreign id is indistinguishable from a missing one.
+   *   2. Reference guard — 409 when any nutrition log still points at the
+   *      template. `DIET_NUTRITION_LOGS.meal_template_id` is
+   *      `ON DELETE SET NULL`, so an unguarded delete would NOT fail: it would
+   *      quietly strip the template provenance from historical logs (the macro
+   *      snapshot itself survives, the label does not, and the row is left
+   *      holding neither a template nor a free-text description — the Q9
+   *      "templated XOR free-text" invariant).
+   *   3. Why `FOR UPDATE` and not just a count: PostgreSQL takes a
+   *      `FOR KEY SHARE` lock on the referenced row for every INSERT into
+   *      `DIET_NUTRITION_LOGS` that names this template, and `FOR UPDATE`
+   *      conflicts with `FOR KEY SHARE`. From the moment this transaction holds
+   *      the lock no new referencing log can be committed, and any log insert
+   *      that started earlier has already ended — which is what keeps the count
+   *      in step 2 true when the DELETE in step 4 runs. Without the lock the
+   *      count and the delete are two independent statements, and a log
+   *      committed in between is silently orphaned.
+   *   4. Delete scoped by BOTH `id` and `organization_id`, so the row cannot be
+   *      removed across tenants between the read and the write; `affected === 0`
+   *      means it disappeared anyway → 404 rather than a false success.
+   *
+   * No audit row and no outbox event: the diet domain publishes no template
+   * events, and a template is internal plan content, not a cross-domain fact.
+   */
+  async deleteMealTemplate(id: string): Promise<void> {
+    const orgId = await this.getOrganizationId();
+
+    await this.dataSource.transaction(async (manager) => {
+      const templateRepository = manager.getRepository(MealTemplate);
+
+      const template = await templateRepository.findOne({
+        where: { id, organization_id: orgId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!template) {
+        throw new NotFoundException('MealTemplate not found');
+      }
+
+      const references = await manager.getRepository(NutritionLog).count({
+        where: { organization_id: orgId, meal_template_id: id },
+      });
+      if (references > 0) {
+        throw new ConflictException(
+          `MealTemplate "${id}" is referenced by ${references} nutrition log(s) and cannot be deleted`,
+        );
+      }
+
+      const result = await templateRepository.delete({
+        id,
+        organization_id: orgId,
+      });
+      if (result.affected === 0) {
+        throw new NotFoundException('MealTemplate not found');
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------
