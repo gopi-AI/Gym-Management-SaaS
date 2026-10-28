@@ -9,6 +9,10 @@ coverage/
 .env.local
 .env.*.local
 
+# Scratch environment copies (created during P1-06 migration testing)
+.env.scratch
+.env.scratch.bak
+
 # Logs
 logs/
 *.log
