@@ -264,8 +264,17 @@ export class MembersService {
 
   async update(id: string, dto: UpdateMemberDto): Promise<Member> {
     const organizationId = await this.getOrganizationId();
+
+    // Determine if this is a reactivation request (setting is_active: true).
+    // For reactivation, we must allow the pre-check to find an inactive member.
+    // For ordinary updates and deactivation, the member must be active.
+    const isReactivation = dto.is_active === true;
     const member = await this.memberRepository.findOne({
-      where: { id, organization_id: organizationId, is_active: true },
+      where: {
+        id,
+        organization_id: organizationId,
+        ...(isReactivation ? {} : { is_active: true }),
+      },
     });
     if (!member) {
       throw new NotFoundException('Member not found');
@@ -279,22 +288,36 @@ export class MembersService {
       date_of_birth: dto.date_of_birth ? new Date(dto.date_of_birth) : member.date_of_birth,
     };
 
-    // Scope the update by the authorized org so the record cannot be moved
-    // across tenants between the ownership check and the write.
-    await this.memberRepository.update(
-      { id, organization_id: organizationId },
-      updates,
-    );
+    // Perform the update, outbox write, and post-read in a single transaction
+    // so that the domain write and MEMBER_UPDATED event commit or roll back together.
+    return this.dataSource.transaction(async (manager) => {
+      const memberRepo = manager.getRepository(Member);
 
-    await this.outboxService.saveEventEnvelope(
-      'MEMBER_UPDATED',
-      'v1',
-      organizationId,
-      { memberId: id, organizationId },
-      member.global_uuid,
-    );
+      // Scope the update by the authorized org so the record cannot be moved
+      // across tenants between the ownership check and the write.
+      await memberRepo.update({ id, organization_id: organizationId }, updates);
 
-    return this.findOne(id);
+      // Write the MEMBER_UPDATED event in the same transaction.
+      await this.outboxService.saveEventEnvelope(
+        'MEMBER_UPDATED',
+        'v1',
+        organizationId,
+        { memberId: id, organizationId },
+        member.global_uuid,
+        undefined, // causationId
+        manager, // transaction-scoped: commits/rolls back with the member row
+      );
+
+      // Post-write read must include inactive members so that deactivation
+      // returns the updated member (with is_active: false) instead of 404.
+      const updated = await memberRepo.findOne({
+        where: { id, organization_id: organizationId },
+      });
+      if (!updated) {
+        throw new NotFoundException('Member not found');
+      }
+      return updated;
+    });
   }
 
   async softDelete(id: string): Promise<void> {
