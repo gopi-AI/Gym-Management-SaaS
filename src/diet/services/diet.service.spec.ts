@@ -1,3 +1,8 @@
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
 import { EntityManager } from 'typeorm';
@@ -72,6 +77,8 @@ describe('DietService', () => {
       find: jest.fn().mockResolvedValue([templateFixture]),
       findOne: jest.fn().mockResolvedValue(templateFixture),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+      delete: jest.fn().mockResolvedValue({ affected: 1 }),
+      count: jest.fn().mockResolvedValue(0),
       createQueryBuilder: jest.fn(),
     };
 
@@ -88,6 +95,7 @@ describe('DietService', () => {
       find: jest.fn().mockResolvedValue([]),
       findOne: jest.fn().mockResolvedValue(null),
       query: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
       createQueryBuilder: jest.fn(),
     };
 
@@ -626,4 +634,283 @@ describe('DietService', () => {
       );
     });
   });
+
+  // --------------------------------------------------------------------------
+  // MealTemplate CRUD + guarded delete (v1/meal-templates)
+  // --------------------------------------------------------------------------
+
+  // Every NOT NULL column of `DIET_MEAL_TEMPLATES`, by its PATCH field name.
+  // `description` is absent: its column is nullable and `null` is legal.
+  const NOT_NULL_PATCH_FIELDS = [
+    'dietPlanId',
+    'name',
+    'mealType',
+    'calories',
+    'proteinG',
+    'carbsG',
+    'fatG',
+    'servingSize',
+  ] as const;
+
+  describe('MealTemplate CRUD', () => {
+    const createDto = {
+      dietPlanId: 'plan-1',
+      name: 'Protein Shake',
+      mealType: MealType.SNACK,
+      calories: 250,
+      proteinG: '30.00',
+      carbsG: '10.00',
+      fatG: '5.00',
+      servingSize: '1.00',
+    };
+
+    it('createMealTemplate denormalizes the caller org onto the row', async () => {
+      const result = await service.createMealTemplate(createDto);
+
+      expect(result.organization_id).toBe(orgId);
+      expect(mockTemplateRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organization_id: orgId,
+          diet_plan_id: 'plan-1',
+          name: 'Protein Shake',
+          meal_type: MealType.SNACK,
+        }),
+      );
+    });
+
+    it('createMealTemplate ignores an organization_id a raw caller smuggles in', async () => {
+      // A body that bypassed ValidationPipe still cannot choose its tenant: the
+      // row's organization_id is the authorized context value, never dto data.
+      await service.createMealTemplate({
+        ...createDto,
+        organization_id: otherOrgId,
+      } as never);
+
+      const created = mockTemplateRepo.create.mock.calls[0][0];
+      expect(created.organization_id).toBe(orgId);
+      expect(created.organization_id).not.toBe(otherOrgId);
+    });
+
+    it('findAllMealTemplates always scopes to the org and adds the plan filter only when asked', async () => {
+      await service.findAllMealTemplates();
+      expect(mockTemplateRepo.find).toHaveBeenCalledWith({
+        where: { organization_id: orgId },
+        order: { name: 'ASC' },
+      });
+
+      await service.findAllMealTemplates('plan-1');
+      expect(mockTemplateRepo.find).toHaveBeenLastCalledWith({
+        where: { organization_id: orgId, diet_plan_id: 'plan-1' },
+        order: { name: 'ASC' },
+      });
+    });
+
+    it('updateMealTemplate writes only the supplied fields and re-reads scoped to the org', async () => {
+      const result = await service.updateMealTemplate('template-1', {
+        name: 'Shake v2',
+        calories: 300,
+      });
+
+      // Scoped by BOTH id and organization_id, so the UPDATE cannot reach a row
+      // outside the caller's organization even if the id were learned elsewhere.
+      expect(mockTemplateRepo.update).toHaveBeenCalledWith(
+        { id: 'template-1', organization_id: orgId },
+        {
+          name: 'Shake v2',
+          calories: 300,
+        },
+      );
+      expect(mockTemplateRepo.findOne).toHaveBeenLastCalledWith({
+        where: { id: 'template-1', organization_id: orgId },
+      });
+      expect(result).toBe(templateFixture);
+    });
+
+    it('updateMealTemplate never forwards organization_id into the UPDATE payload', async () => {
+      await service.updateMealTemplate('template-1', {
+        name: 'x',
+        organization_id: otherOrgId,
+      } as never);
+
+      const updates = mockTemplateRepo.update.mock.calls[0][1];
+      expect(updates).not.toHaveProperty('organization_id');
+      expect(updates).toEqual({ name: 'x' });
+    });
+
+    it('updateMealTemplate allows moving a template to another plan of the SAME org (D3)', async () => {
+      mockDietPlanRepo.findOne.mockResolvedValue({
+        ...dietPlanFixture,
+        id: 'plan-2',
+      });
+
+      await service.updateMealTemplate('template-1', { dietPlanId: 'plan-2' });
+
+      expect(mockDietPlanRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'plan-2', organization_id: orgId },
+      });
+      expect(mockTemplateRepo.update).toHaveBeenCalledWith(
+        { id: 'template-1', organization_id: orgId },
+        {
+          diet_plan_id: 'plan-2',
+        },
+      );
+    });
+
+    it.each(NOT_NULL_PATCH_FIELDS)(
+      'updateMealTemplate rejects an explicit null for %s with 400 and writes nothing',
+      async (field) => {
+        // `@IsOptional()` treats `null` like an absent key, so the value would
+        // be forwarded into a NOT NULL column: PostgreSQL 23502 → 500. The
+        // service is the single write path, so it must refuse here too and not
+        // only rely on the ValidationPipe in front of the REST route.
+        await expect(
+          service.updateMealTemplate('template-1', { [field]: null } as never),
+        ).rejects.toBeInstanceOf(BadRequestException);
+
+        expect(mockTemplateRepo.update).not.toHaveBeenCalled();
+        // A nulled `dietPlanId` must never skip the plan-ownership lookup and
+        // then write `diet_plan_id = null`.
+        expect(mockDietPlanRepo.findOne).not.toHaveBeenCalled();
+      },
+    );
+
+    it('updateMealTemplate still allows description: null to clear the nullable column', async () => {
+      await service.updateMealTemplate('template-1', { description: null });
+
+      expect(mockTemplateRepo.update).toHaveBeenCalledWith(
+        { id: 'template-1', organization_id: orgId },
+        { description: null },
+      );
+    });
+
+    it('updateMealTemplate answers an empty PATCH with the row and no UPDATE', async () => {
+      const result = await service.updateMealTemplate('template-1', {});
+
+      // `update()` with an empty payload throws UpdateValuesMissingError, which
+      // would surface as a 500 for a perfectly legal empty PATCH.
+      expect(mockTemplateRepo.update).not.toHaveBeenCalled();
+      expect(result).toBe(templateFixture);
+    });
+
+    it('updateMealTemplate 404s when the row disappears before the UPDATE lands', async () => {
+      mockTemplateRepo.update.mockResolvedValue({ affected: 0 });
+
+      await expect(
+        service.updateMealTemplate('template-1', { name: 'x' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('updateMealTemplate 404s — never 200 with a null body — when the row disappears before the re-read', async () => {
+      mockTemplateRepo.findOne
+        .mockResolvedValueOnce(templateFixture)
+        .mockResolvedValueOnce(null);
+
+      await expect(
+        service.updateMealTemplate('template-1', { name: 'x' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('updateMealTemplate rejects a move to a plan outside the org', async () => {
+      mockDietPlanRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.updateMealTemplate('template-1', {
+          dietPlanId: 'plan-other-org',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(mockTemplateRepo.update).not.toHaveBeenCalled();
+    });
+
+    it('updateMealTemplate 404s a template outside the org before touching any plan', async () => {
+      mockTemplateRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.updateMealTemplate('template-other-org', {
+          dietPlanId: 'plan-2',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(mockDietPlanRepo.findOne).not.toHaveBeenCalled();
+      expect(mockTemplateRepo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteMealTemplate (guarded hard delete)', () => {
+    it('deletes with BOTH id and organization_id once no log references the template', async () => {
+      mockTemplateRepo.findOne.mockResolvedValue(templateFixture);
+      mockLogRepo.count.mockResolvedValue(0);
+      mockTemplateRepo.delete.mockResolvedValue({ affected: 1 });
+
+      await expect(
+        service.deleteMealTemplate('template-1'),
+      ).resolves.toBeUndefined();
+
+      // One transaction, and the `FOR UPDATE` lock is taken BEFORE the reference
+      // count: that lock is what stops a concurrent nutrition-log INSERT from
+      // committing between the count and the delete.
+      expect(mockDataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(mockTemplateRepo.findOne).toHaveBeenCalledWith({
+        where: { id: 'template-1', organization_id: orgId },
+        lock: { mode: 'pessimistic_write' },
+      });
+      expect(mockTemplateRepo.findOne.mock.invocationCallOrder[0]).toBeLessThan(
+        mockLogRepo.count.mock.invocationCallOrder[0],
+      );
+      expect(mockLogRepo.count.mock.invocationCallOrder[0]).toBeLessThan(
+        mockTemplateRepo.delete.mock.invocationCallOrder[0],
+      );
+
+      // The reference count is org-scoped too: another organization's log
+      // pointing at this id could never block the delete.
+      expect(mockLogRepo.count).toHaveBeenCalledWith({
+        where: { organization_id: orgId, meal_template_id: 'template-1' },
+      });
+      expect(mockTemplateRepo.delete).toHaveBeenCalledWith({
+        id: 'template-1',
+        organization_id: orgId,
+      });
+    });
+
+    it('409s and deletes nothing when a nutrition log still references the template', async () => {
+      mockTemplateRepo.findOne.mockResolvedValue(templateFixture);
+      mockLogRepo.count.mockResolvedValue(2);
+
+      await expect(
+        service.deleteMealTemplate('template-1'),
+      ).rejects.toBeInstanceOf(ConflictException);
+      // The FK is ON DELETE SET NULL, so this guard is the only thing keeping a
+      // referenced template from being deleted.
+      expect(mockTemplateRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('404s a template outside the org without counting or deleting', async () => {
+      mockTemplateRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.deleteMealTemplate('template-other-org'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(mockLogRepo.count).not.toHaveBeenCalled();
+      expect(mockTemplateRepo.delete).not.toHaveBeenCalled();
+    });
+
+    it('404s when a concurrent delete wins the race instead of reporting success', async () => {
+      mockTemplateRepo.findOne.mockResolvedValue(templateFixture);
+      mockLogRepo.count.mockResolvedValue(0);
+      mockTemplateRepo.delete.mockResolvedValue({ affected: 0 });
+
+      await expect(
+        service.deleteMealTemplate('template-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('emits no outbox event (no template event contract exists — D5)', async () => {
+      mockTemplateRepo.findOne.mockResolvedValue(templateFixture);
+      mockLogRepo.count.mockResolvedValue(0);
+
+      await service.deleteMealTemplate('template-1');
+
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEvent).not.toHaveBeenCalled();
+    });
+  });
+
 });
