@@ -317,6 +317,105 @@ describe('MembersService', () => {
         orgId,
         { memberId: 'm1', organizationId: orgId },
         'uuid-1',
+        undefined, // causationId
+        expect.any(Object), // manager
+      );
+    });
+
+    // P1-09: deactivation and reactivation regression tests
+    it('deactivates an active member (is_active: false) and returns the updated member', async () => {
+      const existing = { id: 'm1', global_uuid: 'uuid-1', organization_id: orgId, is_active: true } as Member;
+      const deactivated = { ...existing, is_active: false };
+      // Pre-check finds active member; post-read finds deactivated member
+      mockMemberRepo.findOne.mockResolvedValueOnce(existing).mockResolvedValueOnce(deactivated);
+      mockMemberRepo.update.mockResolvedValue({ affected: 1 });
+
+      const result = await service.update('m1', { is_active: false });
+
+      expect(result.is_active).toBe(false);
+      expect(mockMemberRepo.update).toHaveBeenCalledWith(
+        { id: 'm1', organization_id: orgId },
+        expect.objectContaining({ is_active: false }),
+      );
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
+        'MEMBER_UPDATED',
+        'v1',
+        orgId,
+        { memberId: 'm1', organizationId: orgId },
+        'uuid-1',
+        undefined, // causationId
+        expect.any(Object), // manager
+      );
+    });
+
+    it('reactivates a deactivated member (is_active: true) and returns the updated member', async () => {
+      const existing = { id: 'm1', global_uuid: 'uuid-1', organization_id: orgId, is_active: false } as Member;
+      const reactivated = { ...existing, is_active: true };
+      // Pre-check uses findOneIncludingInactive (no is_active filter); post-read also includes inactive
+      mockMemberRepo.findOne.mockResolvedValueOnce(existing).mockResolvedValueOnce(reactivated);
+      mockMemberRepo.update.mockResolvedValue({ affected: 1 });
+
+      const result = await service.update('m1', { is_active: true });
+
+      expect(result.is_active).toBe(true);
+      expect(mockMemberRepo.update).toHaveBeenCalledWith(
+        { id: 'm1', organization_id: orgId },
+        expect.objectContaining({ is_active: true }),
+      );
+      expect(mockOutboxService.saveEventEnvelope).toHaveBeenCalledWith(
+        'MEMBER_UPDATED',
+        'v1',
+        orgId,
+        { memberId: 'm1', organizationId: orgId },
+        'uuid-1',
+        undefined, // causationId
+        expect.any(Object), // manager
+      );
+    });
+
+    it('returns 404 when updating a deactivated member with ordinary fields (no is_active change)', async () => {
+      const existing = { id: 'm1', global_uuid: 'uuid-1', organization_id: orgId, is_active: false } as Member;
+      // Pre-check with is_active: true filter returns null for deactivated member
+      mockMemberRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.update('m1', { first_name: 'Jane' })).rejects.toThrow(NotFoundException);
+      expect(mockMemberRepo.update).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when updating a nonexistent member', async () => {
+      mockMemberRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.update('nonexistent', { first_name: 'Jane' })).rejects.toThrow(NotFoundException);
+      expect(mockMemberRepo.update).not.toHaveBeenCalled();
+      expect(mockOutboxService.saveEventEnvelope).not.toHaveBeenCalled();
+    });
+
+    it('preserves organization scoping on deactivation', async () => {
+      const existing = { id: 'm1', global_uuid: 'uuid-1', organization_id: orgId, is_active: true } as Member;
+      const deactivated = { ...existing, is_active: false };
+      mockMemberRepo.findOne.mockResolvedValueOnce(existing).mockResolvedValueOnce(deactivated);
+      mockMemberRepo.update.mockResolvedValue({ affected: 1 });
+
+      await service.update('m1', { is_active: false });
+
+      expect(mockMemberRepo.update).toHaveBeenCalledWith(
+        { id: 'm1', organization_id: orgId },
+        expect.any(Object),
+      );
+    });
+
+    it('preserves organization scoping on reactivation', async () => {
+      const existing = { id: 'm1', global_uuid: 'uuid-1', organization_id: orgId, is_active: false } as Member;
+      const reactivated = { ...existing, is_active: true };
+      mockMemberRepo.findOne.mockResolvedValueOnce(existing).mockResolvedValueOnce(reactivated);
+      mockMemberRepo.update.mockResolvedValue({ affected: 1 });
+
+      await service.update('m1', { is_active: true });
+
+      expect(mockMemberRepo.update).toHaveBeenCalledWith(
+        { id: 'm1', organization_id: orgId },
+        expect.any(Object),
       );
     });
   });

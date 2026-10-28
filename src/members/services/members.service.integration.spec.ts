@@ -9,6 +9,7 @@ import { Branch } from '../../tenancy/entities/branch.entity';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 import { LocalIdService } from './local-id.service';
 import { OutboxService } from '../../shared/outbox/outbox.service';
+import { OutboxEntity } from '../../shared/outbox/outbox.entity';
 
 const RUN = process.env.RUN_DB_INTEGRATION === '1';
 const describeIntegration = RUN ? describe : describe.skip;
@@ -16,6 +17,7 @@ const describeIntegration = RUN ? describe : describe.skip;
 describeIntegration('MembersService search/sort/indexes (real Postgres)', () => {
   let dataSource: DataSource;
   let service: MembersService;
+  let tenantContext: TenantContextService;
   const ids = {
     organization: randomUUID(),
     orgB: randomUUID(),
@@ -277,7 +279,7 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
     // Collaborators are stand-ins: `findAll` only reaches the member repository
     // and the tenant context (for the organization id). Wiring mirrors the
     // memberships integration spec, which drives the same constructor shape.
-    const tenantContext = {
+    tenantContext = {
       getCurrentOrganizationId: jest.fn().mockResolvedValue(ids.organization),
       getRequestedOrganizationId: jest.fn().mockResolvedValue(ids.organization),
       requireOrganizationAccess: jest.fn().mockResolvedValue(ids.organization),
@@ -285,13 +287,15 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
       validateBranchAccess: jest.fn().mockResolvedValue(true),
     } as unknown as TenantContextService;
 
+    const outboxService = new OutboxService(dataSource.getRepository(OutboxEntity));
+
     service = new MembersService(
       dataSource.getRepository(Member),
       dataSource.getRepository(MemberProfile),
       dataSource,
       {} as LocalIdService,
       tenantContext,
-      {} as OutboxService,
+      outboxService,
     );
   }, 30000);
 
@@ -540,6 +544,125 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
       } finally {
         await queryRunner.release();
       }
+    });
+  });
+
+  describe('P1-09: member deactivation and reactivation (update with is_active)', () => {
+    let outboxRepo: ReturnType<DataSource['getRepository']>;
+
+    beforeAll(() => {
+      outboxRepo = dataSource.getRepository(OutboxEntity);
+    });
+
+    beforeEach(async () => {
+      await outboxRepo.clear();
+    });
+
+    it('deactivates an active member (is_active: false) and returns the updated member', async () => {
+      const result = await service.update(ids.mAlice, { is_active: false });
+
+      expect(result.id).toBe(ids.mAlice);
+      expect(result.is_active).toBe(false);
+
+      const memberRepo = dataSource.getRepository(Member);
+      const updated = await memberRepo.findOne({ where: { id: ids.mAlice } });
+      expect(updated!.is_active).toBe(false);
+
+      const outboxEvents = await outboxRepo.find({ where: { eventType: 'MEMBER_UPDATED' } });
+      expect(outboxEvents.length).toBe(1);
+      const envelope = JSON.parse(outboxEvents[0].payload);
+      expect(envelope.eventType).toBe('MEMBER_UPDATED');
+      expect(envelope.payload.memberId).toBe(ids.mAlice);
+      expect(envelope.organizationId).toBe(ids.organization);
+    });
+
+    it('reactivates an inactive member (is_active: true) and returns the updated member', async () => {
+      // Use mBob for this test to avoid interference from the previous test
+      // First deactivate mBob
+      await service.update(ids.mBob, { is_active: false });
+
+      // Now reactivate
+      const result = await service.update(ids.mBob, { is_active: true });
+
+      expect(result.id).toBe(ids.mBob);
+      expect(result.is_active).toBe(true);
+
+      const memberRepo = dataSource.getRepository(Member);
+      const updated = await memberRepo.findOne({ where: { id: ids.mBob } });
+      expect(updated!.is_active).toBe(true);
+
+      const outboxEvents = await outboxRepo.find({ where: { eventType: 'MEMBER_UPDATED' } });
+      expect(outboxEvents.length).toBe(2);
+      const envelope = JSON.parse(outboxEvents[1].payload);
+      expect(envelope.eventType).toBe('MEMBER_UPDATED');
+      expect(envelope.payload.memberId).toBe(ids.mBob);
+      expect(envelope.organizationId).toBe(ids.organization);
+    });
+
+    it('returns 404 when updating an inactive member with ordinary fields (no is_active change)', async () => {
+      await expect(service.update(ids.mDan, { first_name: 'Jane' })).rejects.toThrow('Member not found');
+
+      const memberRepo = dataSource.getRepository(Member);
+      const member = await memberRepo.findOne({ where: { id: ids.mDan } });
+      expect(member!.first_name).toBe('Dan');
+
+      const outboxEvents = await outboxRepo.find({ where: { eventType: 'MEMBER_UPDATED' } });
+      expect(outboxEvents.length).toBe(0);
+    });
+
+    it('returns 404 when updating a nonexistent member', async () => {
+      await expect(service.update(randomUUID(), { first_name: 'Jane' })).rejects.toThrow('Member not found');
+
+      const outboxEvents = await outboxRepo.find({ where: { eventType: 'MEMBER_UPDATED' } });
+      expect(outboxEvents.length).toBe(0);
+    });
+
+    it('returns 404 for cross-organization deactivation attempt', async () => {
+      await expect(service.update(ids.mEve, { is_active: false })).rejects.toThrow('Member not found');
+
+      const memberRepo = dataSource.getRepository(Member);
+      const member = await memberRepo.findOne({ where: { id: ids.mEve } });
+      expect(member!.is_active).toBe(true);
+
+      const outboxEvents = await outboxRepo.find({ where: { eventType: 'MEMBER_UPDATED' } });
+      expect(outboxEvents.length).toBe(0);
+    });
+
+    it('returns 404 for cross-organization reactivation attempt', async () => {
+      const memberRepo = dataSource.getRepository(Member);
+      await memberRepo.update({ id: ids.mEve }, { is_active: false });
+
+      await expect(service.update(ids.mEve, { is_active: true })).rejects.toThrow('Member not found');
+
+      const member = await memberRepo.findOne({ where: { id: ids.mEve } });
+      expect(member!.is_active).toBe(false);
+
+      const outboxEvents = await outboxRepo.find({ where: { eventType: 'MEMBER_UPDATED' } });
+      expect(outboxEvents.length).toBe(0);
+    });
+
+    it('rolls back member update when outbox persistence fails', async () => {
+      const brokenOutboxService = {
+        saveEventEnvelope: jest.fn().mockRejectedValue(new Error('Outbox write failed')),
+      } as unknown as OutboxService;
+
+      const brokenService = new MembersService(
+        dataSource.getRepository(Member),
+        dataSource.getRepository(MemberProfile),
+        dataSource,
+        {} as LocalIdService,
+        tenantContext,
+        brokenOutboxService,
+      );
+
+      await expect(brokenService.update(ids.mBob, { is_active: false })).rejects.toThrow('Outbox write failed');
+
+      const memberRepo = dataSource.getRepository(Member);
+      const member = await memberRepo.findOne({ where: { id: ids.mBob } });
+      expect(member!.is_active).toBe(true);
+
+      const outboxEvents = await outboxRepo.find({ where: { eventType: 'MEMBER_UPDATED' } });
+      expect(outboxEvents.length).toBe(0);
     });
   });
 });
