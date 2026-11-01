@@ -27,8 +27,9 @@ export class MeasurementsController {
     @Param('memberId', new ParseUUIDPipe({ version: '4' })) memberId: string,
     @Body() dto: CreateMeasurementDto,
   ) {
-    dto.member_id = memberId;
-    return this.measurementLogsService.create(dto);
+    // The URL segment is the authoritative member id. It is passed separately
+    // so the validated body never has to repeat it.
+    return this.measurementLogsService.create(memberId, dto);
   }
 
   @Get(':memberId/measurements')

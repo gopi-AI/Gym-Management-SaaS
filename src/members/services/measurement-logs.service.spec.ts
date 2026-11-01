@@ -19,7 +19,6 @@ describe('MeasurementLogsService', () => {
   const orgId = 'org-123';
   const memberId = 'member-uuid-1';
   const validDto = {
-    member_id: memberId,
     measurement_type: MeasurementType.WEIGHT,
     value: 72.5,
     unit: 'kg',
@@ -83,7 +82,7 @@ describe('MeasurementLogsService', () => {
   it('Test A: MeasurementLog insert fails → MemberProfile is never touched', async () => {
     mockMeasurementLogRepo.save.mockRejectedValue(new Error('DB_INSERT_FAILED'));
 
-    await expect(service.create(validDto)).rejects.toThrow('DB_INSERT_FAILED');
+    await expect(service.create(memberId, validDto)).rejects.toThrow('DB_INSERT_FAILED');
 
     expect(mockMemberProfileRepo.update).not.toHaveBeenCalled();
     expect(mockDataSource.transaction).toHaveBeenCalledTimes(1);
@@ -93,7 +92,7 @@ describe('MeasurementLogsService', () => {
   it('Test B: MemberProfile update fails → transaction rolls back MeasurementLog insert', async () => {
     mockMemberProfileRepo.update.mockRejectedValue(new Error('PROFILE_UPDATE_FAILED'));
 
-    await expect(service.create(validDto)).rejects.toThrow('PROFILE_UPDATE_FAILED');
+    await expect(service.create(memberId, validDto)).rejects.toThrow('PROFILE_UPDATE_FAILED');
 
     expect(mockMeasurementLogRepo.save).toHaveBeenCalledTimes(1);
     expect(mockMemberProfileRepo.update).toHaveBeenCalledTimes(1);
@@ -115,7 +114,7 @@ describe('MeasurementLogsService', () => {
     };
     mockMeasurementLogRepo.save.mockResolvedValue(savedMeasurement);
 
-    const result = await service.create(validDto);
+    const result = await service.create(memberId, validDto);
 
     expect(result).toBe(savedMeasurement);
     expect(mockMemberRepo.findOne).toHaveBeenCalledWith({
@@ -143,32 +142,53 @@ describe('MeasurementLogsService', () => {
   it('rejects a member outside the caller organization before opening a transaction', async () => {
     mockMemberRepo.findOne.mockResolvedValue(null);
 
-    await expect(service.create(validDto)).rejects.toThrow(NotFoundException);
+    await expect(service.create(memberId, validDto)).rejects.toThrow(NotFoundException);
 
     expect(mockDataSource.transaction).not.toHaveBeenCalled();
     expect(mockMeasurementLogRepo.save).not.toHaveBeenCalled();
     expect(mockMemberProfileRepo.update).not.toHaveBeenCalled();
   });
 
+  it('resolves the member from the URL id even when the body carries a stray member_id', async () => {
+    const otherMemberId = 'member-uuid-other';
+    const dtoWithStrayId = {
+      ...validDto,
+      member_id: otherMemberId,
+    } as typeof validDto & { member_id: string };
+
+    await service.create(memberId, dtoWithStrayId);
+
+    expect(mockMemberRepo.findOne).toHaveBeenCalledWith({
+      where: { id: memberId, organization_id: orgId },
+    });
+    expect(mockMeasurementLogRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ member_id: memberId }),
+    );
+    expect(mockMemberProfileRepo.update).toHaveBeenCalledWith(
+      { member_id: memberId },
+      { weight: '72.5' },
+    );
+  });
+
   describe('validation', () => {
     it('rejects reserved measurement types', async () => {
       for (const type of [MeasurementType.CHEST, MeasurementType.WAIST, MeasurementType.HIP, MeasurementType.ARM, MeasurementType.THIGH, MeasurementType.CALF]) {
-        await expect(service.create({ ...validDto, measurement_type: type })).rejects.toThrow(BadRequestException);
+        await expect(service.create(memberId, { ...validDto, measurement_type: type })).rejects.toThrow(BadRequestException);
       }
       expect(mockDataSource.transaction).not.toHaveBeenCalled();
     });
 
     it('rejects weight out of range', async () => {
-      await expect(service.create({ ...validDto, value: 0.5 })).rejects.toThrow(BadRequestException);
-      await expect(service.create({ ...validDto, value: 501 })).rejects.toThrow(BadRequestException);
+      await expect(service.create(memberId, { ...validDto, value: 0.5 })).rejects.toThrow(BadRequestException);
+      await expect(service.create(memberId, { ...validDto, value: 501 })).rejects.toThrow(BadRequestException);
     });
 
     it('rejects body_fat', async () => {
       await expect(
-        service.create({ ...validDto, measurement_type: MeasurementType.BODY_FAT, value: 1, unit: '%' }),
+        service.create(memberId, { ...validDto, measurement_type: MeasurementType.BODY_FAT, value: 1, unit: '%' }),
       ).rejects.toThrow(BadRequestException);
       await expect(
-        service.create({ ...validDto, measurement_type: MeasurementType.BODY_FAT, value: 15, unit: 'kg' }),
+        service.create(memberId, { ...validDto, measurement_type: MeasurementType.BODY_FAT, value: 15, unit: 'kg' }),
       ).rejects.toThrow(BadRequestException);
     });
   });
