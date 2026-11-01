@@ -3,6 +3,7 @@ import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
 import { Repository, DataSource, FindOptionsWhere, Between, LessThanOrEqual, MoreThanOrEqual } from 'typeorm';
 import { MeasurementLog, MeasurementType } from '../entities/measurement-log.entity';
 import { MemberProfile } from '../entities/member-profile.entity';
+import { Member } from '../entities/member.entity';
 import { CreateMeasurementDto } from '../dto/create-measurement.dto';
 import { ListMeasurementsDto } from '../dto/list-measurements.dto';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
@@ -14,6 +15,8 @@ export class MeasurementLogsService {
     private readonly measurementLogRepository: Repository<MeasurementLog>,
     @InjectRepository(MemberProfile)
     private readonly memberProfileRepository: Repository<MemberProfile>,
+    @InjectRepository(Member)
+    private readonly memberRepository: Repository<Member>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
     private readonly tenantContextService: TenantContextService,
@@ -78,6 +81,20 @@ export class MeasurementLogsService {
    */
   async create(dto: CreateMeasurementDto): Promise<MeasurementLog> {
     const organizationId = await this.getOrganizationId();
+
+    // Security invariant: the target member must belong to the caller's
+    // authorized organization. The controller binds the route member id onto
+    // the DTO, but the ownership proof is this org-scoped lookup — never the
+    // request-supplied id. A foreign or missing member is indistinguishable
+    // (404) and must fail before any measurement/profile write.
+    const member = await this.memberRepository.findOne({
+      where: { id: dto.member_id, organization_id: organizationId },
+    });
+    if (!member) {
+      throw new NotFoundException('Member not found');
+    }
+    const memberId = member.id;
+
     const type = dto.measurement_type;
 
     if (type !== MeasurementType.WEIGHT && type !== MeasurementType.BODY_FAT) {
@@ -92,7 +109,7 @@ export class MeasurementLogsService {
       const mlRepo = manager.getRepository(MeasurementLog);
       const measurement = mlRepo.create({
         organization_id: organizationId,
-        member_id: dto.member_id,
+        member_id: memberId,
         measurement_type: type,
         value: dto.value,
         unit: dto.unit,
@@ -103,13 +120,13 @@ export class MeasurementLogsService {
       const saved = await mlRepo.save(measurement);
 
       const mpRepo = manager.getRepository(MemberProfile);
-      const profile = await mpRepo.findOne({ where: { member_id: dto.member_id } });
+      const profile = await mpRepo.findOne({ where: { member_id: memberId } });
       if (!profile) {
         throw new NotFoundException('Member profile not found');
       }
 
       const profileField = type === MeasurementType.WEIGHT ? 'weight' : 'body_fat';
-      await mpRepo.update({ member_id: dto.member_id }, { [profileField]: String(dto.value) });
+      await mpRepo.update({ member_id: memberId }, { [profileField]: String(dto.value) });
       return saved;
     });
   }
