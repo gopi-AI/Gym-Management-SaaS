@@ -1,16 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken, getDataSourceToken } from '@nestjs/typeorm';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { MeasurementLogsService } from './measurement-logs.service';
 import { MeasurementLog, MeasurementType } from '../entities/measurement-log.entity';
 import { MemberProfile } from '../entities/member-profile.entity';
+import { Member } from '../entities/member.entity';
 import { TenantContextService } from '../../shared/tenant/tenant-context.service';
 
 describe('MeasurementLogsService', () => {
   let service: MeasurementLogsService;
   let mockMeasurementLogRepo: Record<string, jest.Mock>;
   let mockMemberProfileRepo: Record<string, jest.Mock>;
+  let mockMemberRepo: Record<string, jest.Mock>;
   let mockDataSource: Record<string, jest.Mock>;
   let mockTenantContext: Record<string, jest.Mock>;
 
@@ -36,6 +38,10 @@ describe('MeasurementLogsService', () => {
     mockMemberProfileRepo = {
       findOne: jest.fn().mockResolvedValue({ id: 'prof-1', member_id: memberId, weight: null }),
       update: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+
+    mockMemberRepo = {
+      findOne: jest.fn().mockResolvedValue({ id: memberId, organization_id: orgId }),
     };
 
     mockDataSource = {
@@ -64,6 +70,7 @@ describe('MeasurementLogsService', () => {
         MeasurementLogsService,
         { provide: getRepositoryToken(MeasurementLog), useValue: mockMeasurementLogRepo },
         { provide: getRepositoryToken(MemberProfile), useValue: mockMemberProfileRepo },
+        { provide: getRepositoryToken(Member), useValue: mockMemberRepo },
         { provide: getDataSourceToken(), useValue: mockDataSource },
         { provide: TenantContextService, useValue: mockTenantContext },
       ],
@@ -111,6 +118,9 @@ describe('MeasurementLogsService', () => {
     const result = await service.create(validDto);
 
     expect(result).toBe(savedMeasurement);
+    expect(mockMemberRepo.findOne).toHaveBeenCalledWith({
+      where: { id: memberId, organization_id: orgId },
+    });
     expect(mockMeasurementLogRepo.create).toHaveBeenCalledWith(
       expect.objectContaining({
         organization_id: orgId,
@@ -128,6 +138,16 @@ describe('MeasurementLogsService', () => {
       { member_id: memberId },
       { weight: '72.5' },
     );
+  });
+
+  it('rejects a member outside the caller organization before opening a transaction', async () => {
+    mockMemberRepo.findOne.mockResolvedValue(null);
+
+    await expect(service.create(validDto)).rejects.toThrow(NotFoundException);
+
+    expect(mockDataSource.transaction).not.toHaveBeenCalled();
+    expect(mockMeasurementLogRepo.save).not.toHaveBeenCalled();
+    expect(mockMemberProfileRepo.update).not.toHaveBeenCalled();
   });
 
   describe('validation', () => {
