@@ -79,21 +79,20 @@ export class MeasurementLogsService {
    * Single legal write path for measurement logs.
    * Dual-writes MeasurementLog + MemberProfile inside one DB transaction.
    */
-  async create(dto: CreateMeasurementDto): Promise<MeasurementLog> {
+  async create(memberId: string, dto: CreateMeasurementDto): Promise<MeasurementLog> {
     const organizationId = await this.getOrganizationId();
 
     // Security invariant: the target member must belong to the caller's
-    // authorized organization. The controller binds the route member id onto
-    // the DTO, but the ownership proof is this org-scoped lookup — never the
-    // request-supplied id. A foreign or missing member is indistinguishable
-    // (404) and must fail before any measurement/profile write.
+    // authorized organization. `memberId` is the route parameter and the only
+    // member identity input; the ownership proof is this org-scoped lookup.
+    // A foreign or missing member is indistinguishable (404) and must fail
+    // before any measurement/profile write.
     const member = await this.memberRepository.findOne({
-      where: { id: dto.member_id, organization_id: organizationId },
+      where: { id: memberId, organization_id: organizationId },
     });
     if (!member) {
       throw new NotFoundException('Member not found');
     }
-    const memberId = member.id;
 
     const type = dto.measurement_type;
 

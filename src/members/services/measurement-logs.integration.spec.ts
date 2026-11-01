@@ -17,6 +17,8 @@
  *      performs no measurement insert and no profile update.
  *   3. A missing member is rejected with no write.
  *   4. The reverse direction (Org-B caller, Org-A member) is also rejected.
+ *   5. A conflicting body `member_id` cannot redirect the write: the URL
+ *      member remains the only target.
  *
  * RUNNING IT
  *   RUN_DB_INTEGRATION=1 \
@@ -205,9 +207,8 @@ describeIntegration(
       }
     });
 
-    function measurementDto(memberId: string, value: number) {
+    function measurementDto(value: number) {
       return {
-        member_id: memberId,
         measurement_type: MeasurementType.WEIGHT,
         value,
         unit: 'kg',
@@ -217,7 +218,7 @@ describeIntegration(
     }
 
     it('persists a same-organization measurement and updates that member profile', async () => {
-      const saved = await service.create(measurementDto(memberA, 80));
+      const saved = await service.create(memberA, measurementDto(80));
 
       expect(saved.organization_id).toBe(organizationA);
       expect(saved.member_id).toBe(memberA);
@@ -228,6 +229,8 @@ describeIntegration(
       expect(rows).toHaveLength(1);
       expect(rows[0].organization_id).toBe(organizationA);
       expect(Number(rows[0].value)).toBe(80);
+      expect(rows[0].unit).toBe('kg');
+      expect(rows[0].notes).toBe('P2-07 integration');
 
       const profile = await profileRepository.findOne({
         where: { member_id: memberA },
@@ -240,11 +243,43 @@ describeIntegration(
       expect(otherProfile?.weight).toBe('70.00');
     });
 
+    it('ignores a conflicting body member_id and writes only to the URL member', async () => {
+      const dtoWithConflictingId = {
+        ...measurementDto(95),
+        member_id: memberB,
+      } as ReturnType<typeof measurementDto> & { member_id: string };
+
+      const saved = await service.create(memberA, dtoWithConflictingId);
+
+      expect(saved.member_id).toBe(memberA);
+
+      const rowsForUrlMember = await measurementRepository.find({
+        where: { member_id: memberA },
+      });
+      expect(rowsForUrlMember).toHaveLength(1);
+      expect(rowsForUrlMember[0].organization_id).toBe(organizationA);
+
+      const rowsForBodyMember = await measurementRepository.find({
+        where: { member_id: memberB },
+      });
+      expect(rowsForBodyMember).toHaveLength(0);
+
+      const profileA = await profileRepository.findOne({
+        where: { member_id: memberA },
+      });
+      expect(profileA?.weight).toBe('95');
+
+      const profileB = await profileRepository.findOne({
+        where: { member_id: memberB },
+      });
+      expect(profileB?.weight).toBe('70.00');
+    });
+
     it('rejects an Org-A caller targeting an Org-B member and performs no write', async () => {
       currentOrganizationId = organizationA;
 
       await expect(
-        service.create(measurementDto(memberB, 90)),
+        service.create(memberB, measurementDto(90)),
       ).rejects.toBeInstanceOf(NotFoundException);
 
       const rows = await measurementRepository.find({
@@ -262,7 +297,7 @@ describeIntegration(
       const missingMemberId = randomUUID();
 
       await expect(
-        service.create(measurementDto(missingMemberId, 90)),
+        service.create(missingMemberId, measurementDto(90)),
       ).rejects.toBeInstanceOf(NotFoundException);
 
       const rows = await measurementRepository.find({
@@ -275,7 +310,7 @@ describeIntegration(
       currentOrganizationId = organizationB;
 
       await expect(
-        service.create(measurementDto(memberA, 90)),
+        service.create(memberA, measurementDto(90)),
       ).rejects.toBeInstanceOf(NotFoundException);
 
       const rows = await measurementRepository.find({
