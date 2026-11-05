@@ -71,10 +71,21 @@ export class BranchesService {
   }
 
   async create(dto: CreateBranchDto): Promise<Branch> {
-    // The client-supplied organization_id is only a REQUESTED context. Validate
-    // membership; the branch is created under the AUTHORIZED org only.
-    const orgId =
-      await this.tenantContextService.requireOrganizationAccess(dto.organization_id);
+    // The organization the caller is AUTHORIZED for is the single source of
+    // truth for the write target. For POST /v1/branches (no route :orgId) the
+    // guard authorized the X-Organization-Id header; resolveAuthorizedOrg()
+    // returns that same organization (current org context, else the requested
+    // header org validated against active membership). The client-supplied
+    // dto.organization_id MUST NOT pick a different target organization.
+    const orgId = await this.resolveAuthorizedOrg();
+
+    // Reject a body organization_id that conflicts with the authorized org
+    // before any write. A matching body value is accepted as confirmation.
+    if (dto.organization_id && dto.organization_id !== orgId) {
+      throw new ForbiddenException(
+        'Organization body does not match authorized organization',
+      );
+    }
 
     // Validate organization exists
     await this.organizationsService.findOne(orgId);

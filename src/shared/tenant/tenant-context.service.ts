@@ -7,6 +7,15 @@ import { RequestTenantContext, tenantAsyncLocal } from './tenant-context.store';
 
 const EMPTY_CONTEXT: RequestTenantContext = Object.freeze({});
 
+/**
+ * Refusal message for "authenticated, but not a member of the requested
+ * organization". Exported so the permission guard can raise the identical
+ * response when it performs the membership check ahead of RBAC evaluation —
+ * a non-member must never be answered with a permission-shaped error.
+ */
+export const ORGANIZATION_ACCESS_DENIED_MESSAGE =
+  'Access to this organization is not allowed';
+
 @Injectable()
 export class TenantContextService {
   constructor(
@@ -116,7 +125,7 @@ export class TenantContextService {
 
     const isMember = await this.identityService.isUserInOrganization(userId, orgId);
     if (!isMember) {
-      throw new ForbiddenException('Access to this organization is not allowed');
+      throw new ForbiddenException(ORGANIZATION_ACCESS_DENIED_MESSAGE);
     }
 
     await this.setCurrentOrganizationId(orgId);

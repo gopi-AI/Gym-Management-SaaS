@@ -34,6 +34,7 @@ const MANAGE: RequiredPermission = {
 const TEMPLATE_ID = '11111111-1111-4111-8111-111111111111';
 const PLAN_ID = '22222222-2222-4222-8222-222222222222';
 const FOREIGN_PLAN_ID = '33333333-3333-4333-8333-333333333333';
+const ORG_ID = '44444444-4444-4444-8444-444444444444';
 
 const reflector = new Reflector();
 
@@ -243,7 +244,15 @@ function contextFor(
   return {
     getHandler: () => MealTemplatesController.prototype[method],
     getClass: () => MealTemplatesController,
-    switchToHttp: () => ({ getRequest: () => ({ user }) }),
+    switchToHttp: () => ({
+      getRequest: () => ({
+        user,
+        // Meal-template routes carry no :orgId segment, so the tenant context
+        // arrives as the X-Organization-Id header exactly as it does at runtime.
+        headers: { 'x-organization-id': ORG_ID },
+        params: {},
+      }),
+    }),
   } as unknown as never;
 }
 
@@ -260,8 +269,16 @@ function handlerFor(
 
 function pipelineFor(method: Handler, granted: boolean) {
   const { service, controller } = buildController();
+  // The guard classifies these routes as tenant-scoped (they carry no
+  // @SystemWidePermissions), so it consults the organization-scoped check.
+  // `hasPermission` stays on the double only so the tests can prove it is
+  // never reached — tenant routes must not fall back to global grants.
   const identityService = {
+    // Authenticated member of the requested organization. The guard runs the
+    // tenant-context membership check before the permission check.
+    isUserInOrganization: jest.fn().mockResolvedValue(true),
     hasPermission: jest.fn().mockResolvedValue(granted),
+    hasOrganizationPermission: jest.fn().mockResolvedValue(granted),
   };
   const guard = new PermissionsGuard(
     new Reflector(),
@@ -287,11 +304,16 @@ describe('PermissionsGuard -> meal-template permissions', () => {
         pipelineFor(method, false);
 
       await expect(run()).rejects.toBeInstanceOf(ForbiddenException);
-      expect(identityService.hasPermission).toHaveBeenCalledWith(
+      // Membership was established first; the refusal is the RBAC one.
+      expect(identityService.isUserInOrganization).toHaveBeenCalledWith('user-1', ORG_ID);
+      expect(identityService.hasOrganizationPermission).toHaveBeenCalledWith(
         'user-1',
+        ORG_ID,
         permission.resource,
         permission.action,
       );
+      // Tenant-scoped: the global check is not a fallback on these routes.
+      expect(identityService.hasPermission).not.toHaveBeenCalled();
       // The guard ran first, so the body — and therefore the service — was
       // never reached. A decorator accidentally dropped in a refactor would
       // make this assertion fail while "the route still 403s for other reasons"
@@ -319,6 +341,8 @@ describe('PermissionsGuard -> meal-template permissions', () => {
 
     await expect(run(null)).rejects.toBeInstanceOf(ForbiddenException);
     expect(identityService.hasPermission).not.toHaveBeenCalled();
+    expect(identityService.hasOrganizationPermission).not.toHaveBeenCalled();
+    expect(identityService.isUserInOrganization).not.toHaveBeenCalled();
     expect(service[serviceMethod]).not.toHaveBeenCalled();
   });
 });
