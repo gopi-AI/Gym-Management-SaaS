@@ -14,6 +14,7 @@ import type {
   AttendanceAccessDecision,
   AttendanceEventRequest,
   AttendanceEventResult,
+  AttendanceMemberHistoryPoint,
   AttendanceRecord,
   Paginated,
   QueryAccessDecisionParams,
@@ -36,6 +37,29 @@ export const attendanceApi = {
     }),
 
   getRecord: (id: string) => api.get<AttendanceRecord>(`/v1/attendance/records/${id}`),
+
+  /**
+   * Read-only member attendance history for trainers.
+   *
+   * The backend attendance module is the source of truth (biometric/device
+   * records when integrated, manual records otherwise). This client never
+   * writes attendance.
+   */
+  getMemberHistory: (
+    memberId: string,
+    params: { from?: string; to?: string; page?: number; limit?: number } = {},
+  ) =>
+    api.get<Paginated<AttendanceMemberHistoryPoint>>(
+      `/v1/attendance/members/${memberId}/history`,
+      {
+        query: {
+          from: params.from,
+          to: params.to,
+          page: params.page,
+          limit: params.limit,
+        },
+      },
+    ),
 
   listAccessDecisions: (params: QueryAccessDecisionParams = {}) =>
     api.get<Paginated<AttendanceAccessDecision>>('/v1/attendance/access-decisions', {

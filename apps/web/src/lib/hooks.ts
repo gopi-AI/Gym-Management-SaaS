@@ -21,6 +21,11 @@ import { membershipPlansApi, membershipsApi } from './memberships-api';
 import { member360Api } from './member-360-api';
 import { ptApi } from './pt-api';
 import { workoutsApi } from './workouts-api';
+import type {
+  ListExercisesParams,
+  ListWorkoutSessionsParams,
+} from './workouts-api';
+import { measurementsApi, type ListMeasurementsParams } from './measurements-api';
 import { dietApi } from './diet-api';
 import { loyaltyApi } from './loyalty-api';
 import { attendanceApi } from './attendance-api';
@@ -78,6 +83,25 @@ import type {
   UpdateTenantSettingsRequest,
   VerifyMfaRequest,
   WorkoutsTabResponse,
+  AttendanceMemberHistoryPoint,
+  CreateAssignmentRequest,
+  CreateExerciseRequest,
+  CreateProgressReviewRequest,
+  DayTemplateExerciseInput,
+  Exercise,
+  MeasurementLog,
+  PlanDayReview,
+  PlanDaySubmission,
+  PlanTemplateDayInput,
+  PrescribedDayDetail,
+  PrescribedWorkoutDay,
+  ProgressReviewComparison,
+  WorkoutDayTemplate,
+  WorkoutPlanAssignment,
+  WorkoutPlanTemplate,
+  WorkoutProgressReview,
+  WorkoutSequenceEntry,
+  WorkoutSession,
   AuthTokens,
 } from './types';
 
@@ -148,6 +172,24 @@ export const queryKeys = {
   workouts: {
     all: ['workouts'] as const,
     tab: (memberId: string) => ['workouts', 'tab', memberId] as const,
+    sequence: (memberId: string) =>
+      ['workouts', 'sequence', memberId] as const,
+    day: (dayId: string) => ['workouts', 'day', dayId] as const,
+    sessions: (memberId: string, params: ListWorkoutSessionsParams = {}) =>
+      ['workouts', 'sessions', memberId, params] as const,
+    reviews: (memberId: string) => ['workouts', 'reviews', memberId] as const,
+    comparison: (memberId: string) =>
+      ['workouts', 'comparison', memberId] as const,
+    exercises: (params: ListExercisesParams = {}) =>
+      ['workouts', 'exercises', params] as const,
+    dayTemplates: ['workouts', 'day-templates'] as const,
+    dayTemplate: (id: string) => ['workouts', 'day-templates', id] as const,
+    planTemplates: ['workouts', 'plan-templates'] as const,
+    planTemplate: (id: string) => ['workouts', 'plan-templates', id] as const,
+    attendance: (memberId: string, params: Record<string, unknown> = {}) =>
+      ['workouts', 'attendance', memberId, params] as const,
+    measurements: (memberId: string, params: ListMeasurementsParams = {}) =>
+      ['workouts', 'measurements', memberId, params] as const,
   },
   diet: {
     all: ['diet'] as const,
@@ -892,5 +934,344 @@ export function useMemberLoyaltyTab(
     queryFn: () => loyaltyApi.getTab(memberId),
     enabled: Boolean(memberId) && (options?.enabled ?? true),
   });
+}
+
+/* ── Workouts (P2-05) ──────────────────────────────────────────────────── */
+
+export function useWorkoutSequence(
+  memberId: string,
+  options?: Omit<UseQueryOptions<WorkoutSequenceEntry[], Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<WorkoutSequenceEntry[], Error>({
+    ...options,
+    queryKey: queryKeys.workouts.sequence(memberId),
+    queryFn: () => workoutsApi.getSequence(memberId),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+export function usePrescribedDay(
+  dayId: string,
+  options?: Omit<UseQueryOptions<PrescribedDayDetail, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<PrescribedDayDetail, Error>({
+    ...options,
+    queryKey: queryKeys.workouts.day(dayId),
+    queryFn: () => workoutsApi.getPrescribedDay(dayId),
+    enabled: Boolean(dayId) && (options?.enabled ?? true),
+  });
+}
+
+export function useMemberWorkoutSessions(
+  memberId: string,
+  params: ListWorkoutSessionsParams = {},
+  options?: Omit<UseQueryOptions<WorkoutSession[], Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<WorkoutSession[], Error>({
+    ...options,
+    queryKey: queryKeys.workouts.sessions(memberId, params),
+    queryFn: () => workoutsApi.listMemberSessions(memberId, params),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+export function useMemberProgressReviews(
+  memberId: string,
+  options?: Omit<UseQueryOptions<WorkoutProgressReview[], Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<WorkoutProgressReview[], Error>({
+    ...options,
+    queryKey: queryKeys.workouts.reviews(memberId),
+    queryFn: () => workoutsApi.listProgressReviews(memberId),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+export function useWorkoutProgressComparison(
+  memberId: string,
+  options?: Omit<UseQueryOptions<ProgressReviewComparison, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<ProgressReviewComparison, Error>({
+    ...options,
+    queryKey: queryKeys.workouts.comparison(memberId),
+    queryFn: () => workoutsApi.getProgressComparison(memberId),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+export function useMemberMeasurements(
+  memberId: string,
+  params: ListMeasurementsParams = {},
+  options?: Omit<UseQueryOptions<Paginated<MeasurementLog>, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<Paginated<MeasurementLog>, Error>({
+    ...options,
+    queryKey: queryKeys.workouts.measurements(memberId, params),
+    queryFn: () => measurementsApi.list(memberId, params),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+export function useMemberAttendanceHistory(
+  memberId: string,
+  params: { from?: string; to?: string; page?: number; limit?: number } = {},
+  options?: Omit<
+    UseQueryOptions<Paginated<AttendanceMemberHistoryPoint>, Error>,
+    'queryKey' | 'queryFn'
+  >,
+) {
+  return useQuery<Paginated<AttendanceMemberHistoryPoint>, Error>({
+    ...options,
+    queryKey: queryKeys.workouts.attendance(memberId, params),
+    queryFn: () => attendanceApi.getMemberHistory(memberId, params),
+    enabled: Boolean(memberId) && (options?.enabled ?? true),
+  });
+}
+
+export function useExercises(
+  params: ListExercisesParams = {},
+  options?: Omit<UseQueryOptions<Exercise[], Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<Exercise[], Error>({
+    ...options,
+    queryKey: queryKeys.workouts.exercises(params),
+    queryFn: () => workoutsApi.listExercises(params),
+  });
+}
+
+export function useDayTemplates(
+  options?: Omit<UseQueryOptions<WorkoutDayTemplate[], Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<WorkoutDayTemplate[], Error>({
+    ...options,
+    queryKey: queryKeys.workouts.dayTemplates,
+    queryFn: () => workoutsApi.listDayTemplates(),
+  });
+}
+
+export function useDayTemplate(
+  id: string,
+  options?: Omit<UseQueryOptions<WorkoutDayTemplate, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<WorkoutDayTemplate, Error>({
+    ...options,
+    queryKey: queryKeys.workouts.dayTemplate(id),
+    queryFn: () => workoutsApi.getDayTemplate(id),
+    enabled: Boolean(id) && (options?.enabled ?? true),
+  });
+}
+
+export function usePlanTemplates(
+  options?: Omit<UseQueryOptions<WorkoutPlanTemplate[], Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<WorkoutPlanTemplate[], Error>({
+    ...options,
+    queryKey: queryKeys.workouts.planTemplates,
+    queryFn: () => workoutsApi.listPlanTemplates(),
+  });
+}
+
+export function usePlanTemplate(
+  id: string,
+  options?: Omit<UseQueryOptions<WorkoutPlanTemplate, Error>, 'queryKey' | 'queryFn'>,
+) {
+  return useQuery<WorkoutPlanTemplate, Error>({
+    ...options,
+    queryKey: queryKeys.workouts.planTemplate(id),
+    queryFn: () => workoutsApi.getPlanTemplate(id),
+    enabled: Boolean(id) && (options?.enabled ?? true),
+  });
+}
+
+function useWorkoutMutation<TResult, TVariables>(
+  mutationFn: (variables: TVariables) => Promise<TResult>,
+  options?: UseMutationOptions<TResult, Error, TVariables>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation<TResult, Error, TVariables>({
+    mutationFn,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workouts.all });
+    },
+    ...options,
+  });
+}
+
+export function useCreateExercise(
+  options?: UseMutationOptions<Exercise, Error, CreateExerciseRequest>,
+) {
+  return useWorkoutMutation<Exercise, CreateExerciseRequest>(
+    (payload) => workoutsApi.createExercise(payload),
+    options,
+  );
+}
+
+export function useUpdateExercise(
+  options?: UseMutationOptions<
+    Exercise,
+    Error,
+    { id: string; payload: Partial<CreateExerciseRequest> }
+  >,
+) {
+  return useWorkoutMutation<Exercise, { id: string; payload: Partial<CreateExerciseRequest> }>(
+    ({ id, payload }) => workoutsApi.updateExercise(id, payload),
+    options,
+  );
+}
+
+export function useUploadExerciseMedia(
+  options?: UseMutationOptions<
+    Exercise,
+    Error,
+    { id: string; mediaType: 'image' | 'gif'; file: File }
+  >,
+) {
+  return useWorkoutMutation<
+    Exercise,
+    { id: string; mediaType: 'image' | 'gif'; file: File }
+  >(
+    ({ id, mediaType, file }) =>
+      workoutsApi.uploadExerciseMedia(id, mediaType, file),
+    options,
+  );
+}
+
+export function useCreateDayTemplate(
+  options?: UseMutationOptions<
+    WorkoutDayTemplate,
+    Error,
+    { name: string; description?: string; estimated_duration_minutes?: number }
+  >,
+) {
+  return useWorkoutMutation<
+    WorkoutDayTemplate,
+    { name: string; description?: string; estimated_duration_minutes?: number }
+  >((payload) => workoutsApi.createDayTemplate(payload), options);
+}
+
+export function useSetDayTemplateExercises(
+  options?: UseMutationOptions<
+    WorkoutDayTemplate,
+    Error,
+    { id: string; exercises: DayTemplateExerciseInput[] }
+  >,
+) {
+  return useWorkoutMutation<
+    WorkoutDayTemplate,
+    { id: string; exercises: DayTemplateExerciseInput[] }
+  >(({ id, exercises }) => workoutsApi.setDayTemplateExercises(id, exercises), options);
+}
+
+export function useCopyDayTemplate(
+  options?: UseMutationOptions<
+    WorkoutDayTemplate,
+    Error,
+    { id: string; name?: string }
+  >,
+) {
+  return useWorkoutMutation<WorkoutDayTemplate, { id: string; name?: string }>(
+    ({ id, name }) => workoutsApi.copyDayTemplate(id, name),
+    options,
+  );
+}
+
+export function useCreatePlanTemplate(
+  options?: UseMutationOptions<
+    WorkoutPlanTemplate,
+    Error,
+    { name: string; description?: string }
+  >,
+) {
+  return useWorkoutMutation<
+    WorkoutPlanTemplate,
+    { name: string; description?: string }
+  >((payload) => workoutsApi.createPlanTemplate(payload), options);
+}
+
+export function useSetPlanTemplateDays(
+  options?: UseMutationOptions<
+    WorkoutPlanTemplate,
+    Error,
+    { id: string; days: PlanTemplateDayInput[] }
+  >,
+) {
+  return useWorkoutMutation<
+    WorkoutPlanTemplate,
+    { id: string; days: PlanTemplateDayInput[] }
+  >(({ id, days }) => workoutsApi.setPlanTemplateDays(id, days), options);
+}
+
+export function useCreateWorkoutAssignment(
+  options?: UseMutationOptions<
+    WorkoutPlanAssignment,
+    Error,
+    { memberId: string; payload: CreateAssignmentRequest }
+  >,
+) {
+  return useWorkoutMutation<
+    WorkoutPlanAssignment,
+    { memberId: string; payload: CreateAssignmentRequest }
+  >(({ memberId, payload }) => workoutsApi.createAssignment(memberId, payload), options);
+}
+
+export function useReviewPrescribedDay(
+  options?: UseMutationOptions<
+    { review: PlanDayReview; day: PrescribedWorkoutDay },
+    Error,
+    { dayId: string; decision: 'approve' | 'request_remaining'; notes?: string }
+  >,
+) {
+  return useWorkoutMutation<
+    { review: PlanDayReview; day: PrescribedWorkoutDay },
+    { dayId: string; decision: 'approve' | 'request_remaining'; notes?: string }
+  >(
+    ({ dayId, decision, notes }) =>
+      workoutsApi.reviewPrescribedDay(dayId, decision, notes),
+    options,
+  );
+}
+
+export function useCreateProgressReview(
+  options?: UseMutationOptions<
+    { review: WorkoutProgressReview; resulting_assignment: WorkoutPlanAssignment | null },
+    Error,
+    { memberId: string; payload: CreateProgressReviewRequest }
+  >,
+) {
+  return useWorkoutMutation<
+    { review: WorkoutProgressReview; resulting_assignment: WorkoutPlanAssignment | null },
+    { memberId: string; payload: CreateProgressReviewRequest }
+  >(({ memberId, payload }) => workoutsApi.createProgressReview(memberId, payload), options);
+}
+
+export function useFinishWorkoutSession(
+  options?: UseMutationOptions<WorkoutSession, Error, string>,
+) {
+  return useWorkoutMutation<WorkoutSession, string>(
+    (sessionId) => workoutsApi.finishSession(sessionId),
+    options,
+  );
+}
+
+export function useCancelWorkoutSession(
+  options?: UseMutationOptions<WorkoutSession, Error, string>,
+) {
+  return useWorkoutMutation<WorkoutSession, string>(
+    (sessionId) => workoutsApi.cancelSession(sessionId),
+    options,
+  );
+}
+
+export function useDeleteWorkoutSession(
+  options?: UseMutationOptions<
+    { success: true; id: string; deleted_at: string | null },
+    Error,
+    string
+  >,
+) {
+  return useWorkoutMutation<
+    { success: true; id: string; deleted_at: string | null },
+    string
+  >((sessionId) => workoutsApi.deleteSession(sessionId), options);
 }
 

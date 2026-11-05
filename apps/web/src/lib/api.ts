@@ -124,7 +124,8 @@ async function performRequest(path: string, options: RequestOptions): Promise<Re
 
   const finalHeaders = new Headers(headers);
   finalHeaders.set('Accept', 'application/json');
-  if (body !== undefined && !finalHeaders.has('Content-Type')) {
+  const isFormData = body instanceof FormData;
+  if (body !== undefined && !isFormData && !finalHeaders.has('Content-Type')) {
     finalHeaders.set('Content-Type', 'application/json');
   }
 
@@ -139,7 +140,12 @@ async function performRequest(path: string, options: RequestOptions): Promise<Re
   return fetch(buildUrl(path, query), {
     ...rest,
     headers: finalHeaders,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body:
+      body === undefined
+        ? undefined
+        : isFormData
+          ? (body as FormData)
+          : JSON.stringify(body),
   });
 }
 
@@ -261,6 +267,12 @@ export const api = {
     apiRequest<T>(path, { ...options, method: 'GET' }),
   post: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     apiRequest<T>(path, { ...options, method: 'POST', body }),
+  /**
+   * Multipart POST. The browser sets the boundary; `performRequest` detects
+   * `FormData` and deliberately does NOT set a JSON Content-Type.
+   */
+  postForm: <T>(path: string, form: FormData, options?: RequestOptions) =>
+    apiRequest<T>(path, { ...options, method: 'POST', body: form }),
   patch: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     apiRequest<T>(path, { ...options, method: 'PATCH', body }),
   put: <T>(path: string, body?: unknown, options?: RequestOptions) =>

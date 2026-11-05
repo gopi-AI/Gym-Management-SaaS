@@ -1,5 +1,4 @@
 import {
-  IsUUID,
   IsString,
   IsOptional,
   IsBoolean,
@@ -7,10 +6,14 @@ import {
   MaxLength,
 } from 'class-validator';
 
+/**
+ * Legacy flat-template creation body.
+ *
+ * The org is derived from request context, never from this body. New trainer
+ * composition uses workout-day and weekly-plan templates; this remains for the
+ * legacy `WorkoutTemplate` rows the PT flow assigns.
+ */
 export class CreateWorkoutTemplateDto {
-  @IsUUID()
-  organization_id!: string;
-
   @IsString()
   @MaxLength(255)
   name!: string;

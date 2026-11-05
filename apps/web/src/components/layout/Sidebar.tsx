@@ -107,6 +107,12 @@ export default function Sidebar({
               active={activeMenu === 'check-in'}
             />
             <SidebarItem
+              icon="activity"
+              label="Workouts"
+              href="/workouts"
+              active={activeMenu === 'workouts'}
+            />
+            <SidebarItem
               icon="heartbeat"
               label="Retention"
               href="/retention-analysis"

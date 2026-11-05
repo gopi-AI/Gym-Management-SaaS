@@ -3,8 +3,10 @@ import {
   IsOptional,
   IsString,
   IsDateString,
+  IsEnum,
   MaxLength,
 } from 'class-validator';
+import { AssignmentLoggingMode } from '../../workouts/entities/assignment-logging-mode.enum';
 
 /**
  * Input for assigning a workout plan to a member in the context of a PT
@@ -39,4 +41,12 @@ export class AssignEnrollmentWorkoutPlanDto {
   @MaxLength(2000)
   @IsOptional()
   notes?: string;
+
+  /**
+   * PT members use detailed sets/reps/weight logging. Defaults to detailed for
+   * this PT path; a caller may still choose simple explicitly.
+   */
+  @IsEnum(AssignmentLoggingMode)
+  @IsOptional()
+  logging_mode?: AssignmentLoggingMode;
 }

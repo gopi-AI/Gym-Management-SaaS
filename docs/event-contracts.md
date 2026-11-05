@@ -350,6 +350,39 @@ The loyalty contracts live in `packages/contracts/src/events/loyalty.events.ts`
   `points` is the SIGNED delta (positive credit, negative debit). No consumer is
   registered yet — the outbox marks it processed by design.
 
+### Workouts Events
+The workout contracts live in `packages/contracts/src/events/workouts.events.ts`;
+the backend mirror is `src/workouts/workouts.constants.ts`. Event names are
+unversioned PascalCase with the version carried separately (`v1`). Every event is
+written to `shared.outbox` in the same transaction as the domain write.
+
+- `WorkoutPlanAssigned.v1`
+  `{ assignmentId, memberId, templateId, planTemplateId, assignedBy, assignedAt, startDate, endDate, loggingMode }`
+  `templateId` is the legacy flat-template source; `planTemplateId` is the weekly
+  plan-template source. Exactly one is non-null. `loggingMode` is `simple` for a
+  regular member or `detailed` for a PT member.
+- `WorkoutSessionLogged.v1`
+  `{ sessionId, memberId, organizationId, templateId, assignmentId, prescribedDayId, sessionDate, startedAt, completedAt, durationMinutes }`
+  Produced when a member starts a session. The session is `in_progress` at that
+  point; `completedAt` is null. A finished session does NOT approve a plan day.
+- `WorkoutPlanDaySubmitted.v1`
+  `{ prescribedDayId, assignmentId, memberId, submissionId, submittedAt, sessionIds }`
+  Produced when the member submits a prescribed day. It is a report for trainer
+  review; the day status becomes `submitted`.
+- `WorkoutPlanDayReviewed.v1`
+  `{ reviewId, prescribedDayId, assignmentId, memberId, decision, submissionId, reviewedBy, decidedAt, status }`
+  `decision` is `approve` or `request_remaining`; `status` is the resulting
+  `approved` / `remaining_required` day status. Only `approved` counts toward the
+  primary plan progress.
+- `WorkoutProgressReviewRecorded.v1`
+  `{ reviewId, memberId, assignmentId, reviewDate, periodStart, periodEnd, approvedDays, prescribedDays, progressPercentage, decision, reviewedBy, resultingAssignmentId }`
+  Produced by a trainer-led 30–45-day review. The counts are a snapshot at review
+  time. `decision` is `continue`, `modify`, `extend` or `new_plan`.
+
+The primary plan-progress formula is **trainer-approved finished prescribed days
+/ total prescribed (non-rest) days × 100**. Exercise-level completion is a
+separate supporting metric and is never the plan-completion measure.
+
 ### Notification Events
 - `NotificationSent.v1`
   ```json

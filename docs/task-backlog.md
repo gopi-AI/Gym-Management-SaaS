@@ -339,27 +339,46 @@ This document contains the implementation tasks broken down by phase, with depen
 - **Objective**: Implement API for workout plans and assignments tab.
 - **Dependencies**: P2-01
 - **Files/modules affected**:
-  - src/workouts/ (service for workout data)
-- **Database changes**:
-  - workout_templates table
-  - workout_exercises table
-  - workout_sessions table
-- **API changes**:
-  - GET /v1/members/{memberId}/workout-plans
-  - GET /v1/members/{memberId}/workout-sessions
-- **Frontend changes**: None
-- **Worker changes**: None
+  - src/workouts/ (exercise library, day/plan templates, assignment snapshots, sessions, reviews)
+  - packages/contracts/src/events/workouts.events.ts (event mirror)
+  - apps/web/src/components/members/WorkoutsTab.tsx and lib/workouts-api.ts
+- **Database changes** (migrations 1793000000000–1793000000004):
+  - Exercise media columns on `WORKOUTS_EXERCISES`
+  - `WORKOUTS_WORKOUT_DAY_TEMPLATES` / `_EXERCISES`
+  - `WORKOUTS_WORKOUT_PLAN_TEMPLATES` / `_DAYS`
+  - `WORKOUTS_PRESCRIBED_DAYS` / `_EXERCISES` (assignment snapshots) and assignment snapshot columns
+  - Session lifecycle/soft-delete columns and session-exercise report columns
+  - `WORKOUTS_PLAN_DAY_SUBMISSIONS` / `_EXERCISES`, `WORKOUTS_PLAN_DAY_REVIEWS`
+  - `WORKOUTS_PROGRESS_REVIEWS` / `_MEASUREMENTS`
+- **API changes** (`v1/workouts/...`; see `docs/p2-05-workouts-acceptance-report.md`):
+  - Exercise library browse/create/edit + image/GIF/YouTube media
+  - Day-template compose/copy; weekly plan-template compose
+  - Member assignment (snapshotted), rolling sequence, assignment detail
+  - Session create/edit/finish/cancel/soft-delete
+  - Prescribed-day submit, trainer approve/request remaining
+  - Progress reviews and measurement comparison
+  - `GET /v1/members/{memberId}/workouts` remains the Member 360 tab shape; its `progress` is now day-based
+- **Frontend changes**: Member 360 Workouts tab extended (day-based progress, sequence, sessions, review state, progress reviews); exercise/template management UI
+- **Worker changes**: None (no automatic expiry, approval or progression)
 - **Tests**:
-  - Workout plan retrieval
-  - Workout session logging
-  - Exercise library integration
+  - Hermetic service/controller/migration specs
+  - Real-Postgres integration spec for snapshots, progress, sessions and cross-tenant denial
+  - api-gate `workouts` group
 - **Acceptance criteria**:
-  - Lists assigned workout plans
-  - Shows workout session history
-  - Exercise details available
-  - Progress tracking per assignment
+  - Lists assigned workout plans with day-based progress
+  - Shows workout session history (cancelled/in-progress/finished, soft-delete excluded)
+  - Exercise details and media available
+  - Trainer review and 30–45-day progress-review records
 - **Risks**: Workout data inconsistency, missing exercises
-- **Deferred — session logging (write path)**: `WorkoutSession`/`WorkoutSessionExercise` have no writer, no route, and no `WorkoutSessionLogged` event producer in `src/workouts/`. "Shows workout session history" is met as an always-correct-but-empty read path today. Revisit when session-lifecycle rules (who logs, editable vs. immutable, assignment linkage, duplicates policy, event version) are established.
+- **Superseded 2026-11-01 (owner-approved P2-05 requirements)**:
+  - The primary plan-progress measure is **trainer-approved finished prescribed days / total prescribed (non-rest) days × 100**. The earlier "exercise-completion percentage" reading (and the shipped `getAssignmentProgress()` exercise-row denominator) is retired. Exercise completion remains a separate supporting metric.
+  - Missed prescribed workouts never expire; the sequence is rolling and carries unfinished days forward.
+  - Assignment preserves a snapshot; editing a reusable template affects future assignments only.
+- **Known external dependencies / blocked acceptance** (detailed in `docs/p2-05-workouts-acceptance-report.md`):
+  - No authoritative member-account identity: `IDENTITY_USERS` has no link to `MEMBERS_MEMBERS`, so "only members may log sessions for themselves" cannot be enforced beyond org membership + permission.
+  - No general-trainer or member role exists (only `owner`); the regular-vs-PT trainer distinction is not enforceable at the role layer.
+  - No biometric vendor/API/synchronisation exists. Attendance records remain the real read-only source; nothing is simulated or fabricated.
+- **Status: IMPLEMENTED ON BRANCH, NOT COMMITTED/PUSHED** (2026-11-01). Acceptance matrix and evidence are in `docs/p2-05-workouts-acceptance-report.md`; the task is not declared complete until Tier 2 verification and owner review.
 
 ### P2-06: Diet Tab API
 - **Objective**: Implement API for diet plans and nutrition tracking tab.

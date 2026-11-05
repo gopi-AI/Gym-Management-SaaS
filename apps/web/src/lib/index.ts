@@ -16,6 +16,7 @@ export * from './memberships-api';
 export * from './member-360-api';
 export * from './pt-api';
 export * from './workouts-api';
+export * from './measurements-api';
 export * from './diet-api';
 export * from './loyalty-api';
 export * from './attendance-api';

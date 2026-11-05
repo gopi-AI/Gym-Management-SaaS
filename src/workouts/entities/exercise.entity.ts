@@ -42,6 +42,28 @@ export class Exercise {
   @Column({ type: 'varchar', length: 100, nullable: true })
   equipment_needed?: string | null;
 
+  /**
+   * Optional media, uploaded through the existing `S3Service`.
+   *
+   * Only the key returned by the upload is stored — never a client-supplied
+   * path or URL. `video_url` is constrained to a strict YouTube video URL by
+   * the DTO; no arbitrary embed URL is accepted.
+   */
+  @Column({ type: 'varchar', length: 1024, nullable: true })
+  image_key?: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  image_mime_type?: string | null;
+
+  @Column({ type: 'varchar', length: 1024, nullable: true })
+  gif_key?: string | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  gif_mime_type?: string | null;
+
+  @Column({ type: 'varchar', length: 2048, nullable: true })
+  video_url?: string | null;
+
   @Column({ type: 'boolean', default: true })
   is_active!: boolean;
 

@@ -725,16 +725,34 @@ export interface PtSession {
 
 export interface WorkoutsTabResponse {
   assignments: WorkoutsTabAssignment[];
-  /** Newest first; always empty until a workout-session logger ships. */
+  /** Newest first; soft-deleted sessions are excluded by the API. */
   sessions: WorkoutSession[];
   exercises: Exercise[];
 }
 
-export interface WorkoutAssignmentProgress {
+export interface WorkoutExerciseCompletion {
   completed: number;
   prescribed: number;
-  /** 0–100, server-computed */
   percentage: number;
+}
+
+export interface WorkoutPlanDayStatusCounts {
+  pending: number;
+  submitted: number;
+  remaining_required: number;
+  approved: number;
+}
+
+export interface WorkoutAssignmentProgress {
+  /** Trainer-approved finished prescribed days. */
+  completed: number;
+  /** Non-rest prescribed days. */
+  prescribed: number;
+  /** 0–100, server-computed and capped. */
+  percentage: number;
+  status_counts?: WorkoutPlanDayStatusCounts;
+  /** Supporting metric only; never the primary plan-completion measure. */
+  exercise_completion?: WorkoutExerciseCompletion;
 }
 
 export interface WorkoutsTabAssignment extends WorkoutPlanAssignment {
@@ -745,6 +763,10 @@ export interface WorkoutSessionExercise {
   id: string;
   session_id: string;
   exercise_id: string;
+  /** The assignment snapshot row this log fulfils. */
+  prescribed_day_exercise_id?: string | null;
+  /** Regular-member checkbox. */
+  completed?: boolean | null;
   sets_completed?: number | null;
   reps_completed?: number | null;
   /** NUMERIC columns are returned by pg as strings. */
@@ -760,22 +782,35 @@ export interface WorkoutSession {
   member_id: string;
   template_id?: string | null;
   assignment_id?: string | null;
+  prescribed_day_id?: string | null;
+  /** in_progress | finished | cancelled */
+  status: 'in_progress' | 'finished' | 'cancelled';
   /** ISO date (YYYY-MM-DD). */
   session_date: string;
   started_at?: string | null;
   completed_at?: string | null;
+  cancelled_at?: string | null;
   duration_minutes?: number | null;
   notes?: string | null;
   mood?: number | null;
+  created_by?: string | null;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
   session_exercises?: WorkoutSessionExercise[];
   created_at: string;
+  updated_at?: string;
 }
 
 export interface WorkoutPlanAssignment {
   id: string;
   organization_id: string;
   member_id: string;
-  template_id: string;
+  /** Legacy flat-template source (nullable for plan-template assignments). */
+  template_id?: string | null;
+  plan_template_id?: string | null;
+  logging_mode?: 'simple' | 'detailed';
+  snapshot_taken_at?: string | null;
+  progress_review_id?: string | null;
   assigned_by: string;
   assigned_at: string;
   start_date: string;
@@ -795,9 +830,295 @@ export interface Exercise {
   category?: string | null;
   muscle_group?: string | null;
   equipment_needed?: string | null;
+  image_key?: string | null;
+  image_mime_type?: string | null;
+  gif_key?: string | null;
+  gif_mime_type?: string | null;
+  video_url?: string | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
+}
+
+/* ── P2-05 workout composition / assignment / review shapes ───────────── */
+
+export type PlanDayStatus =
+  | 'pending'
+  | 'submitted'
+  | 'remaining_required'
+  | 'approved';
+
+export type ExerciseSection =
+  | 'warmup'
+  | 'strength'
+  | 'cardio'
+  | 'stretch'
+  | 'recovery';
+
+export interface WorkoutDayTemplateExercise {
+  id: string;
+  day_template_id: string;
+  exercise_id: string;
+  section: ExerciseSection;
+  sets?: number | null;
+  reps?: number | null;
+  weight_template?: string | number | null;
+  rest_seconds?: number | null;
+  duration_seconds?: number | null;
+  distance_meters?: string | number | null;
+  instructions?: string | null;
+  sort_order: number;
+  exercise_name?: string | null;
+}
+
+export interface WorkoutDayTemplate {
+  id: string;
+  organization_id: string;
+  name: string;
+  description?: string | null;
+  estimated_duration_minutes?: number | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  exercises?: WorkoutDayTemplateExercise[];
+}
+
+export interface WorkoutPlanTemplateDay {
+  id: string;
+  plan_template_id: string;
+  day_template_id?: string | null;
+  day_order: number;
+  day_label?: string | null;
+  is_rest_day: boolean;
+  is_optional: boolean;
+  day_template?: { id: string; name: string } | null;
+  created_at: string;
+}
+
+export interface WorkoutPlanTemplate {
+  id: string;
+  organization_id: string;
+  name: string;
+  description?: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  days?: WorkoutPlanTemplateDay[];
+}
+
+export interface PrescribedWorkoutDayExercise {
+  id: string;
+  prescribed_day_id: string;
+  exercise_id: string;
+  section: ExerciseSection;
+  sets?: number | null;
+  reps?: number | null;
+  weight_template?: string | number | null;
+  rest_seconds?: number | null;
+  duration_seconds?: number | null;
+  distance_meters?: string | number | null;
+  instructions?: string | null;
+  sort_order: number;
+  exercise_name_snapshot: string;
+}
+
+export interface PrescribedWorkoutDay {
+  id: string;
+  organization_id: string;
+  assignment_id: string;
+  sequence_order: number;
+  source_day_template_id?: string | null;
+  name: string;
+  day_label?: string | null;
+  is_rest_day: boolean;
+  is_optional: boolean;
+  status: PlanDayStatus;
+  submitted_at?: string | null;
+  approved_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  exercises?: PrescribedWorkoutDayExercise[];
+}
+
+export interface WorkoutSequenceEntry {
+  assignment: WorkoutPlanAssignment;
+  days: PrescribedWorkoutDay[];
+  current_day_id: string | null;
+  progress: WorkoutAssignmentProgress;
+}
+
+export interface PlanDaySubmissionExercise {
+  id: string;
+  submission_id: string;
+  prescribed_day_exercise_id: string;
+  completed?: boolean | null;
+  sets_completed?: number | null;
+  reps_completed?: number | null;
+  weight_used?: string | number | null;
+  notes?: string | null;
+}
+
+export interface PlanDaySubmission {
+  id: string;
+  organization_id: string;
+  prescribed_day_id: string;
+  member_id: string;
+  submitted_by?: string | null;
+  submitted_at: string;
+  notes?: string | null;
+  exercises: PlanDaySubmissionExercise[];
+}
+
+export interface PlanDayReview {
+  id: string;
+  organization_id: string;
+  prescribed_day_id: string;
+  submission_id?: string | null;
+  reviewed_by?: string | null;
+  decision: 'approve' | 'request_remaining';
+  notes?: string | null;
+  decided_at: string;
+  created_at: string;
+}
+
+export interface PrescribedDayDetail {
+  day: PrescribedWorkoutDay & { exercises: PrescribedWorkoutDayExercise[] };
+  assignment: WorkoutPlanAssignment;
+  submissions: PlanDaySubmission[];
+  reviews: PlanDayReview[];
+  sessions: WorkoutSession[];
+}
+
+export interface ProgressReviewMeasurement {
+  id: string;
+  review_id: string;
+  measurement_id: string;
+  measurement_type: string;
+  value: string | number;
+  unit: string;
+  measured_at: string;
+}
+
+export interface WorkoutProgressReview {
+  id: string;
+  organization_id: string;
+  member_id: string;
+  assignment_id: string;
+  review_date: string;
+  period_start: string;
+  period_end: string;
+  approved_days: number;
+  prescribed_days: number;
+  progress_percentage: number;
+  plan_day_summary: Record<string, number>;
+  attendance_summary: Record<string, unknown>;
+  results?: string | null;
+  fitness_improvements?: string | null;
+  goal_assessment?: string | null;
+  observations?: string | null;
+  recommendations?: string | null;
+  decision: 'continue' | 'modify' | 'extend' | 'new_plan';
+  reviewed_by?: string | null;
+  resulting_assignment_id?: string | null;
+  created_at: string;
+  measurements: ProgressReviewMeasurement[];
+}
+
+export interface ProgressReviewComparison {
+  member_id: string;
+  reviews: Array<{
+    id: string;
+    review_date: string;
+    period_start: string;
+    period_end: string;
+    approved_days: number;
+    prescribed_days: number;
+    progress_percentage: number;
+    decision: string;
+  }>;
+  measurements: Array<{
+    measurement_type: string;
+    unit: string;
+    points: Array<{
+      review_id: string;
+      review_date: string;
+      measurement_id: string;
+      value: number;
+    }>;
+  }>;
+}
+
+export interface MeasurementLog {
+  id: string;
+  organization_id: string;
+  member_id: string;
+  measurement_type: string;
+  value: string | number;
+  unit: string;
+  measured_at: string;
+  measured_by?: string | null;
+  notes?: string | null;
+  created_at: string;
+}
+
+export interface AttendanceMemberHistoryPoint {
+  date: string;
+  checkInCount: number;
+  firstCheckIn: string | null;
+  lastCheckIn: string | null;
+}
+
+export interface CreateExerciseRequest {
+  name: string;
+  description?: string;
+  category?: string;
+  muscle_group?: string;
+  equipment_needed?: string;
+  is_active?: boolean;
+}
+
+export interface DayTemplateExerciseInput {
+  exercise_id: string;
+  section?: ExerciseSection;
+  sets?: number;
+  reps?: number;
+  weight_template?: number;
+  rest_seconds?: number;
+  duration_seconds?: number;
+  distance_meters?: number;
+  instructions?: string;
+  sort_order: number;
+}
+
+export interface PlanTemplateDayInput {
+  day_template_id?: string;
+  day_label?: string;
+  is_rest_day?: boolean;
+  is_optional?: boolean;
+  day_order: number;
+}
+
+export interface CreateAssignmentRequest {
+  plan_template_id: string;
+  start_date: string;
+  end_date?: string;
+  notes?: string;
+  logging_mode?: 'simple' | 'detailed';
+}
+
+export interface CreateProgressReviewRequest {
+  assignment_id: string;
+  review_date: string;
+  period_start: string;
+  period_end: string;
+  decision: 'continue' | 'modify' | 'extend' | 'new_plan';
+  results?: string;
+  fitness_improvements?: string;
+  goal_assessment?: string;
+  observations?: string;
+  recommendations?: string;
+  measurement_ids?: string[];
+  next_assignment?: CreateAssignmentRequest;
 }
 
 export interface PtWorkoutProgress {

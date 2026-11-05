@@ -25,6 +25,7 @@ import { MembersService } from '../../members/services/members.service';
 import { WorkoutsService } from '../../workouts/services/workouts.service';
 import { WorkoutPlanAssignment } from '../../workouts/entities/workout-plan-assignment.entity';
 import { AssignPlanInput } from '../../workouts/dto/assign-plan.input';
+import { AssignmentLoggingMode } from '../../workouts/entities/assignment-logging-mode.enum';
 
 /**
  * Single legal write path for `PTEnrollment` and `TrainerCommission` rows.
@@ -328,6 +329,7 @@ export class PtEnrollmentsService {
       startDate: dto.start_date ?? enrollment.start_date,
       endDate: dto.end_date ?? enrollment.end_date ?? undefined,
       notes: dto.notes,
+      loggingMode: dto.logging_mode ?? AssignmentLoggingMode.DETAILED,
     };
 
     return this.workoutsService.assignPlan(input);

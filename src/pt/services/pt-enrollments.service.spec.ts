@@ -16,6 +16,7 @@ import { OutboxService } from '../../shared/outbox/outbox.service';
 import { MembersService } from '../../members/services/members.service';
 import { WorkoutsService } from '../../workouts/services/workouts.service';
 import { WorkoutPlanAssignment } from '../../workouts/entities/workout-plan-assignment.entity';
+import { AssignmentLoggingMode } from '../../workouts/entities/assignment-logging-mode.enum';
 import { computeCommissionAmount, PT_EVENT_VERSION } from '../pt.constants';
 
 /**
@@ -218,6 +219,7 @@ describe('PtEnrollmentsService', () => {
         startDate: '2026-09-01',
         endDate: undefined,
         notes: undefined,
+        loggingMode: 'detailed',
       });
       // Pass-through: the row returned is Workouts' row, never one PT built.
       expect(result).toBe(assignmentFixture);
@@ -241,7 +243,22 @@ describe('PtEnrollmentsService', () => {
         startDate: '2026-10-01',
         endDate: '2026-12-31',
         notes: 'Strength block',
+        loggingMode: 'detailed',
       });
+    });
+
+    it('forwards an explicit logging_mode override', async () => {
+      mockWorkoutsService.assignPlan.mockResolvedValue(assignmentFixture);
+
+      await service.assignWorkoutPlan('enrollment-1', {
+        template_id: 'template-1',
+        assigned_by: 'trainer-user-1',
+        logging_mode: AssignmentLoggingMode.SIMPLE,
+      });
+
+      expect(mockWorkoutsService.assignPlan).toHaveBeenCalledWith(
+        expect.objectContaining({ loggingMode: 'simple' }),
+      );
     });
 
     it('does NO write of its own — no transaction, no WorkoutPlanAssignment repository', async () => {

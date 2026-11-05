@@ -3,16 +3,17 @@ import {
   IsString,
   IsOptional,
   IsDateString,
+  IsEnum,
   MaxLength,
 } from 'class-validator';
+import { AssignmentLoggingMode } from '../entities/assignment-logging-mode.enum';
 
 /**
  * Input contract for `WorkoutsService.assignPlan()`.
  *
- * This is the single write path for creating workout plan assignments,
- * whether called from a future PT enrollment flow or a member-initiated
- * self-assignment. There is deliberately no separate "create assignment"
- * DTO for the API — the controller wraps this same input type.
+ * This is the single write path for creating LEGACY flat-template workout plan
+ * assignments, used by the PT module. The member-facing trainer API assigns a
+ * weekly plan template instead (`CreateAssignmentDto`).
  */
 export class AssignPlanInput {
   @IsUUID()
@@ -36,4 +37,9 @@ export class AssignPlanInput {
   @IsString()
   @MaxLength(2000)
   notes?: string;
+
+  /** PT members use detailed logging; defaults to simple when omitted. */
+  @IsOptional()
+  @IsEnum(AssignmentLoggingMode)
+  loggingMode?: AssignmentLoggingMode;
 }

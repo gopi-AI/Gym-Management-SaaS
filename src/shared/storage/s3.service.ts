@@ -1,9 +1,15 @@
 import { Injectable } from '@nestjs/common';
 
 /**
- * Minimal S3 abstraction wrapping S3 operations for member document uploads.
+ * Minimal S3 abstraction wrapping S3 operations for member document uploads and
+ * workout-exercise media.
  *
- * Key convention (per Q25): `orgs/{orgId}/members/{memberId}/documents/{uuid}/{filename}`
+ * Key conventions:
+ *   - member documents (Q25): `orgs/{orgId}/members/{memberId}/documents/{uuid}/{filename}`
+ *   - exercise media:         `orgs/{orgId}/workouts/exercises/{exerciseId}/{uuid}/{filename}`
+ *
+ * Only a key returned by this service is ever persisted. Callers must not
+ * accept a client-supplied path.
  *
  * Design decision — S3/DB atomicity:
  *   Order: S3 upload FIRST, DB insert SECOND.
@@ -102,5 +108,21 @@ export class S3Service {
     fileName: string,
   ): string {
     return `orgs/${organizationId}/members/${memberId}/documents/${uuid}/${fileName}`;
+  }
+
+  /**
+   * Build an S3 key for an exercise-library image/GIF.
+   *
+   * Exercise media is organization-scoped, not member-scoped. The caller must
+   * sanitise `fileName` before passing it (the Workouts service replaces path
+   * separators and unusual characters).
+   */
+  buildExerciseMediaKey(
+    organizationId: string,
+    exerciseId: string,
+    uuid: string,
+    fileName: string,
+  ): string {
+    return `orgs/${organizationId}/workouts/exercises/${exerciseId}/${uuid}/${fileName}`;
   }
 }

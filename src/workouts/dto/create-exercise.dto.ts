@@ -1,5 +1,4 @@
 import {
-  IsUUID,
   IsString,
   IsOptional,
   IsBoolean,
@@ -8,10 +7,13 @@ import {
 } from 'class-validator';
 import { ExerciseCategory } from '../entities/exercise-category.enum';
 
+/**
+ * Exercise-library creation body.
+ *
+ * `organization_id` is deliberately absent: the tenant is derived from the
+ * authorized request context, never from client input.
+ */
 export class CreateExerciseDto {
-  @IsUUID()
-  organization_id!: string;
-
   @IsString()
   @MaxLength(255)
   name!: string;

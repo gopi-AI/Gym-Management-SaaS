@@ -3,21 +3,30 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  UpdateDateColumn,
   Index,
   OneToMany,
 } from 'typeorm';
 import { WorkoutSessionExercise } from './workout-session-exercise.entity';
+import { WorkoutSessionStatus } from './workout-session-status.enum';
 
 /**
  * A logged workout session (self-directed or PT-supervised).
  *
- * Progress is computed from `WorkoutSessionExercise` completion data — there
- * is NO cumulative-volume field or calculation per Q7 (explicitly rejected).
- * Optional RPE exists as a non-driving intensity measure.
+ * The session lifecycle (`status`) is separate from the prescribed plan-day
+ * lifecycle: finishing a session never approves a plan day, and cancelling a
+ * session never expires the pending day.
+ *
+ * Multiple sessions may point at the same `prescribed_day_id`; they contribute
+ * to one prescribed day rather than creating duplicates. `deleted_at` is the
+ * trainer soft-delete marker — deleted sessions are excluded from ordinary
+ * member history but the row is retained.
  */
 @Entity('WORKOUTS_WORKOUT_SESSIONS')
 @Index(['organization_id', 'member_id', 'session_date'])
 @Index(['assignment_id'])
+@Index(['prescribed_day_id'])
+@Index(['organization_id', 'member_id', 'status'])
 export class WorkoutSession {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
@@ -35,8 +44,23 @@ export class WorkoutSession {
   @Column({ type: 'uuid', nullable: true })
   assignment_id?: string | null;
 
+  /** The prescribed day this session contributes to (nullable for standalone). */
+  @Column({ type: 'uuid', nullable: true })
+  prescribed_day_id?: string | null;
+
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: WorkoutSessionStatus.IN_PROGRESS,
+  })
+  status!: WorkoutSessionStatus;
+
   @Column({ type: 'date' })
   session_date!: string;
+
+  /** Authenticated user who logged the session (audit). */
+  @Column({ type: 'uuid', nullable: true })
+  created_by?: string | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   started_at?: Date | null;
@@ -54,6 +78,16 @@ export class WorkoutSession {
   @Column({ type: 'int', nullable: true })
   mood?: number | null;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  cancelled_at?: Date | null;
+
+  /** Trainer soft-delete metadata. No reason is required. */
+  @Column({ type: 'timestamptz', nullable: true })
+  deleted_at?: Date | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  deleted_by?: string | null;
+
   @OneToMany(
     () => WorkoutSessionExercise,
     (sessionExercise) => sessionExercise.session,
@@ -63,4 +97,7 @@ export class WorkoutSession {
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
+
+  @UpdateDateColumn({ type: 'timestamptz' })
+  updated_at!: Date;
 }

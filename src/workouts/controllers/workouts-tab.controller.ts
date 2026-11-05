@@ -15,16 +15,18 @@ import { WorkoutSession } from '../entities/workout-session.entity';
 /**
  * Workouts tab API (Phase 2, P2-05).
  *
- * Route layer only — wires the `WorkoutsService` read methods to HTTP. The
- * domain entities and read logic were implemented in Phase 2; this controller
- * adds no writes.
+ * The combined Member 360 read: assigned plans, session history and the
+ * org-wide exercise library.
  *
  * Response:
  *   - `assignments`: workout plans assigned to the member, each with its
- *     per-assignment progress (P2-05)
- *   - `sessions`: the member's workout-session history, newest first (P2-05);
- *     always empty until a session logger exists — see the backlog note
- *   - `exercises`: org-wide exercise library (P2-05)
+ *     per-assignment progress. `progress.completed` / `progress.prescribed` are
+ *     trainer-approved prescribed days / non-rest prescribed days — NOT
+ *     exercise-row counts. `progress.exercise_completion` is the separate
+ *     supporting metric.
+ *   - `sessions`: the member's workout-session history, newest first. Soft-
+ *     deleted sessions are excluded; finished and cancelled sessions remain.
+ *   - `exercises`: org-wide exercise library.
  */
 @Controller('v1/members/:memberId/workouts')
 export class WorkoutsTabController {

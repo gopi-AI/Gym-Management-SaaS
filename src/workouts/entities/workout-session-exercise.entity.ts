@@ -12,10 +12,14 @@ import { WorkoutSession } from './workout-session.entity';
 /**
  * Per-exercise log within a workout session.
  *
- * This is the data from which progress is computed: `sets_completed` vs.
- * prescribed sets, `reps_completed` vs. prescribed reps. There is deliberately
- * NO `volume` (sets × reps × weight) field — cumulative weight-based metrics
- * were explicitly rejected per Q7. RPE is optional and non-driving.
+ * A regular member records `completed` (a checkbox); a PT member records the
+ * actual `sets_completed`, `reps_completed` and `weight_used`. Both shapes are
+ * optional on the row because not every exercise is logged in every session.
+ *
+ * `prescribed_day_exercise_id` ties the log to the assignment snapshot so a
+ * plan day can be reported across multiple sessions without inflating counts.
+ * There is deliberately NO `volume` (sets × reps × weight) field — cumulative
+ * weight-based metrics were explicitly rejected per Q7. RPE is optional.
  */
 @Entity('WORKOUTS_WORKOUT_SESSION_EXERCISES')
 @Index(['session_id'])
@@ -28,6 +32,14 @@ export class WorkoutSessionExercise {
 
   @Column({ type: 'uuid' })
   exercise_id!: string;
+
+  /** The prescribed-day snapshot row this log fulfils (nullable for standalone). */
+  @Column({ type: 'uuid', nullable: true })
+  prescribed_day_exercise_id?: string | null;
+
+  /** Regular-member checkbox: exercise completed / not completed. */
+  @Column({ type: 'boolean', nullable: true })
+  completed?: boolean | null;
 
   /** Actual sets completed. */
   @Column({ type: 'int', nullable: true })

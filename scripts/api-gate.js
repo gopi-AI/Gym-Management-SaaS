@@ -86,7 +86,7 @@ const WORKER_NAMES = [
   'CRM_SLA_MONITOR',
 ];
 
-const GROUPS = ['seed', 'boot', 'auth', 'tenancy', 'inventory', 'finance', 'crm', 'pt', 'loyalty', 'membership', 'webhook'];
+const GROUPS = ['seed', 'boot', 'auth', 'tenancy', 'inventory', 'finance', 'crm', 'pt', 'workouts', 'loyalty', 'membership', 'webhook'];
 
 const EXIT = { OK: 0, CHECK_FAILED: 1, REFUSED: 2, CANT_RUN: 3, INTERNAL: 4, USAGE: 64 };
 
@@ -1958,6 +1958,611 @@ check({
     return verdict(
       r.status === 404,
       `POST /v1/pt/enrollments/<random>/cancel -> ${r.status} (${fragment(r)})`,
+    );
+  },
+});
+
+// ── workouts (P2-05) ────────────────────────────────────────────────────────
+// The group creates its own member fixtures (rather than reusing `memberA` from
+// the finance group), so it does not depend on that group's fixture even when
+// both groups run.
+check({
+  id: 'wo-01',
+  group: 'workouts',
+  title: 'create workout member A',
+  requires: ['tokenA', 'orgA', 'branchA'],
+  provides: ['woMemberA'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: '/v1/members',
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { first_name: 'Workout', last_name: 'Alpha', branch_id: ctx.branchA },
+    });
+    const id = r.body && r.body.id;
+    return verdict(
+      r.status === 201 && Boolean(id),
+      `POST /v1/members -> ${r.status}${id ? '' : ` (${fragment(r)})`}`,
+      id ? { woMemberA: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'wo-02',
+  group: 'workouts',
+  title: 'create workout member B (second tenant)',
+  requires: ['tokenB', 'orgB', 'branchB'],
+  provides: ['woMemberB'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: '/v1/members',
+      token: ctx.tokenB,
+      org: ctx.orgB,
+      body: { first_name: 'Workout', last_name: 'Beta', branch_id: ctx.branchB },
+    });
+    const id = r.body && r.body.id;
+    return verdict(
+      r.status === 201 && Boolean(id),
+      `POST /v1/members (tenant B) -> ${r.status}${id ? '' : ` (${fragment(r)})`}`,
+      id ? { woMemberB: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'wo-03',
+  group: 'workouts',
+  title: 'create an exercise in the library',
+  requires: ['tokenA', 'orgA'],
+  provides: ['woExercise'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: '/v1/workouts/exercises',
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: {
+        name: `Gate Bench ${random(3)}`,
+        description: 'gate exercise',
+        category: 'strength',
+        muscle_group: 'chest',
+        equipment_needed: 'barbell',
+      },
+    });
+    const id = r.body && r.body.id;
+    return verdict(
+      r.status === 201 && Boolean(id),
+      `POST /v1/workouts/exercises -> ${r.status}${id ? '' : ` (${fragment(r)})`}`,
+      id ? { woExercise: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'wo-04',
+  group: 'workouts',
+  title: 'an arbitrary video URL is rejected (strict YouTube allow-list)',
+  requires: ['tokenA', 'orgA', 'woExercise'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'PUT',
+      path: `/v1/workouts/exercises/${ctx.woExercise}/video`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { video_url: 'https://evil.example/watch?v=abc' },
+    });
+    return verdict(
+      r.status === 400,
+      `PUT /v1/workouts/exercises/:id/video (untrusted URL) -> ${r.status} (${fragment(r)})`,
+    );
+  },
+});
+
+check({
+  id: 'wo-05',
+  group: 'workouts',
+  title: 'a canonical YouTube URL is accepted',
+  requires: ['tokenA', 'orgA', 'woExercise'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'PUT',
+      path: `/v1/workouts/exercises/${ctx.woExercise}/video`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { video_url: 'https://youtu.be/dQw4w9WgXcQ' },
+    });
+    return verdict(
+      r.status === 200 && bodyHas(r, 'dQw4w9WgXcQ'),
+      `PUT /v1/workouts/exercises/:id/video -> ${r.status}`,
+    );
+  },
+});
+
+check({
+  id: 'wo-06',
+  group: 'workouts',
+  title: 'create a reusable workout-day template',
+  requires: ['tokenA', 'orgA'],
+  provides: ['woDayTemplate'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: '/v1/workouts/day-templates',
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { name: `Gate Push ${random(3)}`, estimated_duration_minutes: 45 },
+    });
+    const id = r.body && r.body.id;
+    return verdict(
+      r.status === 201 && Boolean(id),
+      `POST /v1/workouts/day-templates -> ${r.status}${id ? '' : ` (${fragment(r)})`}`,
+      id ? { woDayTemplate: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'wo-07',
+  group: 'workouts',
+  title: 'compose the day template with the exercise',
+  requires: ['tokenA', 'orgA', 'woDayTemplate', 'woExercise'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'PUT',
+      path: `/v1/workouts/day-templates/${ctx.woDayTemplate}/exercises`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: {
+        exercises: [
+          {
+            exercise_id: ctx.woExercise,
+            section: 'strength',
+            sets: 3,
+            reps: 12,
+            sort_order: 1,
+          },
+        ],
+      },
+    });
+    return verdict(
+      r.status === 200 && bodyHas(r, 'Gate Bench'),
+      `PUT /v1/workouts/day-templates/:id/exercises -> ${r.status}`,
+    );
+  },
+});
+
+check({
+  id: 'wo-08',
+  group: 'workouts',
+  title: 'create a reusable weekly plan template',
+  requires: ['tokenA', 'orgA'],
+  provides: ['woPlanTemplate'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: '/v1/workouts/plan-templates',
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { name: `Gate Weekly ${random(3)}` },
+    });
+    const id = r.body && r.body.id;
+    return verdict(
+      r.status === 201 && Boolean(id),
+      `POST /v1/workouts/plan-templates -> ${r.status}${id ? '' : ` (${fragment(r)})`}`,
+      id ? { woPlanTemplate: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'wo-09',
+  group: 'workouts',
+  title: 'order a training day and a rest marker in the weekly plan',
+  requires: ['tokenA', 'orgA', 'woPlanTemplate', 'woDayTemplate'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'PUT',
+      path: `/v1/workouts/plan-templates/${ctx.woPlanTemplate}/days`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: {
+        days: [
+          {
+            day_order: 1,
+            day_template_id: ctx.woDayTemplate,
+            day_label: 'Push',
+          },
+          { day_order: 2, is_rest_day: true, day_label: 'Rest' },
+        ],
+      },
+    });
+    return verdict(
+      r.status === 200 && bodyHas(r, 'Push') && bodyHas(r, 'Rest'),
+      `PUT /v1/workouts/plan-templates/:id/days -> ${r.status}`,
+    );
+  },
+});
+
+check({
+  id: 'wo-10',
+  group: 'workouts',
+  title: 'assign the plan to member A (snapshotted)',
+  requires: ['tokenA', 'orgA', 'woMemberA', 'woPlanTemplate'],
+  provides: ['woAssignment'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/workouts/members/${ctx.woMemberA}/assignments`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: {
+        plan_template_id: ctx.woPlanTemplate,
+        start_date: new Date().toISOString().slice(0, 10),
+        logging_mode: 'simple',
+      },
+    });
+    const id = r.body && r.body.id;
+    return verdict(
+      r.status === 201 && Boolean(id) && bodyHas(r, 'snapshot_taken_at'),
+      `POST /v1/workouts/members/:id/assignments -> ${r.status}${id ? '' : ` (${fragment(r)})`}`,
+      id ? { woAssignment: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'wo-11',
+  group: 'workouts',
+  title: 'the rolling sequence exposes the prescribed day (rest excluded from the current workout)',
+  requires: ['tokenA', 'orgA', 'woMemberA'],
+  provides: ['woDay'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'GET',
+      path: `/v1/workouts/members/${ctx.woMemberA}/sequence`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    const entry = Array.isArray(r.body) ? r.body[0] : undefined;
+    const day = entry && entry.days.find((item) => item.sequence_order === 1);
+    const id = day && day.id;
+    return verdict(
+      r.status === 200 && Boolean(id) && entry.current_day_id === id,
+      `GET sequence -> ${r.status}, current_day=${entry && entry.current_day_id}, day=${id}`,
+      id ? { woDay: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'wo-12',
+  group: 'workouts',
+  title: 'progress is 0/1 approved days before the trainer review',
+  requires: ['tokenA', 'orgA', 'woAssignment'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'GET',
+      path: `/v1/workouts/assignments/${ctx.woAssignment}`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    const progress = r.body && r.body.progress;
+    return verdict(
+      r.status === 200 &&
+        progress &&
+        progress.completed === 0 &&
+        progress.prescribed === 1 &&
+        progress.percentage === 0,
+      `GET assignment detail -> ${r.status}, progress=${JSON.stringify(progress)}`,
+    );
+  },
+});
+
+check({
+  id: 'wo-13',
+  group: 'workouts',
+  title: 'create a member session on the prescribed day',
+  requires: ['tokenA', 'orgA', 'woMemberA', 'woDay', 'woExercise'],
+  provides: ['woSession'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/workouts/members/${ctx.woMemberA}/sessions`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: {
+        prescribed_day_id: ctx.woDay,
+        exercises: [{ exercise_id: ctx.woExercise, completed: true }],
+      },
+    });
+    const id = r.body && r.body.id;
+    return verdict(
+      r.status === 201 && Boolean(id) && bodyHas(r, 'in_progress'),
+      `POST /v1/workouts/members/:id/sessions -> ${r.status}${id ? '' : ` (${fragment(r)})`}`,
+      id ? { woSession: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'wo-14',
+  group: 'workouts',
+  title: 'finish the session (it does NOT approve the plan day)',
+  requires: ['tokenA', 'orgA', 'woSession'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/workouts/sessions/${ctx.woSession}/finish`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    return verdict(
+      r.status === 200 && bodyHas(r, 'finished'),
+      `POST /v1/workouts/sessions/:id/finish -> ${r.status}`,
+    );
+  },
+});
+
+check({
+  id: 'wo-15',
+  group: 'workouts',
+  title: 'submit the prescribed day for trainer review',
+  requires: ['tokenA', 'orgA', 'woDay'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/workouts/prescribed-days/${ctx.woDay}/submit`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { notes: 'gate submission' },
+    });
+    return verdict(
+      r.status === 201 && bodyHas(r, 'completed'),
+      `POST /v1/workouts/prescribed-days/:id/submit -> ${r.status} (${fragment(r)})`,
+    );
+  },
+});
+
+check({
+  id: 'wo-16',
+  group: 'workouts',
+  title: 'trainer approves the prescribed day',
+  requires: ['tokenA', 'orgA', 'woDay'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/workouts/prescribed-days/${ctx.woDay}/review`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: { decision: 'approve', notes: 'gate approval' },
+    });
+    return verdict(
+      r.status === 201 && bodyHas(r, 'approved'),
+      `POST /v1/workouts/prescribed-days/:id/review -> ${r.status} (${fragment(r)})`,
+    );
+  },
+});
+
+check({
+  id: 'wo-17',
+  group: 'workouts',
+  title: 'progress is now 1/1 approved days (100%)',
+  requires: ['tokenA', 'orgA', 'woAssignment'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'GET',
+      path: `/v1/workouts/assignments/${ctx.woAssignment}`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    const progress = r.body && r.body.progress;
+    return verdict(
+      r.status === 200 &&
+        progress &&
+        progress.completed === 1 &&
+        progress.prescribed === 1 &&
+        progress.percentage === 100,
+      `GET assignment detail -> ${r.status}, progress=${JSON.stringify(progress)}`,
+    );
+  },
+});
+
+check({
+  id: 'wo-18',
+  group: 'workouts',
+  title: 'trainer soft-deletes the session without a reason',
+  requires: ['tokenA', 'orgA', 'woSession'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'DELETE',
+      path: `/v1/workouts/sessions/${ctx.woSession}`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    return verdict(
+      r.status === 200 && r.body && r.body.success === true,
+      `DELETE /v1/workouts/sessions/:id -> ${r.status} (${fragment(r)})`,
+    );
+  },
+});
+
+check({
+  id: 'wo-19',
+  group: 'workouts',
+  title: 'the soft-deleted session is excluded from ordinary member history',
+  requires: ['tokenA', 'orgA', 'woMemberA'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'GET',
+      path: `/v1/workouts/members/${ctx.woMemberA}/sessions`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+    });
+    const sessions = Array.isArray(r.body) ? r.body : [];
+    return verdict(
+      r.status === 200 && sessions.length === 0,
+      `GET member sessions -> ${r.status}, count=${sessions.length}`,
+    );
+  },
+});
+
+check({
+  id: 'wo-20',
+  group: 'workouts',
+  title: 'tenant B cannot read tenant A\'s assignment (cross-org 404)',
+  requires: ['tokenB', 'orgB', 'woAssignment'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'GET',
+      path: `/v1/workouts/assignments/${ctx.woAssignment}`,
+      token: ctx.tokenB,
+      org: ctx.orgB,
+    });
+    return verdict(
+      r.status === 404,
+      `GET /v1/workouts/assignments/:id as tenant B -> ${r.status} (${fragment(r)})`,
+    );
+  },
+});
+
+check({
+  id: 'wo-21',
+  group: 'workouts',
+  title: 'tenant B cannot attach its member to tenant A\'s prescribed day',
+  requires: ['tokenB', 'orgB', 'woMemberB', 'woDay'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/workouts/members/${ctx.woMemberB}/sessions`,
+      token: ctx.tokenB,
+      org: ctx.orgB,
+      body: { prescribed_day_id: ctx.woDay },
+    });
+    return verdict(
+      r.status === 404,
+      `POST /v1/workouts/sessions cross-org -> ${r.status} (${fragment(r)})`,
+    );
+  },
+});
+
+check({
+  id: 'wo-22',
+  group: 'workouts',
+  title: 'tenant B cannot review tenant A\'s prescribed day',
+  requires: ['tokenB', 'orgB', 'woDay'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/workouts/prescribed-days/${ctx.woDay}/review`,
+      token: ctx.tokenB,
+      org: ctx.orgB,
+      body: { decision: 'approve' },
+    });
+    return verdict(
+      r.status === 404,
+      `POST /v1/workouts/prescribed-days/:id/review as tenant B -> ${r.status} (${fragment(r)})`,
+    );
+  },
+});
+
+check({
+  id: 'wo-23',
+  group: 'workouts',
+  title: 'create a real measurement for the progress review',
+  requires: ['tokenA', 'orgA', 'woMemberA'],
+  provides: ['woMeasurement'],
+  run: async (ctx) => {
+    // The measurement write path requires a MEMBERS_MEMBER_PROFILES row (a
+    // pre-existing P2-07 dependency; POST /v1/members does not create one).
+    await ctx.queryScratch(
+      `INSERT INTO "MEMBERS_MEMBER_PROFILES" ("member_id")
+       SELECT $1
+       WHERE NOT EXISTS (
+         SELECT 1 FROM "MEMBERS_MEMBER_PROFILES" WHERE "member_id" = $1
+       )`,
+      [ctx.woMemberA],
+    );
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/members/${ctx.woMemberA}/measurements`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: {
+        measurement_type: 'weight',
+        value: 82,
+        unit: 'kg',
+        measured_at: '2026-10-01T09:00:00.000Z',
+      },
+    });
+    const id = r.body && r.body.id;
+    return verdict(
+      r.status === 201 && Boolean(id),
+      `POST /v1/members/:id/measurements -> ${r.status}${id ? '' : ` (${fragment(r)})`}`,
+      id ? { woMeasurement: id } : undefined,
+    );
+  },
+});
+
+check({
+  id: 'wo-24',
+  group: 'workouts',
+  title: 'record a 30–45-day progress review from the approved day and real measurement',
+  requires: ['tokenA', 'orgA', 'woMemberA', 'woAssignment', 'woMeasurement'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'POST',
+      path: `/v1/workouts/members/${ctx.woMemberA}/progress-reviews`,
+      token: ctx.tokenA,
+      org: ctx.orgA,
+      body: {
+        assignment_id: ctx.woAssignment,
+        review_date: '2026-11-01',
+        period_start: '2026-09-15',
+        period_end: '2026-11-01',
+        decision: 'continue',
+        observations: 'gate review',
+        measurement_ids: [ctx.woMeasurement],
+      },
+    });
+    const review = r.body && r.body.review;
+    return verdict(
+      r.status === 201 &&
+        review &&
+        review.approved_days === 1 &&
+        review.prescribed_days === 1 &&
+        review.progress_percentage === 100 &&
+        Array.isArray(review.measurements) &&
+        review.measurements.length === 1,
+      `POST /v1/workouts/members/:id/progress-reviews -> ${r.status}, review=${JSON.stringify(
+        review && {
+          approved: review.approved_days,
+          prescribed: review.prescribed_days,
+          percentage: review.progress_percentage,
+          measurements: review.measurements && review.measurements.length,
+        },
+      )}`,
+    );
+  },
+});
+
+check({
+  id: 'wo-25',
+  group: 'workouts',
+  title: 'tenant B cannot read tenant A\'s progress reviews',
+  requires: ['tokenB', 'orgB', 'woMemberA'],
+  run: async (ctx) => {
+    const r = await call(ctx, {
+      method: 'GET',
+      path: `/v1/workouts/members/${ctx.woMemberA}/progress-reviews`,
+      token: ctx.tokenB,
+      org: ctx.orgB,
+    });
+    return verdict(
+      r.status === 404,
+      `GET progress reviews cross-org -> ${r.status} (${fragment(r)})`,
     );
   },
 });
