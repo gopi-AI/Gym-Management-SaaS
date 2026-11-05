@@ -329,20 +329,26 @@ export class MembersService {
       throw new NotFoundException('Member not found');
     }
 
-    const result = await this.memberRepository.update(
-      { id, organization_id: organizationId, is_active: true },
-      { is_active: false },
-    );
-    if (result.affected === 0) {
-      throw new NotFoundException('Member not found');
-    }
+    return this.dataSource.transaction(async (manager) => {
+      const memberRepo = manager.getRepository(Member);
 
-    await this.outboxService.saveEventEnvelope(
-      'MEMBER_DEACTIVATED',
-      'v1',
-      organizationId,
-      { memberId: id, organizationId },
-      member.global_uuid,
-    );
+      const result = await memberRepo.update(
+        { id, organization_id: organizationId, is_active: true },
+        { is_active: false },
+      );
+      if (result.affected === 0) {
+        throw new NotFoundException('Member not found');
+      }
+
+      await this.outboxService.saveEventEnvelope(
+        'MEMBER_DEACTIVATED',
+        'v1',
+        organizationId,
+        { memberId: id, organizationId },
+        member.global_uuid,
+        undefined, // causationId
+        manager, // transaction-scoped: commits/rolls back with the member row
+      );
+    });
   }
 }
