@@ -30,6 +30,7 @@ It is not replaced by a permission-shaped refusal such as `403 Missing permissio
 
 **Implementation mechanism note.** Because global guards execute before global interceptors, the membership validation that decides the HTTP response cannot literally be performed by `TenantContextInterceptor` before `PermissionsGuard`. It is implemented as a pre-RBAC membership gate **inside** `PermissionsGuard` (`src/shared/auth/permissions.guard.ts:102-117`), using the same authoritative predicate (`IdentityService.isUserInOrganization`) and the same exported refusal constant (`ORGANIZATION_ACCESS_DENIED_MESSAGE`, `src/shared/tenant/tenant-context.service.ts:16-17`) as the tenant-context service. The observable ordering required by the decision — membership refusal before permission refusal — therefore holds.
 
+**Organization-context compatibility (M3).** Missing route organization context and missing `X-Organization-Id` result in `403 Organization context required`. Route `:orgId` takes precedence over the `X-Organization-Id` header; conflicting route/header organization IDs are denied. External clients previously relying on global permission grants without organization context may be affected. This is intended P0-05 behavior and a compatibility consideration.
 **Security rationale.** A non-member has no standing in the requested organization and must not receive a permission-shaped refusal, which would imply the membership was accepted and only a permission was missing. Membership is the tenant boundary; RBAC is subordinate to it. Membership is **not** a substitute for a permission: a member who lacks the required permission still receives `403 Missing permission <resource>:<action>`.
 
 **Expected denial behaviour.**
@@ -130,6 +131,7 @@ The 13 affected routes are:
 - `CLAUDE.md:128` — documents that a handler with no decorator passes for any authenticated user.
 - Each route's controller (file:line references above) confirms no `@RequirePermissions` decorator is present.
 
+**Residual risk (M2).** The eight member routes listed above remain without `@RequirePermissions` metadata under the approved P0-05-A-1 decision. They rely on authentication and existing organization membership/tenant enforcement. This is an explicitly accepted residual risk, not an accidental omission or a newly completed authorization feature. Role-based authorization for these routes remains deferred.
 ---
 ## P0-05-C-1 — Organization catalog routes remain system-wide
 
