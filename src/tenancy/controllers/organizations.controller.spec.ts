@@ -3,8 +3,10 @@ import { ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { OrganizationsController } from './organizations.controller';
 import {
   PERMISSIONS_KEY,
+  SYSTEM_WIDE_KEY,
   PermissionsGuard,
   RequiredPermission,
+  SystemWidePermissions,
 } from '../../shared/auth/permissions.guard';
 import { IdentityService } from '../../identity/services/identity.service';
 
@@ -32,6 +34,15 @@ describe('OrganizationsController authorization metadata (H3)', () => {
     ]);
   }
 
+  function systemWideOn(
+    method: 'findAll' | 'findOne' | 'create' | 'update',
+  ): boolean | undefined {
+    return reflector.getAllAndOverride<boolean>(SYSTEM_WIDE_KEY, [
+      OrganizationsController.prototype[method],
+      OrganizationsController,
+    ]);
+  }
+
   it('GET /v1/organizations requires organization:read', () => {
     expect(requiredOn('findAll')).toEqual([{ resource: 'organization', action: 'read' }]);
   });
@@ -46,6 +57,23 @@ describe('OrganizationsController authorization metadata (H3)', () => {
 
   it('PATCH /v1/organizations/:id requires organization:update', () => {
     expect(requiredOn('update')).toEqual([{ resource: 'organization', action: 'update' }]);
+  });
+
+  // ── T3: system-wide marker ──
+  it('GET /v1/organizations is marked system-wide', () => {
+    expect(systemWideOn('findAll')).toBe(true);
+  });
+
+  it('GET /v1/organizations/:id is marked system-wide', () => {
+    expect(systemWideOn('findOne')).toBe(true);
+  });
+
+  it('POST /v1/organizations is marked system-wide', () => {
+    expect(systemWideOn('create')).toBe(true);
+  });
+
+  it('PATCH /v1/organizations/:id is marked system-wide', () => {
+    expect(systemWideOn('update')).toBe(true);
   });
 });
 
@@ -64,7 +92,7 @@ describe('PermissionsGuard -> IdentityService.hasPermission (H3)', () => {
     return {
       getHandler: () => OrganizationsController.prototype[method],
       getClass: () => OrganizationsController,
-      switchToHttp: () => ({ getRequest: () => ({ user: reqUser }) }),
+      switchToHttp: () => ({ getRequest: () => ({ user: reqUser, headers: {} }) }),
     } as unknown as ExecutionContext;
   }
 
@@ -75,9 +103,7 @@ describe('PermissionsGuard -> IdentityService.hasPermission (H3)', () => {
     const guard = buildGuard(identityService);
 
     expect(
-      await guard.canActivate(
-        contextForHandler('findOne', { userId: 'user-1' }),
-      ),
+      await guard.canActivate(contextForHandler('findOne', { userId: 'user-1' })),
     ).toBe(true);
     expect(identityService.hasPermission).toHaveBeenCalledWith(
       'user-1',

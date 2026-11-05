@@ -3,7 +3,10 @@ import { OrganizationsService } from '../services/organizations.service';
 import { CreateOrganizationDto } from '../dto/create-organization.dto';
 import { UpdateOrganizationDto } from '../dto/update-organization.dto';
 import { Organization } from '../entities/organization.entity';
-import { RequirePermissions } from '../../shared/auth/permissions.guard';
+import {
+  RequirePermissions,
+  SystemWidePermissions,
+} from '../../shared/auth/permissions.guard';
 
 /**
  * System-level organization administration.
@@ -24,6 +27,7 @@ export class OrganizationsController {
 
   @Get()
   @HttpCode(HttpStatus.OK)
+  @SystemWidePermissions()
   @RequirePermissions({ resource: 'organization', action: 'read' })
   async findAll(): Promise<Organization[]> {
     return this.organizationsService.findAll();
@@ -31,6 +35,7 @@ export class OrganizationsController {
 
   @Get(':id')
   @HttpCode(HttpStatus.OK)
+  @SystemWidePermissions()
   @RequirePermissions({ resource: 'organization', action: 'read' })
   async findOne(
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
@@ -40,6 +45,7 @@ export class OrganizationsController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
+  @SystemWidePermissions()
   @RequirePermissions({ resource: 'organization', action: 'create' })
   async create(@Body() dto: CreateOrganizationDto): Promise<Organization> {
     return this.organizationsService.create(dto);
@@ -47,6 +53,7 @@ export class OrganizationsController {
 
   @Patch(':id')
   @HttpCode(HttpStatus.OK)
+  @SystemWidePermissions()
   @RequirePermissions({ resource: 'organization', action: 'update' })
   async update(
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,

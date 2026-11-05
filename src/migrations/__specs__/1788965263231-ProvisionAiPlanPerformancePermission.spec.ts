@@ -262,15 +262,36 @@ describe('ProvisionAiPlanPerformancePermission1788965263231', () => {
   describe('RBAC compatibility with the existing IdentityService.hasPermission()', () => {
     function buildIdentityService(store: FakeQueryRunner): IdentityService {
       const userRoleRepository = {
+        // hasPermission() loads `relations: ['role']` and then enforces
+        // `ur.role?.is_active`, so the fake has to hydrate the role row the way
+        // TypeORM does. A bare join row would look inactive and deny silently.
         find: jest.fn(async (options: { where: { user_id: string } }) =>
-          store.userRoles.filter((ur) => ur.user_id === options.where.user_id),
+          store.userRoles
+            .filter((ur) => ur.user_id === options.where.user_id)
+            .map(
+              (ur) =>
+                ({
+                  ...ur,
+                  role: store.roles.find((r) => r.id === ur.role_id),
+                }) as unknown as IdentityUserRole,
+            ),
         ),
       };
 
       const rolePermissionRepository = {
+        // Same for `relations: ['permission']`: the permission's is_active flag
+        // gates the grant, so an unhydrated row would never count as active.
         find: jest.fn(async (options: { where: { role_id: unknown } }) => {
           const roleIds = inValues(options.where.role_id);
-          return store.rolePermissions.filter((rp) => roleIds.includes(rp.role_id));
+          return store.rolePermissions
+            .filter((rp) => roleIds.includes(rp.role_id))
+            .map(
+              (rp) =>
+                ({
+                  ...rp,
+                  permission: store.permissions.find((p) => p.id === rp.permission_id),
+                }) as unknown as IdentityRolePermission,
+            );
         }),
       };
 
