@@ -541,13 +541,14 @@ describe('MembersService', () => {
   });
 
   describe('softDelete', () => {
-    it('sets is_active to false and emits MEMBER_DEACTIVATED', async () => {
+    it('sets is_active to false and emits MEMBER_DEACTIVATED inside a transaction', async () => {
       const existing = { id: 'm1', global_uuid: 'uuid-1', organization_id: orgId, is_active: true } as Member;
       mockMemberRepo.findOne.mockResolvedValue(existing);
       mockMemberRepo.update.mockResolvedValue({ affected: 1 });
 
       await service.softDelete('m1');
 
+      expect(mockDataSource.transaction).toHaveBeenCalledTimes(1);
       expect(mockMemberRepo.update).toHaveBeenCalledWith(
         { id: 'm1', organization_id: orgId, is_active: true },
         { is_active: false },
@@ -558,6 +559,8 @@ describe('MembersService', () => {
         orgId,
         { memberId: 'm1', organizationId: orgId },
         'uuid-1',
+        undefined, // causationId
+        expect.anything(), // manager (transaction-scoped)
       );
     });
 // --------------------------------------------------------------------------

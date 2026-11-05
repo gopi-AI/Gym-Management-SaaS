@@ -385,6 +385,46 @@ describe('WorkoutsService', () => {
   });
 
   // --------------------------------------------------------------------------
+  // createExercise — tenant ownership enforcement (AH-01)
+  // --------------------------------------------------------------------------
+
+  describe('createExercise', () => {
+    const createDto = {
+      organization_id: 'org-999', // hostile client-supplied org id
+      name: 'Bench Press',
+      category: ExerciseCategory.STRENGTH,
+      is_active: true,
+    };
+
+    it('overrides client-supplied organization_id with the authorized org', async () => {
+      const result = await service.createExercise(createDto as any);
+
+      expect(mockTenantContext.getCurrentOrganizationId).toHaveBeenCalled();
+      expect(mockExerciseRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organization_id: orgId,
+          name: 'Bench Press',
+          category: ExerciseCategory.STRENGTH,
+          is_active: true,
+        }),
+      );
+      expect(mockExerciseRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ organization_id: orgId }),
+      );
+      expect(result.organization_id).toBe(orgId);
+    });
+
+    it('rejects when no organization context exists', async () => {
+      mockTenantContext.getCurrentOrganizationId.mockResolvedValue(null);
+      mockTenantContext.getRequestedOrganizationId.mockResolvedValue(null);
+
+      await expect(service.createExercise(createDto as any)).rejects.toThrow(
+        'Organization context not found',
+      );
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // Session history (P2-05, read-only)
   // --------------------------------------------------------------------------
 
