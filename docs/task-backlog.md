@@ -3653,7 +3653,7 @@ Branch cleanup (2026-10-07): deleted 16 merged remote branches and 15 merged loc
   does **not** — it validates only that the *membership* row is active
   (`src/shared/tenant/tenant-context.service.ts:123-130`). After
   `PATCH /v1/organizations/:id {"is_active": false}` (the field is accepted —
-  `src/tenancy/dto/update-organization.dto.ts`, applied at `src/tenancy/services/organizations.service.ts:33`),
+  `src/tenancy/dto/update-organization.dto.ts`, applied at `src/tenancy/services/organizations.service.ts:40`),
   a member whose membership/role/permission are still active is **denied** on every
   permission-bearing controller but **still served** on the 8 member routes:
   `v1/members` (GET, POST), `v1/members/:id` (GET, PATCH)
@@ -3703,3 +3703,5 @@ Branch cleanup (2026-10-07): deleted 16 merged remote branches and 15 merged loc
   (`src/tenancy/controllers/tenant-settings.controller.ts:37,55,66` also call the shared predicate).
 - **Risks**: Medium. Availability/revocation semantics diverge between two paths that the P0-05
   invariant describes as one. Low for CI, which does not exercise deactivation.
+
+**Source-reference baseline:** Source-code paths, line numbers, and references to `docs/p0-05-authorization-decisions.md` in this entry were verified against P0-05 snapshot `529937fc4ff5191a03c832a55a53ebdca3f84d0e`, not `origin/main` (`afc6bf7b0eddef5c6543126ba9ba38d212d1fe85`). The referenced P0-05 decision document currently exists only on the P0-05 branch; its references cannot be resolved from `main` until that document is integrated.
