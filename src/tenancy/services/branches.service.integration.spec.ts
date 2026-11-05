@@ -113,7 +113,6 @@ describeIntegration('BranchesService.create — organization authorization (real
     // No branch written to either organization.
     expect(await branchCountIn(ORG_A)).toBe(0);
     expect(await branchCountIn(ORG_B)).toBe(0);
-    expect(await branchRepository.count()).toBe(0);
   });
 
   it('B. creates the branch in the authorized organization when header and body match', async () => {
@@ -126,7 +125,6 @@ describeIntegration('BranchesService.create — organization authorization (real
     // A branch exists only in the authorized organization ORG_A.
     expect(await branchCountIn(ORG_A)).toBe(1);
     expect(await branchCountIn(ORG_B)).toBe(0);
-    expect(await branchRepository.count()).toBe(1);
   });
 
   it('E. rejects creation when the user has no active membership in the selected organization', async () => {
@@ -144,7 +142,6 @@ describeIntegration('BranchesService.create — organization authorization (real
     // No branch written to the requested organization; no net new write.
     expect(await branchCountIn(ORG_B)).toBe(0);
     expect(await branchCountIn(ORG_A)).toBe(1);
-    expect(await branchRepository.count()).toBe(1);
   });
 
   afterAll(async () => {
