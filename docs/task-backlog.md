@@ -3641,3 +3641,67 @@ this PR changes.
 **Status: done**
 
 Branch cleanup (2026-10-07): deleted 16 merged remote branches and 15 merged local branches after the PR #21 merge. Remaining: main, phase-6 (remote); main, phase-4, phase-6 and the foreign fix/def-15-bounded-cache-calls (local). Open PR: #1 (phase-6). No code or behavior change.
+
+## DEF-26 — Organization deactivation is enforced on the RBAC path only (2026-11-05)
+
+**Status: OPEN — found during the read-only P0-05 acceptance audit. NOT introduced by P0-05
+(the tenant service predates it) and NOT resolved by P0-05. No fix attempted in that audit.**
+
+- **What happens**: two authorization paths consult different notions of "active organization".
+  `IdentityService.hasOrganizationPermission()` rejects a deactivated organization
+  (`src/identity/services/identity.service.ts:215`). `TenantContextService.requireOrganizationAccess()`
+  does **not** — it validates only that the *membership* row is active
+  (`src/shared/tenant/tenant-context.service.ts:123-130`). After
+  `PATCH /v1/organizations/:id {"is_active": false}` (the field is accepted —
+  `src/tenancy/dto/update-organization.dto.ts`, applied at `src/tenancy/services/organizations.service.ts:40`),
+  a member whose membership/role/permission are still active is **denied** on every
+  permission-bearing controller but **still served** on the 8 member routes:
+  `v1/members` (GET, POST), `v1/members/:id` (GET, PATCH)
+  (`src/members/controllers/members.controller.ts:11,17,23,29`),
+  `v1/members/:memberId/identifiers` (GET, POST, DELETE)
+  (`src/members/controllers/member-identifiers.controller.ts:9,15,24`),
+  `v1/members/:memberId/360/header` (`src/members/controllers/member-360.controller.ts:37`).
+  None of the 8 carries `@RequirePermissions` metadata, so `PermissionsGuard` returns early
+  (`src/shared/auth/permissions.guard.ts:44`) and the tenant-context predicate is the only gate.
+- **Why — measured, not inferred.** The denial path is `member` services deriving the organization
+  from tenant context (`src/members/services/members.service.ts:29-39`) and then scoping the read:
+  `findOne({ where: { id, organization_id: organizationId, is_active: true } })` (`:94-99`).
+  That predicate is organization-*scoped* (correct, no cross-tenant leak) but not
+  organization-*activity*-aware. The org-activity predicate exists in exactly one place in
+  production code: `grep -rn 'organization?.is_active' src/` returns only
+  `identity.service.ts:215`.
+- **What the four existing tests actually prove.** `identity.service.spec.ts:288`,
+  `identity-authorization.integration.spec.ts:380` and `:395`, and
+  `permissions.guard.integration.spec.ts:452` all call or route through
+  `hasOrganizationPermission()`. They prove the RBAC path. The tenant-context path has **no**
+  org-deactivation coverage; the member routes have no deactivated-organization test at all.
+- **Not in this PR / not resolved by P0-05.** P0-05 introduced the org-activity predicate into the
+  RBAC branch and recorded it as a P0-05 invariant
+  (`docs/p0-05-authorization-decisions.md:66-71`). That document's closure line (`:161`) reads
+  as if no P0-05 authorization question remains open, and it is scoped only to the questions
+  raised in it — it must **not** be read as certifying organization deactivation end-to-end.
+  Anyone citing P0-05 as having fixed organization deactivation is citing the RBAC branch alone.
+- **Blast radius, precisely stated.** No cross-tenant disclosure — the member queries remain scoped
+  by `organization_id`, so a deactivated organization's member cannot reach another tenant's data.
+  This is a **revocation** failure: deactivating an organization does not revoke that
+  organization's access to its own member PII (read *and* write: `POST`/`PATCH` members,
+  identifier create/delete) for as long as the membership rows stay active.
+- **Do not over-correct.** The 4 organization catalog routes
+  (`src/tenancy/controllers/organizations.controller.ts:31,39,49,57`) are `@SystemWidePermissions()`
+  and must **not** acquire an org-activity predicate, or a platform administrator would be locked
+  out of managing a deactivated organization.
+- **Acceptance criteria for the follow-up**: (a) `requireOrganizationAccess` rejects an inactive
+  organization, with an explicit decision on the refusal message — the org-shaped
+  `ORGANIZATION_ACCESS_DENIED_MESSAGE` (`src/shared/tenant/tenant-context.service.ts:16-17`)
+  rather than a permission-shaped one; (b) `hasOrganizationPermission` and `requireOrganizationAccess`
+  share **one** predicate (e.g. a single `resolveActiveMembership`) so the two cannot drift again;
+  (c) a member-route test proving a deactivated organization's member is refused on
+  `GET /v1/members` and on `POST /v1/members`; (d) an api-gate check distinguishing the two
+  paths on the same deactivated organization.
+- **Open design question — do not silently resolve.** Whether a deactivated organization is fully
+  closed or becomes read-only for platform staff reading tenant settings
+  (`src/tenancy/controllers/tenant-settings.controller.ts:37,55,66` also call the shared predicate).
+- **Risks**: Medium. Availability/revocation semantics diverge between two paths that the P0-05
+  invariant describes as one. Low for CI, which does not exercise deactivation.
+
+**Source-reference baseline:** Source-code paths, line numbers, and references to `docs/p0-05-authorization-decisions.md` in this entry were verified against P0-05 snapshot `529937fc4ff5191a03c832a55a53ebdca3f84d0e`, not `origin/main` (`afc6bf7b0eddef5c6543126ba9ba38d212d1fe85`). The referenced P0-05 decision document currently exists only on the P0-05 branch; its references cannot be resolved from `main` until that document is integrated.
