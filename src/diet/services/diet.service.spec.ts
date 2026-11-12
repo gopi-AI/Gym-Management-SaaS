@@ -601,6 +601,15 @@ describe('DietService', () => {
       expect(sql).toContain('nl.log_date <= $4');
       expect(params).toEqual([orgId, memberId, '2026-10-01', '2026-10-31']);
     });
+
+    it('queries the correct physical table name', async () => {
+      mockLogRepo.query.mockResolvedValue([]);
+
+      await service.getDailyTotals(memberId, '2026-10-01', '2026-10-31');
+
+      const [sql] = mockLogRepo.query.mock.calls[0];
+      expect(sql).toContain('FROM "DIET_NUTRITION_LOGS" nl');
+    });
   });
 
   // --------------------------------------------------------------------------
