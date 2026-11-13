@@ -10,7 +10,8 @@ import { ExerciseCategory } from '../entities/exercise-category.enum';
 
 export class CreateExerciseDto {
   @IsUUID()
-  organization_id!: string;
+  @IsOptional()
+  organization_id?: string;
 
   @IsString()
   @MaxLength(255)

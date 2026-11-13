@@ -59,7 +59,11 @@ export class WorkoutsService {
   // ---------------------------------------------------------------------------
 
   async createExercise(dto: CreateExerciseDto): Promise<Exercise> {
-    const exercise = this.exerciseRepository.create(dto);
+    const organizationId = await this.getOrganizationId();
+    const exercise = this.exerciseRepository.create({
+      ...dto,
+      organization_id: organizationId,
+    });
     return this.exerciseRepository.save(exercise);
   }
 

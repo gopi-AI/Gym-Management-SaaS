@@ -665,4 +665,121 @@ describeIntegration('MembersService search/sort/indexes (real Postgres)', () => 
       expect(outboxEvents.length).toBe(0);
     });
   });
+
+  describe('P1-09b: member deactivation rollback (softDelete with outbox failure)', () => {
+    let rollbackMemberId: string;
+    let rollbackCorrelationId: string;
+    let successMemberId: string;
+    let outboxRepo: ReturnType<DataSource['getRepository']>;
+    const testCorrelationId = randomUUID();
+    const triggerName = `trg_reject_member_deactivated_outbox_${testCorrelationId.replace(/-/g, '').slice(0, 8)}`;
+
+    beforeAll(async () => {
+      outboxRepo = dataSource.getRepository(OutboxEntity);
+      const memberRepo = dataSource.getRepository(Member);
+
+      // Member for rollback test — stays active because transaction rolls back
+      const rollbackMember = memberRepo.create({
+        id: randomUUID(),
+        organization_id: ids.organization,
+        branch_id: ids.branchA,
+        global_uuid: testCorrelationId,
+        local_id: 998,
+        first_name: 'Rollback',
+        last_name: 'Member',
+        email: 'rollback.test@example.com',
+        phone: '+7777777777',
+        is_active: true,
+        created_at: new Date(),
+      });
+      await memberRepo.save(rollbackMember);
+      rollbackMemberId = rollbackMember.id;
+      rollbackCorrelationId = testCorrelationId;
+
+      // Member for success test — becomes inactive
+      const successMember = memberRepo.create({
+        id: randomUUID(),
+        organization_id: ids.organization,
+        branch_id: ids.branchA,
+        global_uuid: randomUUID(),
+        local_id: 999,
+        first_name: 'Success',
+        last_name: 'Member',
+        email: 'success.test@example.com',
+        phone: '+6666666666',
+        is_active: true,
+        created_at: new Date(),
+      });
+      await memberRepo.save(successMember);
+      successMemberId = successMember.id;
+    });
+
+    afterAll(async () => {
+      if (!dataSource?.isInitialized) return;
+      const memberRepo = dataSource.getRepository(Member);
+      await memberRepo.delete({ id: rollbackMemberId });
+      await memberRepo.delete({ id: successMemberId });
+      await outboxRepo.delete({ correlationId: rollbackCorrelationId });
+      await outboxRepo.delete({ eventType: 'MEMBER_DEACTIVATED' });
+    });
+
+    it('rolls back member deactivation when outbox persistence fails at the database level', async () => {
+      // Install database-level failure injection via trigger on shared.outbox
+      await dataSource.query(`
+        CREATE OR REPLACE FUNCTION reject_member_deactivated_outbox()
+        RETURNS trigger AS $$
+        BEGIN
+          IF NEW."eventType" = 'MEMBER_DEACTIVATED' AND NEW."correlationId" = '${rollbackCorrelationId}' THEN
+            RAISE EXCEPTION 'Injected outbox persistence failure for MEMBER_DEACTIVATED';
+          END IF;
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+      `);
+      await dataSource.query(`
+        CREATE TRIGGER ${triggerName}
+        BEFORE INSERT ON "shared"."outbox"
+        FOR EACH ROW
+        EXECUTE FUNCTION reject_member_deactivated_outbox();
+      `);
+
+      try {
+        // PG-02: Real softDelete() invocation — must fail due to DB-level outbox INSERT rejection
+        await expect(service.softDelete(rollbackMemberId)).rejects.toThrow(
+          'Injected outbox persistence failure for MEMBER_DEACTIVATED'
+        );
+      } finally {
+        // PG-08: Remove failure injection reliably, even on assertion failure
+        await dataSource.query(`DROP TRIGGER IF EXISTS ${triggerName} ON "shared"."outbox"`);
+        await dataSource.query(`DROP FUNCTION IF EXISTS reject_member_deactivated_outbox()`);
+      }
+
+      // PG-05: Member remains active after rollback (independent query)
+      const memberRepo = dataSource.getRepository(Member);
+      const member = await memberRepo.findOne({ where: { id: rollbackMemberId } });
+      expect(member!.is_active).toBe(true);
+
+      // PG-06: No corresponding deactivation event committed (independent query)
+      const outboxEvents = await outboxRepo.find({
+        where: { eventType: 'MEMBER_DEACTIVATED', correlationId: rollbackCorrelationId },
+      });
+      expect(outboxEvents.length).toBe(0);
+    });
+
+    it('successfully deactivates a member and commits the outbox event', async () => {
+      // PG-10: Successful softDelete regression coverage
+      await service.softDelete(successMemberId);
+
+      const memberRepo = dataSource.getRepository(Member);
+      const member = await memberRepo.findOne({ where: { id: successMemberId } });
+      expect(member!.is_active).toBe(false);
+
+      const outboxEvents = await outboxRepo.find({ where: { eventType: 'MEMBER_DEACTIVATED' } });
+      expect(outboxEvents.length).toBe(1);
+      const envelope = JSON.parse(outboxEvents[0].payload);
+      expect(envelope.eventType).toBe('MEMBER_DEACTIVATED');
+      expect(envelope.payload.memberId).toBe(successMemberId);
+      expect(envelope.organizationId).toBe(ids.organization);
+    });
+  });
 });
