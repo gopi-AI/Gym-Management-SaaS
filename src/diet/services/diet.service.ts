@@ -606,7 +606,7 @@ export class DietService {
               AND nl.fat_g IS NULL
           ) AS "mealsMissingMacros",
           COUNT(*) AS "totalMeals"
-        FROM nutrition_log nl
+        FROM "DIET_NUTRITION_LOGS" nl
         WHERE nl.organization_id = $1
           AND nl.member_id = $2
           AND nl.log_date >= $3
