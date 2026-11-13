@@ -145,28 +145,93 @@ export class IdentityService {
   // Permission check
 
   async hasPermission(userId: string, resource: string, action: string): Promise<boolean> {
-    // Get user's roles
+    // Get user's roles, including the role relation so we can enforce
+    // active-state on both the role and its permissions.
     const userRoles = await this.userRoleRepository.find({
       where: { user_id: userId },
       relations: ['role'],
     });
-    const roleIds = userRoles.map(ur => ur.role_id);
-    if (roleIds.length === 0) {
+    // Inactive roles must not grant access.
+    const activeRoleIds = userRoles
+      .filter(ur => ur.role?.is_active === true)
+      .map(ur => ur.role_id);
+    if (activeRoleIds.length === 0) {
       return false;
     }
 
-    // Get permission IDs linked to those roles
+    // Get permission IDs linked to those active roles, including the
+    // permission relation so we can enforce active-state on permissions.
     const rolePermissions = await this.rolePermissionRepository.find({
-      where: { role_id: In(roleIds) },
+      where: { role_id: In(activeRoleIds) },
+      relations: ['permission'],
     });
-    const permissionIds = rolePermissions.map(rp => rp.permission_id);
-    if (permissionIds.length === 0) {
+    // Inactive permissions must not grant access.
+    const activePermissionIds = rolePermissions
+      .filter(rp => rp.permission?.is_active === true)
+      .map(rp => rp.permission_id);
+    if (activePermissionIds.length === 0) {
       return false;
     }
 
-    // Check if any permission matches the required resource and action
+    // Check if any active permission matches the required resource and action.
     const permission = await this.permissionRepository.findOne({
-      where: { id: In(permissionIds), resource, action, is_active: true },
+      where: { id: In(activePermissionIds), resource, action, is_active: true },
+    });
+
+    return !!permission;
+  }
+
+  /**
+   * Organization-scoped permission check. The user must have an ACTIVE
+   * membership in the requested organization, that organization must itself be
+   * ACTIVE, that membership must reference an ACTIVE organization-level role,
+   * and that role must grant an ACTIVE permission matching the required
+   * resource and action.
+   *
+   * No fallback to the user's global roles or global permissions is allowed.
+   * A permission granted globally does not compensate for a missing permission
+   * in the organization role, and an organization permission does not require
+   * the same permission to exist globally.
+   */
+  async hasOrganizationPermission(
+    userId: string,
+    organizationId: string,
+    resource: string,
+    action: string,
+  ): Promise<boolean> {
+    // 1. Active membership in the requested organization is required.
+    const membership = await this.userOrganizationRepository.findOne({
+      where: {
+        user_id: userId,
+        organization_id: organizationId,
+        is_active: true,
+      },
+      relations: ['organization', 'role'],
+    });
+    if (!membership) return false;
+
+    // 2. A membership in a DEACTIVATED organization does not authorize, even if
+    // the membership row, its role and the permission are all still active.
+    if (membership.organization?.is_active !== true) return false;
+
+    // 3. A membership with a null role denies access.
+    if (!membership.role_id || !membership.role) return false;
+
+    // 4. The organization role must be active.
+    if (!membership.role.is_active) return false;
+
+    // 5. Check the organization role's permissions (no global fallback).
+    const rolePermissions = await this.rolePermissionRepository.find({
+      where: { role_id: membership.role_id },
+      relations: ['permission'],
+    });
+    const activePermissionIds = rolePermissions
+      .filter(rp => rp.permission?.is_active === true)
+      .map(rp => rp.permission_id);
+    if (activePermissionIds.length === 0) return false;
+
+    const permission = await this.permissionRepository.findOne({
+      where: { id: In(activePermissionIds), resource, action, is_active: true },
     });
 
     return !!permission;
